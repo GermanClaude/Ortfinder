@@ -71,8 +71,8 @@ der JavaScript-Module nicht.
 
 ## Gemini-API-Key
 
-1. Key kostenlos erstellen: <https://aistudio.google.com/apikey>. Ein Gemini-Key beginnt mit `AIza…`
-   und hat 39 Zeichen. Eine 12-stellige Zahl ist eine Projektnummer, kein Key.
+1. Key kostenlos erstellen: <https://aistudio.google.com/apikey>. Neue Gemini-Keys beginnen mit `AQ.`
+   (ältere mit `AIza`). Eine 12-stellige Zahl ist eine Projektnummer, kein Key.
 2. Auf der Website oben rechts auf **⚙** klicken, Key eintragen, **Speichern**.
 
 **Den Key niemals in den Code oder ins Repository schreiben.** Eine GitHub-Pages-Seite ist öffentlich,
@@ -90,9 +90,14 @@ lokale Tests `http://localhost:8000/*`), *API restrictions* auf die „Generativ
 | Gemini 3.8 Flash (Standard) | ✔ | ✔ |
 | Gemini 3.1 Pro (stärker) | – | ✔ |
 | Google-Suche | – (Ortfinder schaltet sie dann automatisch ab) | ✔ |
+| Anfragen (Gemini 3.8 Flash) | **20 pro Tag**, 5 pro Minute: reicht für etwa 1–2 Analysen am Tag, jede dauert einige Minuten | deutlich mehr; eine Analyse kostet meist nur wenige Cent |
 | Google darf Eingaben zur Produktverbesserung nutzen | **ja** | nein |
 
-Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen.
+Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen. Meldet Google ein
+Anfrage-Limit, wartet Ortfinder automatisch die angegebene Zeit ab und verteilt die weiteren
+Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit erreicht, bricht Ortfinder mit einem
+klaren Hinweis ab. Standardmäßig nutzt eine Analyse höchstens 12 Runden (einstellbar unter ⚙); die KI
+bündelt Zooms und Suchen pro Runde, um mit wenigen Anfragen auszukommen.
 
 Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
 **zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;

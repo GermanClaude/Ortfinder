@@ -124,7 +124,9 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     assert page.is_visible("#settings")
     page.fill("#api-key", "123456789012")
     assert "Projektnummer" in page.text_content("#key-hint")
-    page.fill("#api-key", "AIza" + "x" * 35)
+    page.fill("#api-key", "AIza" + "x" * 35)  # older standard key format
+    assert "aistudio.google.com" in page.text_content("#key-hint")
+    page.fill("#api-key", "AQ.Ab8" + "x" * 45)  # current auth key format
     assert "aistudio.google.com" in page.text_content("#key-hint")
     page.click("#save-settings")
     assert not page.is_visible("#settings")

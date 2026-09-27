@@ -28,7 +28,8 @@ const PRECISION = {
   exakt: "Exakter Standort", strasse: "Straßengenau", stadtteil: "Stadtteil", stadt: "Stadt",
   region: "Region", land: "Land", kontinent: "Kontinent", unbekannt: "Unbekannt",
 };
-const KEY_PATTERN = /^AIza[0-9A-Za-z_-]{35}$/;
+// New AI Studio keys ("auth keys", since May 2026) start with "AQ.", older standard keys with "AIza".
+const KEY_PATTERN = /^(AQ\.[0-9A-Za-z_.-]{20,}|AIza[0-9A-Za-z_-]{35})$/;
 const STORAGE_KEY = "ortfinder.settings.v1";
 
 const state = { controller: null, map: null, layer: null, startedAt: 0, timer: null, zoomCount: 0, running: false };
@@ -57,7 +58,7 @@ const settings = {
   model: MODELS[0].id,
   thinking: "high",
   webSearch: true,
-  maxSteps: 30,
+  maxSteps: 12,
   remember: true,
   ...storageGet(),
 };
@@ -81,8 +82,8 @@ function checkKeyFormat() {
   if (key && !KEY_PATTERN.test(key)) {
     hint.className = "small warn";
     hint.textContent = /^\d+$/.test(key)
-      ? "Das ist eine Zahl – vermutlich eine Google-Cloud-Projektnummer, kein API-Key. Ein Gemini-Key beginnt mit „AIza…“ und hat 39 Zeichen (aistudio.google.com/apikey)."
-      : "Das sieht nicht wie ein Gemini-API-Key aus (normalerweise „AIza…“, 39 Zeichen). Du kannst es trotzdem versuchen.";
+      ? "Das ist eine Zahl – vermutlich eine Google-Cloud-Projektnummer, kein API-Key. Ein Gemini-Key beginnt mit „AQ.“ (oder bei älteren Keys „AIza“), siehe aistudio.google.com/apikey."
+      : "Das sieht nicht wie ein Gemini-API-Key aus (beginnt normalerweise mit „AQ.“ oder „AIza“). Du kannst es trotzdem versuchen.";
   } else {
     hint.className = "small muted";
     hint.replaceChildren(
@@ -98,7 +99,7 @@ function saveSettings() {
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
-  settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 30));
+  settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 12));
   settings.remember = $("#remember-key").checked;
   storageSet({ ...settings, apiKey: settings.remember ? settings.apiKey : "" });
   updateStatusChip();

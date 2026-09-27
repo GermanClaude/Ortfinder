@@ -16,7 +16,7 @@ function fakeGemini(responses) {
   const requests = [];
   const fetchImpl = async (url, init) => {
     assert.equal(url, API_URL);
-    requests.push({ headers: init.headers, body: JSON.parse(init.body) });
+    requests.push({ at: Date.now(), headers: init.headers, body: JSON.parse(init.body) });
     const next = responses.shift();
     return typeof next === "function" ? next() : json(200, next);
   };
@@ -69,7 +69,7 @@ test("full loop: zoom + geocode, then submit", async () => {
   assert.deepEqual(first.body.tools.at(-1), { type: "google_search" });
   assert.equal(first.body.input.length, 1);
   assert.equal(first.body.input[0].type, "user_input");
-  assert.equal(first.body.input[0].content[0].text, "Wo ist das?");
+  assert.match(first.body.input[0].content[0].text, /^Wo ist das\?\n\nBudget: höchstens 6 Runden/);
 
   // Stateless: second request carries full history, model steps echoed verbatim.
   const history = requests[1].body.input;
@@ -101,13 +101,68 @@ test("google search unavailable: retries once without it", async () => {
   assert.ok(events.some(([t, d]) => t === "warning" && /Google-Suche/.test(d.message)));
 });
 
-test("rate limit is retried with the server's delay", async () => {
-  const { run, requests } = setup([
-    () => json(429, { error: { code: 429, message: "Resource exhausted", status: "RESOURCE_EXHAUSTED", details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "0.01s" }] } }),
+test("free tier: quota error caused by Google Search switches search off", async () => {
+  // Real response observed with a free-tier key when google_search is in the tools.
+  const { run, requests, events } = setup([
+    () => json(429, { error: { message: "You exceeded your current quota, please check your plan and billing details.", code: "too_many_requests" } }),
     interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
   ]);
   await run();
   assert.equal(requests.length, 2);
+  assert.ok(!requests[1].body.tools.some((t) => t.type === "google_search"));
+  assert.ok(events.some(([t, d]) => t === "warning" && /Google-Suche/.test(d.message)));
+});
+
+test("rate limit is retried with the server's delay", async () => {
+  const { run, requests } = setup([
+    () => json(429, { error: { code: 429, message: "Resource exhausted", status: "RESOURCE_EXHAUSTED", details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "0.01s" }] } }),
+    interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
+  ], { webSearch: false });
+  await run();
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0].body, requests[1].body);
+});
+
+test("free-tier RPM limit: waits the announced time, then paces further requests", async () => {
+  // Shape of the real Interactions API error for a free-tier key (limit lowered to keep the test fast).
+  const limit = "Rate limit exceeded for model gemini-3.8-flash (limit: 100 requests per minute on Free Tier). Please retry in 0.01s or upgrade your tier.";
+  const { run, requests, events } = setup([
+    () => json(429, { error: { message: limit, code: "too_many_requests" } }),
+    interaction([call("c1", "geocode", { query: "x" })]),
+    interaction([call("c2", "submit_result", VALID_SUBMISSION)]),
+  ], { webSearch: false });
+  await run();
+  assert.equal(requests.length, 3);
+  const retryGap = requests[1].at - requests[0].at;
+  assert.ok(retryGap >= 1000 && retryGap < 1900, `retry after announced 0.01 s + 1 s margin, not the 2 s default (${retryGap} ms)`);
+  const pacedGap = requests[2].at - requests[1].at;
+  assert.ok(pacedGap >= 1050, `requests paced to 60 s / 100 + 0.5 s (${pacedGap} ms)`);
+  assert.ok(events.some(([t, d]) => t === "status" && /100 Anfragen pro Minute/.test(d.message)));
+});
+
+test("daily free-tier limit stops immediately with a clear message", async () => {
+  // Real message observed with a free-tier key after 20 requests.
+  const daily = "Rate limit exceeded for model gemini-3.8-flash (limit: 20 requests per day on Free Tier). Please retry in 58s or upgrade your tier at https://ai.dev/rate-limit.";
+  const { run, requests } = setup([() => json(429, { error: { message: daily, code: "too_many_requests" } })]);
+  await assert.rejects(run(), (err) => err.code === "DAILY_LIMIT" && /Tageslimit.*20 Anfragen pro Tag/.test(err.message));
+  assert.equal(requests.length, 1, "no retries, and search is not blamed");
+});
+
+test("the model is told its round budget", async () => {
+  const { run, requests } = setup([interaction([call("c1", "submit_result", VALID_SUBMISSION)])], { maxSteps: 7 });
+  await run();
+  assert.match(requests[0].body.input[0].content[0].text, /höchstens 7 Runden/);
+});
+
+test("dropped connections are retried", async () => {
+  const { run, requests } = setup([
+    () => { throw new TypeError("Failed to fetch"); },
+    interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
+  ], { webSearch: false });
+  const started = Date.now();
+  await run();
+  assert.equal(requests.length, 2);
+  assert.ok(Date.now() - started >= 1900);
 });
 
 test("invalid API key gives a clear German error", async () => {

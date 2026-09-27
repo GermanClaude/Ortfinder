@@ -12,14 +12,16 @@ export const MODELS = [
 ];
 const MAX_NUDGES = 2;
 const MAX_RETRIES = 3;
+const MAX_RATE_LIMIT_RETRIES = 6;
 
 export class GeminiError extends Error {
-  constructor(message, { status = 0, code = "", retryable = false, retryAfterMs = 0 } = {}) {
+  constructor(message, { status = 0, code = "", retryable = false, retryAfterMs = 0, requestsPerMinute = 0 } = {}) {
     super(message);
     this.status = status;
     this.code = code;
     this.retryable = retryable;
     this.retryAfterMs = retryAfterMs;
+    this.requestsPerMinute = requestsPerMinute;
   }
 }
 
@@ -37,14 +39,27 @@ function describeHttpError(status, body) {
   const message = err.message || `HTTP ${status}`;
   const reasons = (err.details || []).map((d) => d.reason).filter(Boolean);
   const retryInfo = (err.details || []).find((d) => d.retryDelay);
-  const retryAfterMs = retryInfo ? parseFloat(retryInfo.retryDelay) * 1000 || 0 : 0;
+  // The Interactions API puts the hints into the message: "limit: 5 requests per minute … retry in 48s".
+  const retryMatch = message.match(/retry in ([\d.]+)\s*s/i);
+  const retryAfterMs = retryInfo ? parseFloat(retryInfo.retryDelay) * 1000 || 0 : retryMatch ? parseFloat(retryMatch[1]) * 1000 : 0;
+  const rpmMatch = message.match(/limit:\s*(\d+)\s*requests? per minute/i);
   if (reasons.includes("API_KEY_INVALID") || /api key not valid/i.test(message)) {
     return new GeminiError("Der Gemini-API-Key ist ungültig. Einen neuen Key gibt es unter aistudio.google.com/apikey.", { status, code: "API_KEY_INVALID" });
   }
   if (status === 403) return new GeminiError(`Kein Zugriff: ${message}`, { status, code: err.status });
   if (status === 404) return new GeminiError(`Modell nicht gefunden oder nicht freigeschaltet: ${message}`, { status, code: err.status });
+  const perDay = message.match(/limit:\s*(\d+)\s*requests? per day/i);
+  if (status === 429 && perDay) {
+    // Waiting doesn't help here; the quota resets daily (free tier: 20 requests per day).
+    return new GeminiError(
+      `Tageslimit des Gemini-Tarifs erreicht (${perDay[1]} Anfragen pro Tag). Morgen erneut versuchen oder in Google AI Studio den bezahlten Tarif aktivieren.`,
+      { status, code: "DAILY_LIMIT" },
+    );
+  }
   if (status === 429) {
-    return new GeminiError(`Kontingent/Rate-Limit erreicht: ${message}`, { status, code: err.status, retryable: true, retryAfterMs });
+    return new GeminiError(`Kontingent/Rate-Limit erreicht: ${message}`, {
+      status, code: err.status || err.code, retryable: true, retryAfterMs, requestsPerMinute: rpmMatch ? Number(rpmMatch[1]) : 0,
+    });
   }
   if (status >= 500) return new GeminiError(`Gemini-Serverfehler (HTTP ${status}): ${message}`, { status, code: err.status, retryable: true });
   return new GeminiError(`Anfrage abgelehnt (HTTP ${status}): ${message}`, { status, code: err.status });
@@ -78,7 +93,7 @@ export function preview(result) {
 }
 
 export class GeminiAgent {
-  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "high", webSearch = true, maxSteps = 30, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
+  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "high", webSearch = true, maxSteps = 12, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
     this.apiKey = apiKey;
     this.model = model;
     this.thinkingLevel = thinkingLevel;
@@ -88,6 +103,15 @@ export class GeminiAgent {
     this.emit = emit;
     this.signal = signal;
     this.usage = { requests: 0, input_tokens: 0, output_tokens: 0, thought_tokens: 0, cached_tokens: 0 };
+    this.minIntervalMs = 0; // raised when Google reports a requests-per-minute limit (free tier: 5/min)
+    this.lastRequestAt = 0;
+  }
+
+  async pace() {
+    const wait = this.lastRequestAt + this.minIntervalMs - Date.now();
+    if (wait > 1000) this.emit("status", { message: `Tarif-Limit: warte ${Math.ceil(wait / 1000)} s bis zur nächsten Anfrage …` });
+    if (wait > 0) await sleep(wait, this.signal);
+    this.lastRequestAt = Date.now();
   }
 
   async request(input) {
@@ -99,6 +123,7 @@ export class GeminiAgent {
       generation_config: { thinking_level: this.thinkingLevel, thinking_summaries: "auto" },
     };
     for (let attempt = 0; ; attempt++) {
+      await this.pace();
       let resp;
       try {
         resp = await this.fetch(API_URL, {
@@ -109,7 +134,13 @@ export class GeminiAgent {
         });
       } catch (err) {
         if (err.name === "AbortError") throw err;
-        throw new GeminiError("Keine Verbindung zur Gemini API.", { retryable: false });
+        // Dropped connections (mobile networks, long thinking turns) are usually transient.
+        if (attempt < MAX_RETRIES) {
+          this.emit("status", { message: `Verbindung zu Gemini unterbrochen – neuer Versuch in ${2 * 2 ** attempt} s …` });
+          await sleep(2000 * 2 ** attempt, this.signal);
+          continue;
+        }
+        throw new GeminiError(`Keine Verbindung zur Gemini API (${err.message || err.name}).`);
       }
       if (resp.ok) {
         this.usage.requests += 1;
@@ -117,16 +148,21 @@ export class GeminiAgent {
       }
       const payload = await resp.json().catch(() => ({}));
       const err = describeHttpError(resp.status, payload);
-      if (this.webSearch && looksLikeSearchProblem(err) && err.code !== "API_KEY_INVALID") {
-        // Google Search grounding is not available on every tier; continue without it.
+      // Google Search grounding is not part of the free tier. Depending on the case Google reports that as
+      // a search/grounding error or simply as 429 "exceeded your current quota", so both switch it off.
+      if (this.webSearch && (looksLikeSearchProblem(err) || err.status === 429) && !["API_KEY_INVALID", "DAILY_LIMIT"].includes(err.code)) {
         this.webSearch = false;
         this.emit("warning", { message: "Google-Suche ist mit diesem Key/Tarif nicht verfügbar – weiter ohne Websuche." });
         continue;
       }
-      if (err.retryable && attempt < MAX_RETRIES) {
-        const wait = Math.min(err.retryAfterMs || 2000 * 2 ** attempt, 60000);
-        this.emit("status", { message: `${err.message.split(":")[0]} – neuer Versuch in ${Math.round(wait / 1000)} s …` });
+      if (err.requestsPerMinute) this.minIntervalMs = Math.ceil(60000 / err.requestsPerMinute) + 500;
+      const maxRetries = err.status === 429 ? MAX_RATE_LIMIT_RETRIES : MAX_RETRIES;
+      if (err.retryable && attempt < maxRetries) {
+        const wait = Math.min(err.retryAfterMs ? err.retryAfterMs + 1000 : 2000 * 2 ** attempt, 90000);
+        const why = err.requestsPerMinute ? `Tarif erlaubt ${err.requestsPerMinute} Anfragen pro Minute` : err.message.split(":")[0];
+        this.emit("status", { message: `${why} – neuer Versuch in ${Math.round(wait / 1000)} s …` });
         await sleep(wait, this.signal);
+        this.lastRequestAt = 0; // the wait above already covered the pacing interval
         continue;
       }
       throw err;
@@ -164,7 +200,10 @@ export class GeminiAgent {
    * @param {import('./tools.js').ToolExecutor} opts.executor
    */
   async run({ intro, images, executor }) {
-    const history = [{ type: "user_input", content: [{ type: "text", text: intro }, ...images] }];
+    const budget =
+      `Budget: höchstens ${this.maxSteps} Runden (jede Antwort von dir ist eine Runde und kostet eine API-Anfrage). ` +
+      "Bündle deshalb alle Zooms und Kartenabfragen, die du gerade brauchst, parallel in EINER Antwort.";
+    const history = [{ type: "user_input", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...images] }];
     let nudges = 0;
 
     for (let step = 1; step <= this.maxSteps; step++) {

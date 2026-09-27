@@ -48,6 +48,10 @@ Standpunkt einzugrenzen.
 
 5. Abgeben mit \`submit_result\`, sobald weitere Suche die Antwort nicht mehr wesentlich verbessert.
 
+Effizienz: Jede deiner Antworten ist eine kostenpflichtige Runde mit begrenztem Budget. Rufe in jeder Runde \
+ALLE Werkzeuge auf, die du gerade sinnvoll brauchst – z.B. fünf Zooms und zwei Ortssuchen gleichzeitig – statt \
+einzeln nacheinander.
+
 ## Regeln
 
 - Personen: Identifiziere niemals, WER eine Person ist, und nenne keine Namen von Privatpersonen. Ziehe keine \
@@ -59,4 +63,4 @@ einen großen Radius an – erfinde keine Präzision.
 bestätigt). Bei nur regionaler Sicherheit: Mittelpunkt der Region mit passendem Radius.
 - \`box\` bei Hinweisen: Position im Bild in 0–1-Koordinaten [x_min, y_min, x_max, y_max], damit die Oberfläche \
 sie markieren kann.
-- Alle Texte in \`submit_result\` auf Deutsch.`;
+- Schreibe alle Texte auf Deutsch – die Notizen zwischen den Werkzeugaufrufen und alles in \`submit_result\`.`;
