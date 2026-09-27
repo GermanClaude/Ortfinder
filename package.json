@@ -1,0 +1,9 @@
+{
+  "name": "ortfinder-web",
+  "private": true,
+  "type": "module",
+  "description": "Ortfinder web app (docs/) - tests only, no build step",
+  "scripts": {
+    "test": "node --test tests/js/*.test.mjs"
+  }
+}
