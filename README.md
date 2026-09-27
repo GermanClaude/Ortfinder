@@ -4,31 +4,39 @@
 Du gibst ein beliebiges Foto hinein, und das Programm versucht so genau wie möglich
 herauszufinden, wo es entstanden ist, bis hin zur Straße oder zum Standpunkt.
 
+Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs)) und läuft direkt auf
+**GitHub Pages**, ganz ohne Server. Die KI-Analyse übernimmt **Google Gemini**.
+
 ![Oberfläche (Demo-Lauf)](docs/screenshot.png)
 
 ## Wie es funktioniert
 
-Ortfinder kombiniert drei Stufen:
+1. **Metadaten (EXIF).** Viele Originalfotos von Handys (auch iPhone-HEIC) enthalten GPS-Koordinaten.
+   Sind sie vorhanden, ist der Ort exakt bekannt. Aufnahmezeit und Kamera werden ebenfalls ausgelesen.
+2. **KI-Bildanalyse mit Werkzeugen.** Gemini untersucht das Bild wie ein GeoGuessr-Profi bzw.
+   OSINT-Analyst und geht dabei systematisch alle Hinweise durch:
+   - **Schrift & Sprache:** Sonderzeichen, Wörter, Telefonvorwahlen, Postleitzahlen, Domains, Währung
+   - **Verkehrszeichen:** Form, Farbe, Schriftart, Ortsschilder, Wegweiser, Straßennamensschilder, Ampeln
+   - **regionale Schilder:** Läden, Gemeinden, Behörden, Vereine, Werbe- und Wahlplakate, Haltestellen
+   - **Straße & Fahrzeuge:** Fahrseite, Markierungen, Leitpfosten, Kennzeichen, Automarken, Busse, Taxis
+   - **Infrastruktur & Architektur:** Strommasten, Briefkästen, Hydranten, Laternen, Dächer, Fenster, Baustil
+   - **Menschen (nur als Kontext):** Kleidung, Trachten, Uniformen, Trikots, Schriftzüge
+   - **Gegenstände:** Produkte, Logos, Steckdosen, Schalter, Heizkörper, Möbel, Zeitschriften
+   - **Natur:** Pflanzen, Bäume, Feldfrüchte, Boden, Berge, Tiere, Klima, Jahreszeit
+   - **Sonne & Schatten:** Himmelsrichtung, Halbkugel, Tageszeit
 
-1. **Metadaten (EXIF).** Viele Originalfotos von Handys enthalten GPS-Koordinaten. Sind sie
-   vorhanden, ist der Ort exakt bekannt. Ortfinder liest außerdem Aufnahmezeit und Kamera aus.
-2. **KI-Bildanalyse mit Werkzeugen.** Ein Claude-Modell (Standard: `claude-opus-5`) untersucht das
-   Bild wie ein GeoGuessr-Profi bzw. OSINT-Analyst und kann dabei selbstständig
+   Dafür kann die KI selbstständig
    - **hineinzoomen** (`zoom_image`): Ausschnitte aus dem Original in voller Auflösung, vergrößert und
-     auf Wunsch geschärft. So werden auch winzige Details lesbar: Schilder, Kennzeichen, Logos,
-     Hausnummern, Steckdosen, der Blick aus einem Fenster;
-   - **in OpenStreetMap suchen** (`geocode`, `reverse_geocode`): Gibt es die Bäckerei mit diesem
-     Namen wirklich in dieser Straße?
-   - **Merkmals-Kombinationen abfragen** (`overpass_query`): z.B. „Bushaltestelle X im Umkreis von
-     3 km um Straße Y“;
-   - **im Web suchen** (Websuche von Claude): Firmen, Vereine, Wahrzeichen, Veranstaltungen;
-   - **den Sonnenstand berechnen** (`sun_position`): Schattenrichtung und -länge für Kandidatenorte
-     prüfen, wenn die Aufnahmezeit bekannt ist.
+     auf Wunsch geschärft. So werden auch winzige Details lesbar;
+   - **in OpenStreetMap suchen** (`geocode`, `reverse_geocode`): Gibt es die Bäckerei mit diesem Namen
+     wirklich in dieser Straße?
+   - **Merkmals-Kombinationen abfragen** (`overpass_query`): z.B. „Bushaltestelle X im Umkreis von 3 km
+     um Straße Y“;
+   - **mit Google suchen** (Google-Suche von Gemini, im bezahlten Tarif);
+   - **den Sonnenstand berechnen** (`sun_position`), um Schatten gegen Kandidatenorte zu prüfen.
 
-   Das Modell sammelt Hinweise (Sprache, Schrift, Straßenmarkierungen, Architektur, Vegetation,
-   Strommasten, Kennzeichen …), bildet Hypothesen vom Kontinent bis zur Straße, **überprüft sie mit
-   echten Kartendaten** und gibt am Ende ein strukturiertes Ergebnis ab: bester Tipp mit Koordinaten,
-   Unsicherheitsradius und Konfidenz, Alternativen, alle Hinweise (im Bild markiert) und gelesene Texte.
+   Am Ende steht ein strukturiertes Ergebnis: bester Tipp mit Koordinaten, Unsicherheitsradius und
+   Konfidenz, Alternativen, alle Hinweise (im Bild markiert), gelesene Texte und die Überprüfung.
 3. **Blindtest.** Hat das Bild GPS-Daten, bekommt die KI diese *nicht* zu sehen. Am Ende zeigt
    Ortfinder, wie weit die reine Bildanalyse vom echten Ort entfernt lag. Das eignet sich gut zum
    Vorführen.
@@ -45,97 +53,90 @@ Ortsinformation enthalten (weiße Wand, Nahaufnahme einer Blume).
 | Landschaft/Stadt ohne Text, aber mit typischer Architektur und Vegetation | meist Land, oft Region |
 | Innenraum, Baum vor neutralem Hintergrund, Nahaufnahme | eher Land oder Region, manchmal gar nichts |
 
-Ortfinder gibt deshalb immer einen **Unsicherheitsradius** und eine **Konfidenz** an, statt
-Präzision vorzutäuschen.
-
-Tipp: WhatsApp, Instagram & Co. entfernen die GPS-Daten. Für den Wow-Effekt am besten
+Ortfinder gibt deshalb immer einen **Unsicherheitsradius** und eine **Konfidenz** an, statt Präzision
+vorzutäuschen. Tipp: WhatsApp, Instagram & Co. entfernen die GPS-Daten. Für den Wow-Effekt am besten
 Originaldateien direkt vom Handy verwenden.
 
-## Installation
+## Auf GitHub Pages veröffentlichen
 
-Voraussetzungen: Python 3.10 oder neuer und ein
-[Anthropic API-Key](https://console.anthropic.com/). Ohne Key funktioniert nur die
-Metadaten-Auswertung.
+1. Im Repository auf GitHub: **Settings → Pages**.
+2. Bei **Build and deployment → Source** „**Deploy from a branch**“ wählen.
+3. Branch `main` (bzw. den Branch mit diesem Code) und Ordner **`/docs`** auswählen → **Save**.
+4. Nach ca. einer Minute ist die Seite erreichbar unter
+   **https://germanclaude.github.io/Ortfinder/**.
 
-```bash
-git clone https://github.com/germanclaude/ortfinder.git
-cd ortfinder
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env               # Windows: copy .env.example .env
-# dann in .env den ANTHROPIC_API_KEY eintragen
-```
+Lokal ausprobieren geht auch: `python -m http.server -d docs 8000` und dann <http://localhost:8000>
+öffnen. Die Seite muss über `http(s)://` geladen werden; ein Doppelklick auf `index.html` reicht wegen
+der JavaScript-Module nicht.
 
-## Benutzung
+## Gemini-API-Key
 
-### Weboberfläche
+1. Key kostenlos erstellen: <https://aistudio.google.com/apikey>. Ein Gemini-Key beginnt mit `AIza…`
+   und hat 39 Zeichen. Eine 12-stellige Zahl ist eine Projektnummer, kein Key.
+2. Auf der Website oben rechts auf **⚙** klicken, Key eintragen, **Speichern**.
 
-```bash
-python -m ortfinder --web
-```
+**Den Key niemals in den Code oder ins Repository schreiben.** Eine GitHub-Pages-Seite ist öffentlich,
+und Bots durchsuchen GitHub gezielt nach Keys. Ortfinder speichert den Key deshalb nur im
+`localStorage` deines Browsers und schickt ihn ausschließlich direkt an Google.
 
-Dann <http://127.0.0.1:8000> öffnen und ein Bild hineinziehen, mit **Strg+V** einfügen oder
-auswählen (JPEG, PNG, WebP, HEIC). Du siehst live, wohin die KI zoomt, was sie sucht und wie sie
-eingrenzt. Am Ende erscheinen Karte, Ergebnis und die im Bild markierten Hinweise (mit der Maus über
-einen Hinweis fahren, dann wird er im Bild hervorgehoben).
+Empfehlung: In der [Google Cloud Console](https://console.cloud.google.com/apis/credentials) den Key
+einschränken: *Application restrictions → Websites* auf `https://germanclaude.github.io/*` (und für
+lokale Tests `http://localhost:8000/*`), *API restrictions* auf die „Generative Language API“.
 
-### Kommandozeile
+### Tarife
 
-```bash
-python -m ortfinder urlaubsfoto.jpg            # Zwischenschritte + Zusammenfassung
-python -m ortfinder urlaubsfoto.jpg --json     # komplettes Ergebnis als JSON
-python -m ortfinder urlaubsfoto.jpg --only-metadata
-python -m ortfinder urlaubsfoto.jpg --effort max --no-web-search
-```
-
-## Einstellungen (`.env`)
-
-| Variable | Standard | Bedeutung |
+| | Kostenloser Tarif | Bezahlter Tarif |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | – | API-Key (Pflicht für die Bildanalyse) |
-| `ORTFINDER_MODEL` | `claude-opus-5` | Claude-Modell |
-| `ORTFINDER_EFFORT` | `high` | Denkaufwand: `low`, `medium`, `high`, `xhigh`, `max` |
-| `ORTFINDER_MAX_STEPS` | `30` | maximale Agenten-Runden pro Bild |
-| `ORTFINDER_WEB_SEARCH` | `1` | Websuche an/aus |
-| `ORTFINDER_WEB_SEARCH_MAX_USES` | `10` | maximale Websuchen pro Bild |
-| `ORTFINDER_CONTACT` | – | Kontakt (E-Mail/URL) für den User-Agent bei OpenStreetMap; bitte setzen, laut Nominatim-Nutzungsrichtlinie |
-| `ORTFINDER_OVERPASS_URL` | drei öffentliche Server | kommagetrennte Overpass-Server, es wird automatisch auf den nächsten ausgewichen |
+| Gemini 3.8 Flash (Standard) | ✔ | ✔ |
+| Gemini 3.1 Pro (stärker) | – | ✔ |
+| Google-Suche | – (Ortfinder schaltet sie dann automatisch ab) | ✔ |
+| Google darf Eingaben zur Produktverbesserung nutzen | **ja** | nein |
 
-**Kosten:** Jede Analyse ruft die kostenpflichtige Anthropic API mehrfach auf (typisch 5–20 Runden,
-jeder Zoom ist ein weiteres Bild). Die bisherigen Runden werden per Prompt-Caching günstig
-wiederverwendet. Websuchen kosten extra. `ORTFINDER_EFFORT=medium` und weniger `MAX_STEPS`
-machen es günstiger. Die tatsächlichen Token-Zahlen stehen nach jeder Analyse unter dem Ergebnis.
+Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen.
 
-Falls das Modell eine Anfrage ablehnt, springt automatisch ein von Anthropic empfohlenes
-Ersatzmodell ein (Server-seitiger Fallback, `fallbacks: "default"`).
+Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
+**zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;
+dafür wird der Verlauf bei jeder Runde vollständig mitgeschickt.
 
 ## Verantwortungsvoller Umgang
 
 Ortfinder soll zeigen, wie viel ein einzelnes Foto verrät, auch um bewusster mit eigenen Bildern
 umzugehen. Bitte nur eigene Bilder oder Bilder mit Einverständnis der Abgebildeten analysieren und
-das Programm nicht nutzen, um Personen aufzuspüren. Die KI ist angewiesen, Personen im Bild nicht zu
-identifizieren und sie nur als Kontext (z.B. Kleidung) zu nutzen.
+das Programm nicht nutzen, um Personen aufzuspüren. Die KI ist angewiesen, Personen nicht zu
+identifizieren und keine Schlüsse aus Gesicht, Hautfarbe oder Körpermerkmalen zu ziehen. Menschen
+zählen nur über Kleidung, Uniformen, Beschriftungen und Verhalten als Hinweis.
 
 ## Entwicklung
 
+```
+docs/                 die Website (wird von GitHub Pages ausgeliefert)
+  index.html
+  css/style.css
+  js/app.js           Oberfläche und Ablauf
+  js/agent.js         Gemini-Agent (Interactions API, Werkzeug-Schleife, Fehlerbehandlung)
+  js/tools.js         Werkzeuge + Ergebnis-Schema und -Prüfung
+  js/prompt.js        Anweisungen an die KI
+  js/imaging.js       Bild laden (inkl. HEIC), Zoom-Ausschnitte, Schärfen, Raster
+  js/metadata.js      EXIF/GPS auslesen
+  js/geo.js           OpenStreetMap (Nominatim/Overpass), Entfernungen, Sonnenstand
+  vendor/             Leaflet, exifr, heic2any (mit Lizenzen), kein CDN nötig
+tests/js/             Unit-Tests der Website (Node)
+tests/test_web_e2e.py Browser-Test der Website (Playwright, Gemini/OSM simuliert)
+ortfinder/            ältere lokale Python-Version (mit Claude statt Gemini), siehe unten
+```
+
+Tests (alle ohne API-Key und ohne Internet):
+
 ```bash
+npm test                                   # Website-Logik (Node ≥ 20)
 pip install -r requirements-dev.txt
-python -m pytest
+python -m playwright install chromium      # einmalig, für den Browser-Test
+python -m pytest                           # Python-Version + Browser-Test der Website
 ```
 
-Die Tests laufen ohne API-Key und ohne Internet (Modell und OpenStreetMap werden simuliert; ein Test
-prüft zusätzlich über das echte Anthropic-SDK, was tatsächlich gesendet würde).
+### Lokale Python-Version (optional)
 
-```
-ortfinder/
-  agent.py      Pipeline + Agenten-Schleife (Claude API, Tool-Aufrufe, Ergebnis)
-  tools.py      Werkzeuge (Zoom, Geocoding, Overpass, Sonnenstand, Ergebnis-Schema)
-  prompts.py    System-Prompt
-  imaging.py    Bild laden (inkl. HEIC), drehen, zoomen, Raster
-  metadata.py   EXIF/GPS auslesen
-  geo.py        OpenStreetMap-Client, Entfernungen, Sonnenstand
-  server.py     Weboberfläche (FastAPI, Live-Updates per Server-Sent Events)
-  static/       Frontend (HTML/CSS/JS, Leaflet-Karte)
-tests/
-```
+Im Ordner `ortfinder/` liegt zusätzlich eine lokale Variante mit Python-Server und Kommandozeile, die
+Anthropic Claude statt Gemini verwendet (`pip install -r requirements.txt`,
+`ANTHROPIC_API_KEY` in `.env`, dann `python -m ortfinder --web` oder `python -m ortfinder bild.jpg`).
+Für GitHub Pages wird sie nicht gebraucht.
