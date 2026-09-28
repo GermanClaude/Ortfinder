@@ -1,0 +1,4 @@
+# Stored byte-for-byte: GitHub Pages serves the file as it is in the repository,
+# and cmd.exe needs CRLF line endings for reliable labels/goto.
+*.bat -text
+*.sh text eol=lf

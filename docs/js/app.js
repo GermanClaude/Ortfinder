@@ -5,10 +5,12 @@ import { OSMClient, haversineKm, viewCone } from "./geo.js";
 import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
 import { renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
+import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
 import { Terrain } from "./terrain.js";
+import qrcode from "../vendor/qrcode.mjs";
 import { ToolExecutor } from "./tools.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -161,8 +163,14 @@ function storageSet(value) {
 }
 
 const settings = {
-  provider: "puter", // "puter": free, no key (user signs in at Puter) · "gemini": own Gemini API key
+  // "puter": free, no key (user signs in at Puter) · "gemini": own Gemini API key ·
+  // "ollama": open model on the user's own PC (unlimited; phones reach it through a tunnel)
+  provider: "puter",
   puterModel: PUTER_MODELS[0].id,
+  ollamaUrl: OLLAMA_DEFAULT_URL,
+  ollamaModel: OLLAMA_DEFAULT_MODEL,
+  ollamaCtx: 32768,
+  tunnelUrl: "",
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -190,6 +198,11 @@ function fillSettingsForm() {
   $("#web-search").checked = settings.webSearch;
   $("#max-steps").value = settings.maxSteps;
   $("#remember-key").checked = settings.remember;
+  $("#ollama-url").value = settings.ollamaUrl;
+  fillOllamaModels([{ name: settings.ollamaModel, usable: true }]);
+  $("#ollama-ctx").value = String(settings.ollamaCtx);
+  $("#tunnel-url").value = settings.tunnelUrl;
+  renderPhoneQr();
   checkKeyFormat();
 }
 
@@ -226,18 +239,111 @@ function saveKey() {
 function applyProvider(provider) {
   $("#settings").dataset.provider = provider;
   $("#puter-note").hidden = provider !== "puter";
+  const note = $("#ollama-note");
+  note.hidden = provider !== "ollama";
+  note.textContent = `Die KI läuft auf deinem PC (${settings.ollamaModel} über ${settings.ollamaUrl}) – unbegrenzt und kostenlos. ` +
+    "Der PC muss eingeschaltet sein und das Ortfinder-Startskript laufen.";
   showKeyBar(provider === "gemini" && !settings.apiKey);
+}
+
+// ---------- own PC (Ollama) ----------
+
+function fillOllamaModels(models) {
+  const select = $("#ollama-model");
+  const usable = models.filter((m) => m.usable);
+  const names = usable.map((m) => m.name);
+  const options = usable.map((m) => el("option", { value: m.name }, `${m.name}${m.params ? ` (${m.params}` : ""}${m.sizeGb ? `, ${m.sizeGb} GB)` : m.params ? ")" : ""}`));
+  // Keep the saved choice selectable even before the PC was asked which models it has.
+  if (!names.includes(settings.ollamaModel)) options.unshift(el("option", { value: settings.ollamaModel }, settings.ollamaModel));
+  select.replaceChildren(...options);
+  select.value = names.includes(settings.ollamaModel) || !names.length ? settings.ollamaModel : names[0];
+}
+
+function ollamaStatus(text, kind = "") {
+  const status = $("#ollama-status");
+  status.className = `small ${kind === "ok" ? "status-ok" : kind === "bad" ? "status-bad" : "muted"}`;
+  status.textContent = text;
+}
+
+/** Ask the PC which models it has and whether Ortfinder may use them. */
+async function checkOllama() {
+  const url = normalizeOllamaUrl($("#ollama-url").value);
+  $("#ollama-url").value = url;
+  ollamaStatus(`Verbinde mit ${url} …`);
+  try {
+    const models = await listOllamaModels(url);
+    const usable = models.filter((m) => m.usable);
+    fillOllamaModels(models);
+    if (usable.length) {
+      ollamaStatus(`✔ Verbunden. ${usable.length} passende(s) Modell(e) gefunden.`, "ok");
+    } else {
+      ollamaStatus(
+        `Verbunden, aber kein Modell mit Bild- und Werkzeug-Unterstützung installiert${models.length ? ` (vorhanden: ${models.map((m) => m.name).join(", ")})` : ""}. ` +
+        `Am PC ausführen: ollama pull ${OLLAMA_DEFAULT_MODEL}`, "bad");
+    }
+    return usable.length > 0;
+  } catch (err) {
+    ollamaStatus(err.message, "bad");
+    $("#ollama-help").open = true;
+    return false;
+  }
+}
+
+function phoneLink(tunnel = settings.tunnelUrl, model = settings.ollamaModel) {
+  return `${location.origin}${location.pathname}#ki=${encodeURIComponent(tunnel)}&modell=${encodeURIComponent(model)}`;
+}
+
+/** QR code that opens Ortfinder on the phone, already connected to this PC through the tunnel. */
+function renderPhoneQr() {
+  const box = $("#phone-qr");
+  const tunnel = $("#tunnel-url").value.trim();
+  if (!/^https:\/\/[^/\s]+/i.test(tunnel)) {
+    box.hidden = true;
+    return;
+  }
+  const link = phoneLink(normalizeOllamaUrl(tunnel), $("#ollama-model").value || settings.ollamaModel);
+  const qr = qrcode(0, "M");
+  qr.addData(link);
+  qr.make();
+  box.replaceChildren(
+    el("strong", { class: "small" }, "Mit der Handy-Kamera scannen:"),
+    el("img", { src: qr.createDataURL(6, 2), alt: "QR-Code für das Handy" }),
+    el("a", { href: link, target: "_blank", rel: "noopener" }, link),
+  );
+  box.hidden = false;
+}
+
+/**
+ * Links from the start script or the QR code carry the connection: #ki=<address>&modell=<model>
+ * (&handy=<tunnel> when the PC opens it, to show the QR code right away).
+ */
+function applyLinkSettings() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const ki = params.get("ki");
+  if (!ki) return;
+  settings.provider = "ollama";
+  settings.ollamaUrl = normalizeOllamaUrl(ki);
+  if (params.get("modell")) settings.ollamaModel = params.get("modell");
+  if (params.get("handy")) settings.tunnelUrl = normalizeOllamaUrl(params.get("handy"));
+  storageSet({ ...settings, apiKey: settings.remember ? settings.apiKey : "" });
+  history.replaceState(null, "", location.pathname + location.search);
+  state.openPhoneQr = Boolean(params.get("handy"));
 }
 
 function saveSettings() {
   settings.provider = $("#provider").value;
   settings.puterModel = $("#puter-model").value;
+  settings.ollamaUrl = normalizeOllamaUrl($("#ollama-url").value);
+  settings.ollamaModel = $("#ollama-model").value || settings.ollamaModel;
+  settings.ollamaCtx = Number($("#ollama-ctx").value) || 32768;
+  settings.tunnelUrl = $("#tunnel-url").value.trim() ? normalizeOllamaUrl($("#tunnel-url").value) : "";
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
   settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 10));
   settings.remember = $("#remember-key").checked;
   persist();
+  applyProvider(settings.provider);
   showSettings(false);
 }
 
@@ -262,6 +368,9 @@ function updateStatusChip() {
   if (settings.provider === "puter") {
     chip.textContent = `⚙ ${settings.puterModel} · kostenlos über Puter`;
     chip.className = "chip ok";
+  } else if (settings.provider === "ollama") {
+    chip.textContent = `⚙ ${settings.ollamaModel} · auf deinem PC, unbegrenzt`;
+    chip.className = "chip ok";
   } else if (settings.apiKey) {
     chip.textContent = `⚙ ${settings.model} · ${settings.webSearch ? "mit Google-Suche" : "ohne Websuche"}`;
     chip.className = "chip ok";
@@ -274,7 +383,20 @@ function updateStatusChip() {
 function setupSettings() {
   fillSettingsForm();
   updateStatusChip();
-  $("#provider").addEventListener("change", () => applyProvider($("#provider").value));
+  $("#provider").addEventListener("change", () => {
+    applyProvider($("#provider").value);
+    if ($("#provider").value === "ollama") checkOllama();
+  });
+  $("#ollama-check").addEventListener("click", checkOllama);
+  $("#tunnel-url").addEventListener("input", renderPhoneQr);
+  $("#ollama-model").addEventListener("change", renderPhoneQr);
+  if (state.openPhoneQr) {
+    // Opened by the start script on the PC: show the QR code for the phone right away.
+    showSettings(true);
+    $("#phone-help").open = true;
+    $("#phone-help").scrollIntoView({ block: "center" });
+    checkOllama();
+  }
   $("#settings-toggle").addEventListener("click", () => showSettings($("#settings").hidden));
   $("#save-settings").addEventListener("click", saveSettings);
   $("#save-key").addEventListener("click", saveKey);
@@ -397,10 +519,14 @@ function buildIntro(image, metadata) {
   return parts.join("\n\n");
 }
 
+const modelName = (cfg) => (cfg.provider === "puter" ? cfg.puterModel : cfg.provider === "ollama" ? cfg.ollamaModel : cfg.model);
+const modelLabel = (cfg) => `${modelName(cfg)}${cfg.provider === "puter" ? " (Puter)" : cfg.provider === "ollama" ? " (eigener PC)" : ""}`;
+
 /** Settings a run depends on; saved with it, so a resumed run continues with the same AI. */
 const runConfig = () => ({
   provider: settings.provider, puterModel: settings.puterModel, model: settings.model, thinking: settings.thinking,
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
+  ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx,
 });
 
 // Plain JSON copy: what AI services return may carry helper functions that IndexedDB cannot store.
@@ -436,7 +562,7 @@ async function analyze(file, resumed = null) {
   const releaseLock = holdLock(() => { ownsSavedRun = false; });
   const cfg = resumed?.config ?? runConfig();
   // Every event of a run is kept, so a run can be inspected, replayed (see runDemo) or resumed.
-  const run = { started: new Date(state.startedAt).toISOString(), model: cfg.provider === "puter" ? cfg.puterModel : cfg.model, events: [] };
+  const run = { started: new Date(state.startedAt).toISOString(), model: modelLabel(cfg), events: [] };
   state.run = run;
   window.ortfinderLastRun = run;
   const emit = (type, data) => {
@@ -486,12 +612,13 @@ async function analyze(file, resumed = null) {
     let analysis = null;
     let usage = null;
     const puter = cfg.provider === "puter";
-    if (cfg.useAI && !puter && !settings.apiKey) {
+    const ollama = cfg.provider === "ollama";
+    if (cfg.useAI && cfg.provider === "gemini" && !settings.apiKey) {
       emit("warning", { message: "Für die KI-Bildanalyse mit Gemini fehlt noch der API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet. Tipp: Unter ⚙ „Puter“ wählen – kostenlos und ohne Key." });
       showKeyBar(true, true);
     } else if (cfg.useAI) {
-      const modelName = puter ? cfg.puterModel : cfg.model;
-      if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName}${puter ? " über Puter" : ""} …` });
+      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : "";
+      if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName(cfg)}${where} …` });
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
       const executor = new ToolExecutor({
         zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance),
@@ -510,7 +637,9 @@ async function analyze(file, resumed = null) {
       const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden() };
       const agent = puter
         ? new PuterAgent({ model: cfg.puterModel, ...common })
-        : new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
+        : ollama
+          ? new OllamaAgent({ baseUrl: cfg.ollamaUrl, model: cfg.ollamaModel, numCtx: cfg.ollamaCtx, ...common })
+          : new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
         images: resumed?.agentState ? [] : firstImages(bitmap, ov),
@@ -524,7 +653,7 @@ async function analyze(file, resumed = null) {
     if (exifFov) metadata.fov_deg = exifFov;
     if (exifFov && analysis?.view) analysis.view = { ...analysis.view, fov_deg: exifFov, fov_source: "exif" };
     const result = assembleResult({
-      metadata, exifLocation, analysis, usage, model: puter ? `${cfg.puterModel} (Puter)` : cfg.model,
+      metadata, exifLocation, analysis, usage, model: modelLabel(cfg),
       seconds: Math.round((Date.now() - state.startedAt) / 100) / 10,
     });
     result.aspect = state.aspect;
@@ -1098,6 +1227,7 @@ async function detectDemo() {
   }
 }
 
+applyLinkSettings();
 setupSettings();
 setupDropzone();
 detectDemo();

@@ -534,3 +534,85 @@ def test_result_in_the_background_is_announced(browser, site_url, tmp_path):
     assert page.title() == "Ortfinder"
     assert errors == []
     context.close()
+
+
+def _ndjson(message: dict) -> str:
+    lines = [{"message": {"role": "assistant", "content": message.get("content", "")}, "done": False}]
+    if message.get("tool_calls"):
+        lines.append({"message": {"role": "assistant", "content": "", "tool_calls": message["tool_calls"]}, "done": False})
+    lines.append({"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop", "prompt_eval_count": 4000, "eval_count": 150})
+    return "\n".join(json.dumps(line) for line in lines) + "\n"
+
+
+def test_own_pc_ollama_provider_and_phone_link(browser, site_url, tmp_path):
+    """Third provider: an open model on the user's PC (Ollama), reachable from the phone through a tunnel."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    chats: list[dict] = []
+    script = [
+        {"content": "Ich prüfe das Schild.", "tool_calls": [
+            {"id": "c1", "function": {"name": "zoom_image", "arguments": {"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "purpose": "Straßenschild lesen"}}},
+            {"id": "c2", "function": {"name": "mark_hypothesis", "arguments": {"label": "Südbaden", "camera_lat": 47.99, "camera_lon": 7.85, "radius_km": 30}}},
+        ]},
+        {"tool_calls": [{"id": "c3", "function": {"name": "submit_result", "arguments": SUBMISSION}}]},
+    ]
+    cors = {"Access-Control-Allow-Origin": "*"}
+
+    def ollama(route):
+        url = route.request.url
+        if url.endswith("/api/tags"):
+            route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"models": [
+                {"name": "gemma4:12b", "size": 7_600_000_000, "details": {"parameter_size": "12B"}, "capabilities": ["completion", "vision", "tools"]},
+                {"name": "llava:7b", "size": 4_700_000_000, "details": {"parameter_size": "7B"}, "capabilities": ["completion", "vision"]},
+            ]}))
+        elif url.endswith("/api/chat"):
+            chats.append(json.loads(route.request.post_data))
+            route.fulfill(status=200, content_type="application/x-ndjson", headers=cors, body=_ndjson(script.pop(0)))
+        else:
+            route.fulfill(status=404, headers=cors, body="")
+
+    page.route("http://localhost:11434/**", ollama)
+    page.route("https://brave-lemon-river.trycloudflare.com/**", ollama)
+
+    # The start script opens Ortfinder on the PC with the connection (and the tunnel for the phone).
+    page.goto(site_url + "#ki=http://localhost:11434&modell=gemma4:12b&handy=https://brave-lemon-river.trycloudflare.com")
+    page.wait_for_selector("#phone-qr img", timeout=10000)
+    assert "#ki=" not in page.url, "the connection data is removed from the address bar"
+    assert page.is_visible("#settings") and page.eval_on_selector("#phone-help", "d => d.open")
+    assert page.input_value("#provider") == "ollama"
+    assert "gemma4:12b · auf deinem PC" in page.text_content("#settings-toggle")
+    page.wait_for_function("document.querySelector('#ollama-status').textContent.includes('Verbunden')", timeout=10000)
+    options = page.eval_on_selector_all("#ollama-model option", "os => os.map(o => o.value)")
+    assert options == ["gemma4:12b"], options  # llava cannot use tools
+    phone_link = page.get_attribute("#phone-qr a", "href")
+    assert phone_link.endswith("#ki=https%3A%2F%2Fbrave-lemon-river.trycloudflare.com&modell=gemma4%3A12b")
+    page.click("#save-settings")
+
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector(".answer", timeout=30000)
+    assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
+    assert "gemma4:12b (eigener PC)" in page.text_content("#result")
+    assert len(chats) == 2
+    assert chats[0]["model"] == "gemma4:12b" and chats[0]["options"] == {"num_ctx": 32768} and chats[0]["stream"] is True
+    # 1600 px photo: overview + grid (detail tiles only come with larger photos).
+    assert [m["role"] for m in chats[0]["messages"]] == ["system", "user"]
+    assert len(chats[0]["messages"][1]["images"]) == 2
+    assert chats[1]["messages"][-1]["images"], "the zoom crop is sent back as an image"
+    assert "Zwischenstand: Südbaden" in page.text_content("#log")
+
+    # The phone opens the QR link: it talks to the PC through the tunnel.
+    phone = context.new_page()
+    phone.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(phone, [])
+    phone.route("https://brave-lemon-river.trycloudflare.com/**", ollama)
+    phone.goto(phone_link)
+    phone.wait_for_selector("#ollama-note", state="visible")
+    assert "https://brave-lemon-river.trycloudflare.com" in phone.text_content("#ollama-note")
+    assert not phone.is_visible("#settings")
+    assert errors == []
+    context.close()
