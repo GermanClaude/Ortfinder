@@ -93,7 +93,7 @@ export function preview(result) {
 }
 
 export class GeminiAgent {
-  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 8, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
+  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
     this.apiKey = apiKey;
     this.model = model;
     this.thinkingLevel = thinkingLevel;

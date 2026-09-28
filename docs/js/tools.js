@@ -74,6 +74,71 @@ export const FUNCTION_TOOLS = [
   },
   {
     type: "function",
+    name: "map_view",
+    description:
+      "Zeigt dir ein Luftbild (satellit) oder eine Detailkarte (karte) rund um einen Punkt – mit rotem Fadenkreuz in der " +
+      "Mitte, Maßstab und Nordpfeil (Norden ist oben). Zum FEINORTEN: Gebäudeanordnung, Dachformen/-farben, Bäume, " +
+      "Plätze, Kreuzungen und Straßenverlauf mit dem Foto vergleichen und so den genauen Standpunkt finden. " +
+      "zoom 17 ≈ 600 m Bildbreite, 18 ≈ 300 m, 19 ≈ 150 m. Mit view_bearing_deg/view_fov_deg wird das Sichtfeld " +
+      "der Kamera als Keil eingezeichnet – so prüfst du, welche Gebäude im Bild liegen müssten.",
+    parameters: obj({
+      lat: { type: "number" },
+      lon: { type: "number" },
+      zoom: { type: "integer", description: "15-19" },
+      layer: { type: "string", enum: ["satellit", "karte"] },
+      view_bearing_deg: { type: "number", description: "Optional: Blickrichtung der Kamera (0 = Nord, 90 = Ost)" },
+      view_fov_deg: { type: "number", description: "Optional: horizontaler Bildwinkel in Grad" },
+      purpose: { type: "string", description: "Was du vergleichen willst" },
+    }, ["lat", "lon", "zoom", "layer"]),
+  },
+  {
+    type: "function",
+    name: "render_view",
+    description:
+      "3D-NACHBAU: Rendert, was eine Kamera an diesem Standpunkt sehen müsste – aus OpenStreetMap-Gebäuden " +
+      "(Blöcke mit echter bzw. geschätzter Höhe), Straßen, Bäumen und einem Geländemodell mit Bergsilhouette, im " +
+      "Seitenverhältnis des Fotos, mit Kompassskala oben. Vergleiche mit dem Foto: Gebäudekanten und -lücken, " +
+      "Dachlinien, Straßenflucht, Horizont/Bergkamm. Passt es nicht, Standpunkt (±10–30 m) oder Blick (±5–10°) " +
+      "ändern und erneut rendern – mehrere Varianten in EINER Runde parallel. Grenzen: keine Fenster/Fassaden-" +
+      "details, Dachformen flach, Gebäudehöhen teils geschätzt.",
+    parameters: obj({
+      lat: { type: "number", description: "Standpunkt der Kamera" },
+      lon: { type: "number" },
+      bearing_deg: { type: "number", description: "Blickrichtung (Bildmitte), 0 = Nord, 90 = Ost" },
+      fov_deg: { type: "number", description: "horizontaler Bildwinkel in Grad (EXIF-Wert nutzen, falls angegeben)" },
+      eye_height_m: { type: "number", description: "Kamerahöhe über Boden: 1.6 zu Fuß, 3–30 aus Fenster/Turm, 50–120 Drohne" },
+      pitch_deg: { type: "number", description: "Neigung: 0 = waagrecht, negativ = nach unten" },
+      purpose: { type: "string", description: "Was du prüfen willst" },
+    }, ["lat", "lon", "bearing_deg", "fov_deg"]),
+  },
+  {
+    type: "function",
+    name: "nearby_features",
+    description:
+      "Listet, was in OpenStreetMap im Umkreis eines Punktes verzeichnet ist (Geschäfte, Haltestellen, Ampeln, " +
+      "Zebrastreifen, Kirchen, Denkmäler, Straßennamen …) – jeweils mit Entfernung in Metern und Richtung ab dem Punkt. " +
+      "Ideal, um einen Kandidaten-Standpunkt zu prüfen: Passt die Anordnung zu dem, was im Foto zu sehen ist?",
+    parameters: obj({
+      lat: { type: "number" },
+      lon: { type: "number" },
+      radius_m: { type: "integer", description: "20-1000, meist 100-250" },
+    }, ["lat", "lon"]),
+  },
+  {
+    type: "function",
+    name: "street_geometry",
+    description:
+      "Liefert den genauen Verlauf einer Straße (Punkte, Richtung jedes Abschnitts in Grad) nahe einem Punkt und den " +
+      "nächstgelegenen Straßenpunkt. Nutze es, um Blickrichtung und Standpunkt auf den tatsächlichen Straßenverlauf abzustimmen.",
+    parameters: obj({
+      name: { type: "string", description: "Straßenname genau wie in OSM, z.B. 'Hauptstraße'" },
+      lat: { type: "number" },
+      lon: { type: "number" },
+      radius_m: { type: "integer", description: "Suchradius, Standard 1500" },
+    }, ["name", "lat", "lon"]),
+  },
+  {
+    type: "function",
     name: "sun_position",
     description:
       "Berechnet Sonnenstand (Azimut ab Norden im Uhrzeigersinn, Höhe) für Ort und UTC-Zeit, inkl. Schattenrichtung und " +
@@ -132,9 +197,11 @@ export const FUNCTION_TOOLS = [
       }),
       view: obj({
         bearing_deg: { type: "number", description: "Blickrichtung der Kamera, Grad ab Norden im Uhrzeigersinn" },
-        fov_deg: { type: "number", description: "Geschätzter Bildwinkel (Handy ca. 65, Weitwinkel 90, Zoom 20)" },
+        fov_deg: { type: "number", description: "Horizontaler Bildwinkel (EXIF-Wert, sonst Schätzung: Handy ca. 65, Weitwinkel 90, Zoom 20)" },
         distance_m: { type: "number", description: "Entfernung Kamera → Motiv in Metern" },
-      }),
+        eye_height_m: { type: "number", description: "Kamerahöhe über Boden (1.6 zu Fuß, mehr aus Fenster/Turm/Drohne)" },
+        pitch_deg: { type: "number", description: "Neigung der Kamera, 0 = waagrecht, negativ = nach unten" },
+      }, ["bearing_deg", "fov_deg", "distance_m"]),
       candidates: {
         type: "array",
         description: "Alternative Standpunkte (ohne camera), absteigend nach Wahrscheinlichkeit, max. 5",
@@ -239,7 +306,13 @@ export function validateSubmission(inp) {
   if (bearing != null) {
     const fov = Number.isFinite(v.fov_deg) ? Math.min(Math.max(v.fov_deg, 5), 180) : 65;
     const dist = Number.isFinite(v.distance_m) && v.distance_m > 0 ? v.distance_m : derivedKm != null && derivedKm > 0.005 ? derivedKm * 1000 : 150;
-    result.view = { bearing_deg: Math.round(bearing * 10) / 10, fov_deg: Math.round(fov), distance_m: Math.round(Math.min(dist, 200000)) };
+    result.view = {
+      bearing_deg: Math.round(bearing * 10) / 10,
+      fov_deg: Math.round(fov * 10) / 10,
+      distance_m: Math.round(Math.min(dist, 200000)),
+      eye_height_m: Number.isFinite(v.eye_height_m) ? Math.round(Math.min(Math.max(v.eye_height_m, 0.3), 3000) * 10) / 10 : 1.6,
+      pitch_deg: Number.isFinite(v.pitch_deg) ? Math.round(Math.min(Math.max(v.pitch_deg, -90), 60) * 10) / 10 : 0,
+    };
   }
   for (const clue of Array.isArray(inp.clues) ? inp.clues : []) {
     if (!clue || typeof clue !== "object") continue;
@@ -270,12 +343,18 @@ function parseUtc(value) {
  */
 export class ToolExecutor {
   // Stateless requests resend every crop, so the total is capped to stay well below request size limits.
-  constructor({ zoom, osm, emit = () => {}, maxZooms = 24 }) {
+  constructor({ zoom, mapView, renderView, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12, maxRenders = 12 }) {
     this.zoom = zoom;
+    this.mapView = mapView;
+    this.renderView = renderView;
     this.osm = osm;
     this.emit = emit;
     this.maxZooms = maxZooms;
+    this.maxMapViews = maxMapViews;
+    this.maxRenders = maxRenders;
     this.zoomCount = 0;
+    this.mapViewCount = 0;
+    this.renderCount = 0;
   }
 
   /** Returns { result, isError } where result is a string or an array of text/image content blocks. */
@@ -324,6 +403,65 @@ export class ToolExecutor {
 
   async tool_overpass_query(args) {
     return JSON.stringify(await this.osm.overpass(str(args, "query")));
+  }
+
+  async tool_map_view(args) {
+    if (!this.mapView) throw new ToolInputError("Luftbilder sind in dieser Umgebung nicht verfügbar");
+    if (this.mapViewCount >= this.maxMapViews) throw new ToolInputError(`Limit für Luftbilder (${this.maxMapViews}) erreicht`);
+    const lat = num(args, "lat", -85, 85);
+    const lon = num(args, "lon", -180, 180);
+    const zoom = Math.round(Math.min(Math.max(Number.isFinite(args.zoom) ? args.zoom : 18, 15), 19));
+    const layer = args.layer === "karte" ? "karte" : "satellit";
+    const opts = { lat, lon, zoom, layer };
+    if (Number.isFinite(args.view_bearing_deg)) {
+      opts.view = { bearing_deg: args.view_bearing_deg, fov_deg: Number.isFinite(args.view_fov_deg) ? Math.min(Math.max(args.view_fov_deg, 5), 150) : 60 };
+    }
+    const view = await this.mapView(opts);
+    this.mapViewCount += 1;
+    this.emit("mapview", { lat, lon, zoom, layer, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    const info =
+      `${layer === "satellit" ? "Luftbild" : "Karte"} um ${lat.toFixed(6)}, ${lon.toFixed(6)} (rotes Kreuz), Zoom ${zoom}: ` +
+      `${Math.round(view.spanM)} m breit, ${view.metersPerPixel.toFixed(2)} m pro Pixel, Norden oben.` +
+      (opts.view ? ` Oranger Keil = Sichtfeld ${Math.round(opts.view.bearing_deg)}° ± ${Math.round(opts.view.fov_deg / 2)}°.` : "");
+    return [{ type: "text", text: info }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
+  }
+
+  async tool_render_view(args) {
+    if (!this.renderView) throw new ToolInputError("Der 3D-Nachbau ist in dieser Umgebung nicht verfügbar");
+    if (this.renderCount >= this.maxRenders) throw new ToolInputError(`Limit für 3D-Nachbauten (${this.maxRenders}) erreicht`);
+    const opts = {
+      lat: num(args, "lat", -85, 85),
+      lon: num(args, "lon", -180, 180),
+      bearingDeg: ((num(args, "bearing_deg") % 360) + 360) % 360,
+      fovDeg: Math.min(Math.max(num(args, "fov_deg"), 5), 150),
+      eyeHeight: Number.isFinite(args.eye_height_m) ? Math.min(Math.max(args.eye_height_m, 0.3), 3000) : 1.6,
+      pitchDeg: Number.isFinite(args.pitch_deg) ? Math.min(Math.max(args.pitch_deg, -89), 60) : 0,
+    };
+    const view = await this.renderView(opts);
+    this.renderCount += 1;
+    this.emit("render", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    const s = view.stats;
+    const parts = [
+      `3D-Nachbau vom Standpunkt ${opts.lat.toFixed(6)}, ${opts.lon.toFixed(6)} (Augenhöhe ${opts.eyeHeight} m), ` +
+        `Blick ${Math.round(opts.bearingDeg)}°, Bildfeld ${Math.round(opts.fovDeg)}°, Neigung ${opts.pitchDeg}°.`,
+      s.buildings ? `${s.buildings} Gebäude sichtbar (Höhe bei ${s.heights_from_osm_pct} % aus OSM-Angaben, sonst geschätzt).` : "Keine Gebäude in OSM im Blickfeld.",
+      s.building_ahead_m != null ? `Erstes Gebäude in Blickrichtung (Bildmitte): ${s.building_ahead_m} m.` : "",
+      s.terrain ? `Geländemodell: Boden am Standpunkt ${s.ground_m} m ü. NN, Horizont bis ${Math.round(s.skyline_distance_m / 100) / 10} km.` : "Geländemodell nicht verfügbar – Boden flach angenommen.",
+      view.note || "",
+    ];
+    return [{ type: "text", text: parts.filter(Boolean).join(" ") }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
+  }
+
+  async tool_nearby_features(args) {
+    const radius = Number.isFinite(args.radius_m) ? args.radius_m : 150;
+    const result = await this.osm.nearbyFeatures(num(args, "lat", -90, 90), num(args, "lon", -180, 180), radius);
+    return JSON.stringify(result);
+  }
+
+  async tool_street_geometry(args) {
+    const radius = Number.isFinite(args.radius_m) ? args.radius_m : 1500;
+    const result = await this.osm.streetGeometry(str(args, "name"), num(args, "lat", -90, 90), num(args, "lon", -180, 180), radius);
+    return JSON.stringify(result);
   }
 
   async tool_mark_hypothesis(args) {

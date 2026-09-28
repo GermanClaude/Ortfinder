@@ -95,6 +95,48 @@ function pickTags(tags) {
   return picked;
 }
 
+const FEATURE_KEYS = ["amenity", "shop", "tourism", "historic", "public_transport", "leisure", "highway", "traffic_sign", "building", "man_made", "office", "craft"];
+
+/** Compact description of an OSM feature: what it is, its name and the few tags that help identify it. */
+export function describeFeature(tags) {
+  const key = FEATURE_KEYS.find((k) => tags[k]);
+  const out = { type: key ? `${key}=${tags[key]}` : "sonstiges" };
+  if (tags.name) out.name = tags.name;
+  for (const k of ["brand", "operator", "addr:street", "addr:housenumber", "ref", "route_ref", "denomination"]) {
+    if (tags[k]) out[k] = tags[k];
+  }
+  return out;
+}
+
+/** Closest point of a polyline ([[lat, lon], ...]) to (lat, lon), with the local street direction there. */
+export function closestPointOnLine(points, lat, lon) {
+  // Local flat projection in metres is accurate enough over a few kilometres.
+  const kx = 111320 * Math.cos(rad(lat));
+  const ky = 110540;
+  const toXY = ([a, b]) => [(b - lon) * kx, (a - lat) * ky];
+  let best = { distance_m: Infinity };
+  for (let i = 0; i < points.length - 1; i++) {
+    const [x1, y1] = toXY(points[i]);
+    const [x2, y2] = toXY(points[i + 1]);
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.min(1, Math.max(0, -(x1 * dx + y1 * dy) / len2)) : 0;
+    const px = x1 + t * dx;
+    const py = y1 + t * dy;
+    const d = Math.hypot(px, py);
+    if (d < best.distance_m) {
+      best = {
+        distance_m: Math.round(d),
+        lat: round(lat + py / ky, 6),
+        lon: round(lon + px / kx, 6),
+        street_bearing_deg: Math.round(bearingDeg(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])),
+      };
+    }
+  }
+  return best;
+}
+
 export function summarizeOverpass(data) {
   const summary = [];
   for (const el of data.elements || []) {
@@ -186,6 +228,57 @@ export class OSMClient {
   }
 
   async overpass(query) {
+    return summarizeOverpass(await this.overpassRaw(query));
+  }
+
+  /** Named places and street furniture around a point, with distance and direction from it. */
+  async nearbyFeatures(lat, lon, radiusM = 150) {
+    const r = Math.round(Math.min(Math.max(radiusM, 20), 1000));
+    const at = `(around:${r},${lat.toFixed(6)},${lon.toFixed(6)})`;
+    const data = await this.overpassRaw(
+      `[out:json][timeout:25];(nwr${at}["name"];nwr${at}["amenity"];nwr${at}["shop"];nwr${at}["tourism"];` +
+        `nwr${at}["historic"];nwr${at}["public_transport"];nwr${at}["leisure"];` +
+        `node${at}["highway"~"^(bus_stop|traffic_signals|crossing|stop|give_way|street_lamp)$"];node${at}["traffic_sign"];);out center tags 150;`,
+    );
+    const features = [];
+    for (const el of data.elements || []) {
+      const fLat = el.lat ?? el.center?.lat;
+      const fLon = el.lon ?? el.center?.lon;
+      if (fLat == null || !el.tags) continue;
+      features.push({ ...describeFeature(el.tags), distance_m: Math.round(haversineKm(lat, lon, fLat, fLon) * 1000), bearing_deg: Math.round(bearingDeg(lat, lon, fLat, fLon)), lat: round(fLat, 6), lon: round(fLon, 6) });
+    }
+    features.sort((a, b) => a.distance_m - b.distance_m);
+    return { center: { lat, lon }, radius_m: r, total: features.length, features: features.slice(0, 70) };
+  }
+
+  /** Course of a named street near a point: simplified geometry, segment directions, closest point. */
+  async streetGeometry(name, lat, lon, radiusM = 1500) {
+    const r = Math.round(Math.min(Math.max(radiusM, 50), 5000));
+    const safe = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const data = await this.overpassRaw(`[out:json][timeout:25];way["highway"]["name"="${safe}"](around:${r},${lat.toFixed(6)},${lon.toFixed(6)});out geom tags 25;`);
+    const ways = (data.elements || []).filter((el) => Array.isArray(el.geometry) && el.geometry.length > 1);
+    if (!ways.length) return { name, found: false, note: "Keine Straße mit diesem Namen im Umkreis gefunden (Schreibweise prüfen, Radius vergrößern)." };
+    let best = null;
+    const result = ways.map((way) => {
+      const pts = way.geometry.map((g) => [g.lat, g.lon]);
+      const closest = closestPointOnLine(pts, lat, lon);
+      if (!best || closest.distance_m < best.distance_m) best = { ...closest, way_id: way.id };
+      const step = Math.max(1, Math.ceil(pts.length / 20));
+      const simplified = pts.filter((_, i) => i % step === 0 || i === pts.length - 1);
+      return {
+        way_id: way.id,
+        highway: way.tags?.highway,
+        oneway: way.tags?.oneway === "yes" || undefined,
+        lanes: way.tags?.lanes,
+        length_m: Math.round(pts.slice(1).reduce((sum, p, i) => sum + haversineKm(pts[i][0], pts[i][1], p[0], p[1]) * 1000, 0)),
+        points: simplified.map(([a, b]) => [round(a, 6), round(b, 6)]),
+        segment_bearings_deg: simplified.slice(1).map((p, i) => Math.round(bearingDeg(simplified[i][0], simplified[i][1], p[0], p[1]))),
+      };
+    });
+    return { name, found: true, closest_point: best, ways: result.slice(0, 8) };
+  }
+
+  async overpassRaw(query) {
     let q = query.trim();
     if (!q.startsWith("[")) q = "[out:json][timeout:25];" + q;
     const key = "overpass:" + q;
@@ -222,9 +315,8 @@ export class OSMClient {
       } catch {
         throw new OSMError("Overpass lieferte kein JSON - fehlt [out:json]?");
       }
-      const result = summarizeOverpass(data);
-      this.cache.set(key, result);
-      return result;
+      this.cache.set(key, data);
+      return data;
     }
     throw new OSMError(
       `Overpass ist gerade nicht verfügbar oder überlastet (${problems.join(", ")}). ` +

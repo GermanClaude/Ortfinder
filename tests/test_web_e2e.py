@@ -11,6 +11,7 @@ import functools
 import glob
 import io
 import json
+import math
 import os
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +55,8 @@ GEMINI_SCRIPT = [
         {"type": "function_call", "id": "c1", "name": "zoom_image", "arguments": {"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "enhance": True, "purpose": "Straßenschild lesen"}},
         {"type": "function_call", "id": "c2", "name": "geocode", "arguments": {"query": "Bahnhofstraße Freiburg", "country_codes": "de"}},
         {"type": "function_call", "id": "c2b", "name": "mark_hypothesis", "arguments": {"label": "Vermutung: Südbaden", "camera_lat": 47.99, "camera_lon": 7.85, "radius_km": 30}},
+        {"type": "function_call", "id": "c2c", "name": "map_view", "arguments": {"lat": 47.99, "lon": 7.85, "zoom": 18, "layer": "satellit", "purpose": "Kreuzung vergleichen"}},
+        {"type": "function_call", "id": "c2d", "name": "render_view", "arguments": {"lat": 47.99, "lon": 7.85, "bearing_deg": 352, "fov_deg": 65, "purpose": "Straßenflucht prüfen"}},
     ]),
     _interaction([{"type": "function_call", "id": "c3", "name": "submit_result", "arguments": SUBMISSION}]),
 ]
@@ -93,6 +96,52 @@ def browser():
         b.close()
 
 
+def _scene_json() -> dict:
+    """OSM data for a street running north from the camera, lined with houses, a 40 m tower at its end."""
+    lat0, lon0 = 47.99, 7.85
+    ky = 111195.0
+    kx = ky * math.cos(math.radians(lat0))
+
+    def ll(x, y):
+        return {"lat": lat0 + y / ky, "lon": lon0 + x / kx}
+
+    def box(i, x0, y0, x1, y1, tags):
+        return {"type": "way", "id": i, "tags": tags, "geometry": [ll(x0, y0), ll(x1, y0), ll(x1, y1), ll(x0, y1), ll(x0, y0)]}
+
+    elements = []
+    for n, y in enumerate(range(10, 230, 36)):
+        elements.append(box(2 * n + 1, -28, y, -9, y + 28, {"building": "yes", "building:levels": "4"}))
+        elements.append(box(2 * n + 2, 9, y, 28, y + 28, {"building": "yes", "height": "15"}))
+    elements.append(box(100, -45, 270, -29, 286, {"building": "tower", "height": "40", "name": "Martinstor"}))
+    elements.append({"type": "way", "id": 200, "tags": {"highway": "residential"}, "geometry": [ll(0, -20), ll(0, 300)]})
+    elements.append({"type": "node", "id": 300, **ll(-6, 40), "tags": {"natural": "tree"}})
+    return {"elements": elements}
+
+
+def _terrain_png() -> bytes:
+    """A Terrarium tile of flat ground at 278 m: 278 + 32768 = 129·256 + 22."""
+    buf = io.BytesIO()
+    Image.new("RGB", (256, 256), (129, 22, 0)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _mock_scene(page, overpass_queries: list | None = None):
+    """Overpass (buildings) and the elevation tiles for the 3D reconstruction and the visible area."""
+    scene = json.dumps(_scene_json())
+    terrain = _terrain_png()
+
+    def overpass(route):
+        if overpass_queries is not None:
+            overpass_queries.append(route.request.post_data)
+        route.fulfill(status=200, content_type="application/json", headers={"Access-Control-Allow-Origin": "*"}, body=scene)
+
+    page.route("**/api/interpreter", overpass)
+    page.route(
+        "https://s3.amazonaws.com/elevation-tiles-prod/**",
+        lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=terrain),
+    )
+
+
 def _mock_network(page, gemini_bodies: list):
     script = list(GEMINI_SCRIPT)
 
@@ -110,6 +159,12 @@ def _mock_network(page, gemini_bodies: list):
     page.route("https://generativelanguage.googleapis.com/**", gemini)
     page.route("https://nominatim.openstreetmap.org/**", nominatim)
     page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
+    # Aerial tiles need a CORS header, otherwise the canvas cannot be exported for the AI.
+    page.route(
+        "https://server.arcgisonline.com/**",
+        lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=PNG_1X1),
+    )
+    _mock_scene(page)
 
 
 def test_website_end_to_end(browser, site_url, tmp_path):
@@ -148,7 +203,18 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     answers = page.locator(".answer").all_text_contents()
     assert answers == ["Bahnhofstraße, Freiburg", "Martinstor"]  # standpoint and motif
     assert "Blick nach N" in page.text_content("#result")
-    assert page.locator(".zooms figure").count() == 1
+    assert page.locator(".zooms figure").count() == 3  # photo zoom, aerial view, 3D reconstruction
+    assert "Luftbild: Kreuzung vergleichen" in page.text_content(".zooms figure.mapview")
+    assert "3D-Nachbau: Straßenflucht prüfen" in page.text_content(".zooms figure.render")
+    # After the result: exact visible area on the map and the photo/3D overlay in the result card.
+    page.wait_for_selector("#compare-slot .compare img.compare-render", timeout=30000)
+    page.wait_for_function("document.querySelector('#log').textContent.includes('Sichtbereich berechnet')", timeout=30000)
+    log_text = page.text_content("#log")
+    assert "Geländemodell" in log_text and "sichtbar ab" in log_text
+    assert page.locator("#result .compare-slider input").count() == 1
+    if os.environ.get("ORTFINDER_SHOTS"):
+        page.wait_for_timeout(2500)
+        page.screenshot(path=os.path.join(os.environ["ORTFINDER_SHOTS"], "e2e-result.png"), full_page=True)
     assert page.locator(".box.clue").count() == 2
     # Map: camera and subject pins plus view cone / areas.
     assert page.locator(".pin-camera").count() == 1 and page.locator(".pin-subject").count() == 1
@@ -168,6 +234,16 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     zoom_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "zoom_image")
     zoom_image = Image.open(io.BytesIO(base64.b64decode(zoom_result["result"][1]["data"])))
     assert max(zoom_image.size) >= 1024  # the crop was upscaled for reading small details
+    map_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "map_view")
+    assert "is_error" not in map_result, map_result["result"]
+    assert "Luftbild um 47.990000, 7.850000" in map_result["result"][0]["text"]
+    assert Image.open(io.BytesIO(base64.b64decode(map_result["result"][1]["data"]))).size == (768, 768)
+    render_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "render_view")
+    assert "is_error" not in render_result, render_result["result"]
+    render_text = render_result["result"][0]["text"]
+    assert "Gebäude sichtbar" in render_text and "Boden am Standpunkt 278 m" in render_text, render_text
+    render_image = Image.open(io.BytesIO(base64.b64decode(render_result["result"][1]["data"])))
+    assert render_image.size == (768, 480)  # same aspect ratio as the 1600×1000 photo
 
     # The key is remembered across reloads (localStorage).
     page.reload()
@@ -242,10 +318,11 @@ def test_example_replays_a_recording_without_api_key(browser, site_url, tmp_path
     page.route("**/demo/beispiel.jpg", lambda r: r.fulfill(status=200, content_type="image/jpeg", body=photo.read_bytes()))
     page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
     page.route("https://generativelanguage.googleapis.com/**", lambda r: (gemini_calls.append(r.request.url), r.abort()))
+    _mock_scene(page)
     page.goto(site_url)
     page.wait_for_selector("#demo", state="visible")
     page.click("#demo")
-    assert page.is_visible("#demo-banner")
+    page.wait_for_selector("#demo-banner", state="visible", timeout=10000)  # shown once the recording is loaded
     page.wait_for_selector(".answer", timeout=60000)
     assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
     assert "Tatsächlicher Aufnahmeort: Testort" in page.text_content("#result")
@@ -293,6 +370,7 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     page.route("https://js.puter.com/v2/", lambda r: r.fulfill(status=200, content_type="application/javascript", body=FAKE_PUTER))
     page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
     page.route("https://generativelanguage.googleapis.com/**", lambda r: r.abort())
+    _mock_scene(page)
     page.goto(site_url)
     page.set_input_files("#file", str(street))
     # Not signed in yet: the analysis pauses on a sign-in button (popups need a real click).
@@ -306,7 +384,7 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     assert "Zwischenstand: Südbaden" in page.text_content("#log")
     calls = page.evaluate("window.__puterCalls")
     assert len(calls) == 2
-    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 9}
+    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 13}
     first_user = calls[0]["messages"][1]["content"]
     assert first_user[1]["type"] == "image_url" and first_user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     roles = [m["role"] for m in calls[1]["messages"]]

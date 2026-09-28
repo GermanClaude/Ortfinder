@@ -84,7 +84,7 @@
           </div>
           <div>
             <label for="max-steps">Max. Runden</label>
-            <input id="max-steps" type="number" min="3" max="60" value="8">
+            <input id="max-steps" type="number" min="3" max="60" value="10">
           </div>
           <div class="check-cell">
             <label class="check gemini-only"><input id="web-search" type="checkbox" checked> Google-Suche (nur bezahlter Gemini-Tarif)</label>
@@ -130,7 +130,7 @@
           <div class="card map-card">
             <div class="card-head"><h2>Karte</h2><a id="osm-link" class="small" target="_blank" rel="noopener" hidden>In OpenStreetMap öffnen</a></div>
             <div id="map"></div>
-            <p class="legend small muted">📷 Standpunkt · 🎯 Motiv · <span class="lg-cone"></span> Sichtfeld · <span class="lg-area"></span> Aufnahme-Areal · <span class="lg-hypo"></span> Zwischenstand · <span class="lg-alt"></span> Alternativen</p>
+            <p class="legend small muted">📷 Standpunkt · 🎯 Motiv · <span class="lg-cone"></span> Sichtbereich (berechnet) · <span class="lg-facade"></span> sichtbare Fassaden · <span class="lg-area"></span> Unsicherheit Standpunkt · <span class="lg-hypo"></span> Zwischenstand · <span class="lg-alt"></span> Alternativen</p>
           </div>
           <div class="card">
             <div class="card-head"><h2>Ergebnis</h2></div>
@@ -153,9 +153,11 @@
 
   <footer>
     Ortfinder zeigt, wie viel ein einzelnes Foto über seinen Aufnahmeort verrät. Alles läuft in deinem Browser;
-    Bilder gehen nur an den KI-Dienst (Puter bzw. Google Gemini) und Suchbegriffe an OpenStreetMap.
+    Bilder gehen nur an den KI-Dienst (Puter bzw. Google Gemini); Suchbegriffe und Kartenausschnitte werden bei
+    OpenStreetMap, Esri und AWS (Geländedaten) abgerufen.
     Bitte nur eigene Bilder oder Bilder mit Einverständnis analysieren – nicht, um Personen aufzuspüren.
-    · Karten © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
+    · Karten und 3D-Gebäude © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
+    · Luftbilder: Esri, Maxar, Earthstar Geographics · Gelände: Mapzen Terrain Tiles
   </footer>
 
   <script src="vendor/leaflet/leaflet.js"></script>
