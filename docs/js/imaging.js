@@ -169,3 +169,24 @@ export function zoomCrop(source, box, enhance = false) {
     thumbnail: thumb.toDataURL("image/jpeg", 0.8),
   };
 }
+
+/**
+ * High-resolution 2×2 tiles of a large photo, sent with the first request so small details are
+ * readable without extra zoom rounds. Returns [] when the overview already shows nearly everything.
+ */
+export function detailTiles(source, minSide = 2000) {
+  if (Math.max(source.width, source.height) < minSide) return [];
+  const names = [["oben links", "oben rechts"], ["unten links", "unten rechts"]];
+  const tiles = [];
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 2; col++) {
+      // Slight overlap so objects on the seams stay whole in one tile.
+      const box = [Math.max(0, col * 0.5 - 0.04), Math.max(0, row * 0.5 - 0.04), Math.min(1, col * 0.5 + 0.54), Math.min(1, row * 0.5 + 0.54)];
+      const [left, top, right, bottom] = pixelBox(box, source.width, source.height);
+      const [w, h] = fitSize(right - left, bottom - top, ZOOM_MAX_SIDE);
+      const c = drawScaled(source, left, top, right - left, bottom - top, w, h);
+      tiles.push({ name: names[row][col], box, data: toBase64(c, 0.85) });
+    }
+  }
+  return tiles;
+}

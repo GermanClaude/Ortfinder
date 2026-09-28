@@ -18,12 +18,14 @@ test("normalizeBox clamps and sorts", () => assert.deepEqual(normalizeBox(1.2, 0
 
 test("valid submissions are normalized", () => {
   const raw = structuredClone(VALID_SUBMISSION);
-  raw.best_guess.confidence = 1.7;
+  raw.camera.confidence = 1.7;
   raw.clues[0].box = [0.8, 0.7, 0.75, 0.66];
   raw.clues.push({ category: "erfunden", description: "x", implication: "y", strength: "sehr", box: [1, 2] });
   raw.candidates.push({ name: "kaputt", lat: 200, lon: 0, radius_km: 1, confidence: 0.1 });
   const r = validateSubmission(raw);
-  assert.equal(r.best_guess.confidence, 1);
+  assert.equal(r.camera.confidence, 1);
+  assert.deepEqual(r.subject, { name: "Martinstor", lat: 47.9925, lon: 7.8495, radius_km: 0.05 });
+  assert.deepEqual(r.view, { bearing_deg: 350, fov_deg: 65, distance_m: 280 });
   assert.deepEqual(r.clues[0].box, [0.75, 0.66, 0.8, 0.7]);
   assert.equal(r.clues[1].category, "sonstiges");
   assert.deepEqual(r.clues[1].box, []);
@@ -32,10 +34,10 @@ test("valid submissions are normalized", () => {
 
 for (const [label, mutate] of [
   ["precision", (s) => { s.precision = "ungefähr"; }],
-  ["lat range", (s) => { s.best_guess.lat = 95; }],
-  ["lon type", (s) => { s.best_guess.lon = "7.8"; }],
+  ["lat range", (s) => { s.camera.lat = 95; }],
+  ["lon type", (s) => { s.camera.lon = "7.8"; }],
   ["summary", (s) => { s.summary = " "; }],
-  ["best_guess", (s) => { delete s.best_guess; }],
+  ["camera", (s) => { delete s.camera; }],
 ]) {
   test(`invalid submission is rejected: ${label}`, () => {
     const raw = structuredClone(VALID_SUBMISSION);
@@ -99,4 +101,36 @@ test("zoom limit protects the request size", async () => {
   const second = await ex.run("zoom_image", args);
   assert.equal(second.isError, true);
   assert.match(second.result, /Zoom-Limit/);
+});
+
+test("view direction is derived from camera → subject when the model leaves it out", () => {
+  const raw = structuredClone(VALID_SUBMISSION);
+  raw.view = {};
+  const r = validateSubmission(raw);
+  assert.ok(Math.abs(r.view.bearing_deg - 352.4) < 0.5, `bearing ${r.view.bearing_deg}`);
+  assert.ok(Math.abs(r.view.distance_m - 280) < 3, `distance ${r.view.distance_m}`);
+  assert.equal(r.view.fov_deg, 65);
+  const noSubject = structuredClone(VALID_SUBMISSION);
+  noSubject.subject = { name: "x", lat: "?" };
+  noSubject.view = {};
+  const r2 = validateSubmission(noSubject);
+  assert.equal(r2.subject, null);
+  assert.equal(r2.view, null);
+});
+
+test("mark_hypothesis emits a live map event", async () => {
+  const { ex, events } = executor();
+  const { result, isError } = await ex.run("mark_hypothesis", { label: "Vermutung: Freiburg", camera_lat: 47.99, camera_lon: 7.85, radius_km: 5, subject_lat: 47.9925, subject_lon: 7.8495 });
+  assert.equal(isError, false);
+  assert.match(result, /markiert/);
+  assert.deepEqual(events.at(-1), ["hypothesis", { label: "Vermutung: Freiburg", camera: { lat: 47.99, lon: 7.85 }, radius_km: 5, subject: { lat: 47.9925, lon: 7.8495 } }]);
+  assert.equal((await ex.run("mark_hypothesis", { label: "x", camera_lat: 99, camera_lon: 0, radius_km: 1 })).isError, true);
+});
+
+test("bearing_distance and destination_point are inverse", async () => {
+  const { ex } = executor();
+  const bd = JSON.parse((await ex.run("bearing_distance", { from_lat: 48.0, from_lon: 7.85, to_lat: 48.0, to_lon: 7.86 })).result);
+  assert.ok(Math.abs(bd.bearing_deg - 90) < 0.1 && Math.abs(bd.distance_m - 744) < 5, JSON.stringify(bd));
+  const dp = JSON.parse((await ex.run("destination_point", { lat: 48.0, lon: 7.85, bearing_deg: 90, distance_m: bd.distance_m })).result);
+  assert.ok(Math.abs(dp.lat - 48.0) < 1e-4 && Math.abs(dp.lon - 7.86) < 1e-4, JSON.stringify(dp));
 });

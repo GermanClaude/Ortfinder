@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { OSMClient, OSMError, haversineKm, summarizeOverpass, sunPosition } from "../../docs/js/geo.js";
+import { OSMClient, OSMError, bearingDeg, destinationPoint, haversineKm, summarizeOverpass, sunPosition, viewCone } from "../../docs/js/geo.js";
 
 const near = (actual, expected, tol) => assert.ok(Math.abs(actual - expected) <= tol, `${actual} not within ${tol} of ${expected}`);
 
@@ -79,4 +79,17 @@ test("network failures become OSMError", async () => {
   const osm = new OSMClient({ minIntervalMs: 0, fetchImpl: async () => { throw new TypeError("Failed to fetch"); } });
   await assert.rejects(osm.geocode("x"), /nicht erreichbar/);
   await assert.rejects(osm.overpass("node(1);out;"), /nicht verfügbar/);
+});
+
+test("bearings, destination points and view cones", () => {
+  near(bearingDeg(48, 7.85, 49, 7.85), 0, 0.01);
+  near(bearingDeg(48, 7.85, 48, 7.0), 270, 0.5);
+  const [lat, lon] = destinationPoint(52.52, 13.405, 180, 10);
+  near(haversineKm(52.52, 13.405, lat, lon), 10, 0.001);
+  near(bearingDeg(52.52, 13.405, lat, lon), 180, 0.01);
+  const cone = viewCone(48, 7.85, 90, 60, 1, 6);
+  assert.equal(cone.length, 9);
+  assert.deepEqual(cone[0], [48, 7.85]);
+  near(bearingDeg(48, 7.85, ...cone[1]), 60, 0.1);
+  near(bearingDeg(48, 7.85, ...cone[7]), 120, 0.1);
 });

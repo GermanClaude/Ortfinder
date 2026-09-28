@@ -1,8 +1,8 @@
 // Ortfinder web app: runs entirely in the browser (GitHub Pages friendly).
 
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
-import { OSMClient, haversineKm } from "./geo.js";
-import { decodeImage, gridImage, overview, zoomCrop } from "./imaging.js";
+import { OSMClient, haversineKm, viewCone } from "./geo.js";
+import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
 import { extractMetadata, hintsForModel } from "./metadata.js";
 import { ToolExecutor } from "./tools.js";
 
@@ -32,7 +32,7 @@ const PRECISION = {
 const KEY_PATTERN = /^(AQ\.[0-9A-Za-z_.-]{20,}|AIza[0-9A-Za-z_-]{35})$/;
 const STORAGE_KEY = "ortfinder.settings.v1";
 
-const state = { controller: null, map: null, layer: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null };
+const state = { controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null };
 const osm = new OSMClient();
 
 // ---------- settings (kept in this browser only) ----------
@@ -56,9 +56,9 @@ function storageSet(value) {
 const settings = {
   apiKey: "",
   model: MODELS[0].id,
-  thinking: "high",
+  thinking: "medium",
   webSearch: true,
-  maxSteps: 12,
+  maxSteps: 8,
   remember: true,
   ...storageGet(),
 };
@@ -109,7 +109,7 @@ function saveSettings() {
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
-  settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 12));
+  settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 8));
   settings.remember = $("#remember-key").checked;
   persist();
   showSettings(false);
@@ -200,6 +200,7 @@ function initMap() {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(state.map);
   state.layer = L.featureGroup().addTo(state.map);
+  state.hypoLayer = L.featureGroup().addTo(state.map);
 }
 
 function resetWorkspace() {
@@ -219,9 +220,16 @@ function resetWorkspace() {
   $("#progress").textContent = "";
   $("#osm-link").hidden = true;
   $("#result").replaceChildren(el("div", { class: "pending" }, el("span", { class: "spinner" }), " Analyse läuft …"));
+  $("#clues-card").hidden = true;
+  $("#clue-gallery").replaceChildren();
+  state.imageSource = null;
   initMap();
   state.layer?.clearLayers();
-  if (state.map) setTimeout(() => state.map.invalidateSize(), 50);
+  state.hypoLayer?.clearLayers();
+  if (state.map) {
+    state.map.setView([25, 10], 2); // every analysis starts on the world map and zooms in from there
+    setTimeout(() => state.map.invalidateSize(), 50);
+  }
 }
 
 function buildIntro(image, metadata) {
@@ -272,6 +280,7 @@ async function analyze(file) {
     }
 
     const bitmap = await decodeImage(file);
+    state.imageSource = bitmap;
     const ov = overview(bitmap);
     $("#photo").src = ov.dataUrl;
     metadata.width ??= bitmap.width;
@@ -296,6 +305,10 @@ async function analyze(file) {
         images: [
           { type: "image", mime_type: "image/jpeg", data: ov.data, resolution: "high" },
           { type: "image", mime_type: "image/jpeg", data: grid.data, resolution: "medium" },
+          ...detailTiles(bitmap).flatMap((t) => [
+            { type: "text", text: `Detail-Kachel ${t.name} (x ${t.box[0].toFixed(2)}–${t.box[2].toFixed(2)}, y ${t.box[1].toFixed(2)}–${t.box[3].toFixed(2)}):` },
+            { type: "image", mime_type: "image/jpeg", data: t.data, resolution: "high" },
+          ]),
         ],
         executor,
       }));
@@ -341,7 +354,9 @@ async function runDemo() {
     "Foto: ", el("a", { href: demo.credit.url, target: "_blank", rel: "noopener" }, demo.credit.text), ". ",
     settings.apiKey ? "Lade jetzt dein eigenes Foto hoch." : "Für eigene Fotos oben den Gemini-API-Key eintragen.",
   );
-  $("#photo").src = `demo/${demo.image}`;
+  const photo = $("#photo");
+  photo.src = `demo/${demo.image}`;
+  photo.decode().then(() => { if (state.controller === controller) state.imageSource = photo; }).catch(() => {});
   state.startedAt = Date.now();
   // Replay in about 20 seconds, keeping the order and the original timestamps in the log.
   const total = demo.events.at(-1)?.t || 1;
@@ -360,7 +375,7 @@ async function runDemo() {
 
 const ICONS = {
   status: "•", warning: "⚠", error: "✖", step: "▸", thinking: "💭", note: "📝", zoom: "🔍",
-  tool_call: "🗺", tool_result: "↳", web_search: "🌐", web_results: "↳", metadata: "🏷", exif_location: "📍", result: "✔",
+  tool_call: "🗺", tool_result: "↳", web_search: "🌐", web_results: "↳", metadata: "🏷", exif_location: "📍", result: "✔", hypothesis: "📌",
 };
 
 function log(type, text) {
@@ -402,10 +417,14 @@ function handle(type, data) {
       log("zoom", `Zoom #${data.index}: ${data.purpose || "Detail"}`);
       break;
     case "tool_call":
-      if (data.tool !== "zoom_image") log("tool_call", `${toolLabel(data.tool)}: ${toolInput(data)}`);
+      if (!QUIET_TOOLS.has(data.tool)) log("tool_call", `${toolLabel(data.tool)}: ${toolInput(data)}`);
       break;
     case "tool_result":
-      if (data.tool !== "zoom_image" || data.is_error) log(data.is_error ? "warning" : "tool_result", data.preview);
+      if (!QUIET_TOOLS.has(data.tool) || data.is_error) log(data.is_error ? "warning" : "tool_result", data.preview);
+      break;
+    case "hypothesis":
+      drawHypothesis(data);
+      log("hypothesis", `Zwischenstand: ${data.label} (±${formatKm(data.radius_km)})`);
       break;
     case "web_search":
       log("web_search", `Google-Suche: ${data.query}`);
@@ -423,8 +442,14 @@ function handle(type, data) {
   }
 }
 
+// Tools whose effect is shown elsewhere (zoom gallery, map) instead of as log lines.
+const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis"]);
+
 function toolLabel(name) {
-  return { geocode: "Ortssuche", reverse_geocode: "Adresse zu Koordinaten", overpass_query: "OSM-Abfrage", sun_position: "Sonnenstand" }[name] || name;
+  return {
+    geocode: "Ortssuche", reverse_geocode: "Adresse zu Koordinaten", overpass_query: "OSM-Abfrage", sun_position: "Sonnenstand",
+    bearing_distance: "Richtung/Entfernung", destination_point: "Punkt berechnen",
+  }[name] || name;
 }
 
 function toolInput({ tool, input }) {
@@ -473,12 +498,17 @@ function setOsmLink(lat, lon) {
   a.hidden = false;
 }
 
+const COMPASS = ["N", "NNO", "NO", "ONO", "O", "OSO", "SO", "SSO", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+const compass = (deg) => COMPASS[Math.round(deg / 22.5) % 16];
+
+const pin = (symbol, cls, title) => L.divIcon({ className: `pin ${cls}`, html: `<span title="${escapeHtml(title)}">${symbol}</span>`, iconSize: [34, 34], iconAnchor: [17, 17] });
+
 function addExifMarker(loc) {
   if (!state.layer) return;
-  L.circleMarker([loc.lat, loc.lon], { radius: 9, color: "#fff", weight: 2, fillColor: "#12805c", fillOpacity: 1 })
-    .bindPopup(`<b>GPS aus Metadaten</b><br>${escapeHtml(loc.address || "")}`)
+  L.marker([loc.lat, loc.lon], { icon: pin("📷", "pin-exif", "GPS aus Metadaten"), zIndexOffset: 900 })
+    .bindPopup(`<b>Standpunkt laut GPS (Metadaten)</b><br>${escapeHtml(loc.address || "")}`)
     .addTo(state.layer);
-  state.map.setView([loc.lat, loc.lon], 15);
+  state.map.flyTo([loc.lat, loc.lon], 16, { duration: 1.5 });
   setOsmLink(loc.lat, loc.lon);
 }
 
@@ -486,14 +516,107 @@ function formatKm(km) {
   return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toLocaleString("de-DE", { maximumFractionDigits: 1 })} km`;
 }
 
-function drawLocation(loc, primary) {
-  const color = primary ? "#0b6bcb" : "#8a94a3";
-  if (loc.radius_km > 0.02) {
-    L.circle([loc.lat, loc.lon], { radius: loc.radius_km * 1000, color, weight: 1, fillOpacity: primary ? 0.12 : 0.05 }).addTo(state.layer);
+/** Interim estimate while the AI is still searching: dashed area, faded pins, map follows. */
+function drawHypothesis(h) {
+  if (!state.hypoLayer) return;
+  state.hypoLayer.clearLayers();
+  const area = L.circle([h.camera.lat, h.camera.lon], { radius: h.radius_km * 1000, color: "#7a4cc2", weight: 2, dashArray: "6 6", fillOpacity: 0.06 }).addTo(state.hypoLayer);
+  L.marker([h.camera.lat, h.camera.lon], { icon: pin("📷", "pin-hypo", "Zwischenstand") }).bindTooltip(h.label, { direction: "top", offset: [0, -14] }).addTo(state.hypoLayer);
+  if (h.subject) {
+    L.marker([h.subject.lat, h.subject.lon], { icon: pin("🎯", "pin-hypo", "Motiv (Zwischenstand)") }).addTo(state.hypoLayer);
+    L.polyline([[h.camera.lat, h.camera.lon], [h.subject.lat, h.subject.lon]], { color: "#7a4cc2", weight: 2, dashArray: "4 6" }).addTo(state.hypoLayer);
   }
-  L.circleMarker([loc.lat, loc.lon], { radius: primary ? 9 : 6, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 })
-    .bindPopup(`<b>${escapeHtml(loc.name)}</b><br>${Math.round(loc.confidence * 100)} % · ±${formatKm(loc.radius_km)}`)
-    .addTo(state.layer);
+  state.map.flyToBounds(area.getBounds().pad(0.3), { duration: 1.4, maxZoom: 15 });
+}
+
+/** Final answer: standpoint, motif, view cone, uncertainty area and alternatives. */
+function drawResultMap(a) {
+  state.hypoLayer.clearLayers();
+  const cam = a.camera;
+  const focus = L.featureGroup().addTo(state.layer);
+  for (const c of a.candidates.slice().reverse()) {
+    L.circle([c.lat, c.lon], { radius: c.radius_km * 1000, color: "#8a94a3", weight: 1, fillOpacity: 0.04 }).addTo(state.layer);
+    L.circleMarker([c.lat, c.lon], { radius: 5, color: "#fff", weight: 2, fillColor: "#8a94a3", fillOpacity: 1 })
+      .bindPopup(`<b>Alternative:</b> ${escapeHtml(c.name)}<br>${Math.round(c.confidence * 100)} %`).addTo(state.layer);
+  }
+  L.circle([cam.lat, cam.lon], { radius: Math.max(cam.radius_km, 0.02) * 1000, color: "#0b6bcb", weight: 1.5, fillOpacity: 0.12 })
+    .bindTooltip(`Aufnahme-Areal ±${formatKm(cam.radius_km)}`).addTo(focus);
+  if (a.view) {
+    const coneKm = Math.min(Math.max(a.view.distance_m / 1000, 0.05), 50);
+    L.polygon(viewCone(cam.lat, cam.lon, a.view.bearing_deg, a.view.fov_deg, coneKm), { color: "#e8590c", weight: 1, fillColor: "#ff922b", fillOpacity: 0.25 })
+      .bindTooltip(`Sichtfeld: ${Math.round(a.view.bearing_deg)}° (${compass(a.view.bearing_deg)}), ~${a.view.fov_deg}°`).addTo(focus);
+  }
+  if (a.subject) {
+    if (a.subject.radius_km > 0.02) L.circle([a.subject.lat, a.subject.lon], { radius: a.subject.radius_km * 1000, color: "#e8590c", weight: 1, fillOpacity: 0.08 }).addTo(focus);
+    L.polyline([[cam.lat, cam.lon], [a.subject.lat, a.subject.lon]], { color: "#e8590c", weight: 2 }).addTo(focus);
+    L.marker([a.subject.lat, a.subject.lon], { icon: pin("🎯", "pin-subject", "Motiv"), zIndexOffset: 800 })
+      .bindPopup(`<b>Motiv:</b> ${escapeHtml(a.subject.name)}`).addTo(focus);
+  }
+  L.marker([cam.lat, cam.lon], { icon: pin("📷", "pin-camera", "Standpunkt"), zIndexOffset: 1000 })
+    .bindPopup(`<b>Standpunkt:</b> ${escapeHtml(cam.name)}<br>${Math.round(cam.confidence * 100)} % · ±${formatKm(cam.radius_km)}`).addTo(focus);
+  // Fly in from wherever the map is (world view or last interim estimate).
+  state.map.flyToBounds(focus.getBounds().pad(0.35), { duration: 2.2, maxZoom: 17 });
+}
+
+function clueCrop(source, box) {
+  const w = source.naturalWidth || source.width;
+  const h = source.naturalHeight || source.height;
+  const padX = Math.max((box[2] - box[0]) * 0.2, 0.015);
+  const padY = Math.max((box[3] - box[1]) * 0.2, 0.015);
+  const x0 = Math.max(0, box[0] - padX) * w;
+  const y0 = Math.max(0, box[1] - padY) * h;
+  const sw = Math.max(8, (Math.min(1, box[2] + padX) * w) - x0);
+  const sh = Math.max(8, (Math.min(1, box[3] + padY) * h) - y0);
+  const scale = 360 / Math.max(sw, sh);
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(sw * scale));
+  c.height = Math.max(1, Math.round(sh * scale));
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, x0, y0, sw, sh, 0, 0, c.width, c.height);
+  // Mark the clue itself inside the (slightly larger) crop.
+  ctx.strokeStyle = "#ff4d6d";
+  ctx.lineWidth = 3;
+  ctx.strokeRect((box[0] * w - x0) * scale, (box[1] * h - y0) * scale, (box[2] - box[0]) * w * scale, (box[3] - box[1]) * h * scale);
+  return c.toDataURL("image/jpeg", 0.85);
+}
+
+const CATEGORY_LABELS = {
+  text: "Text", sprache: "Sprache", verkehrszeichen: "Verkehrszeichen", schild: "Schild", strasse: "Straße", kennzeichen: "Kennzeichen",
+  fahrzeug: "Fahrzeug", architektur: "Architektur", infrastruktur: "Infrastruktur", menschen: "Menschen", gegenstand: "Gegenstand",
+  marke: "Marke/Logo", vegetation: "Pflanzen", tiere: "Tiere", landschaft: "Landschaft", klima: "Klima", sonne: "Sonne/Schatten",
+  innenraum: "Innenraum", wahrzeichen: "Wahrzeichen", kultur: "Kultur", symbol: "Symbol", sonstiges: "Sonstiges",
+};
+
+/** One card per clue: crop from the photo, category, what it shows and what it implies. */
+function renderClueGallery(clues) {
+  const gallery = $("#clue-gallery");
+  const overlay = $("#overlay");
+  gallery.replaceChildren();
+  if (!clues.length) return;
+  $("#clues-card").hidden = false;
+  $("#clue-count").textContent = `${clues.length} Hinweise`;
+  clues.forEach((c, i) => {
+    const node = c.box.length === 4 ? addBox(c.box, `clue ${c.strength}`, String(i + 1)) : null;
+    let img = null;
+    if (node && state.imageSource) {
+      try {
+        img = el("img", { src: clueCrop(state.imageSource, c.box), alt: c.description });
+      } catch {
+        img = null;
+      }
+    }
+    gallery.append(el("article", {
+      class: `clue-card ${c.strength}`,
+      onmouseenter: () => { if (node) { overlay.classList.add("focus"); node.classList.add("active"); } },
+      onmouseleave: () => { if (node) { overlay.classList.remove("focus"); node.classList.remove("active"); } },
+    },
+      img || el("div", { class: "clue-noimg" }, CATEGORY_LABELS[c.category] || c.category),
+      el("div", { class: "clue-body" },
+        el("div", { class: "cat" }, el("span", { class: `strength ${c.strength}` }), `${node ? `#${i + 1} · ` : ""}${CATEGORY_LABELS[c.category] || c.category} · ${c.strength}`),
+        el("div", { class: "clue-desc" }, c.description),
+        el("div", { class: "small muted" }, `→ ${c.implication}`))));
+  });
 }
 
 function renderResult(r) {
@@ -505,6 +628,7 @@ function renderResult(r) {
   if (exif) {
     box.append(
       el("div", { class: "badges" }, el("span", { class: "badge exif" }, "GPS aus Metadaten – exakt")),
+      el("p", { class: "label" }, "📷 Standpunkt laut GPS"),
       el("p", { class: "answer" }, exif.address || "GPS-Position gefunden"),
       el("p", { class: "coords" }, `${exif.lat.toFixed(6)}, ${exif.lon.toFixed(6)}`),
     );
@@ -517,40 +641,34 @@ function renderResult(r) {
     return;
   }
 
-  const best = a.best_guess;
+  const cam = a.camera;
   const where = [a.city, a.region, a.country].filter(Boolean).join(", ");
   box.append(...[
     exif ? el("h3", {}, "Ergebnis der Bildanalyse") : null,
     el("div", { class: "badges" },
       el("span", { class: "badge" }, PRECISION[a.precision] || a.precision),
-      el("span", { class: "badge" }, `±${formatKm(best.radius_km)}`)),
-    el("p", { class: "answer" }, best.name),
-    where && where !== best.name ? el("p", { class: "muted" }, where) : null,
-    el("p", { class: "coords" }, `${best.lat.toFixed(6)}, ${best.lon.toFixed(6)}`),
-    el("div", { class: "small muted" }, `Konfidenz ${Math.round(best.confidence * 100)} %`),
-    el("div", { class: "meter" }, el("div", { style: `width:${best.confidence * 100}%` })),
+      el("span", { class: "badge" }, `±${formatKm(cam.radius_km)}`)),
+    where ? el("p", { class: "muted" }, where) : null,
+    el("p", { class: "label" }, "📷 Standpunkt (von hier wurde fotografiert)"),
+    el("p", { class: "answer" }, cam.name),
+    el("p", { class: "coords" }, `${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}`),
+    el("div", { class: "small muted" }, `Konfidenz ${Math.round(cam.confidence * 100)} %`),
+    el("div", { class: "meter" }, el("div", { style: `width:${cam.confidence * 100}%` })),
+    a.subject ? el("p", { class: "label" }, "🎯 Motiv (das ist zu sehen)") : null,
+    a.subject ? el("p", { class: "answer small-answer" }, a.subject.name) : null,
+    a.subject ? el("p", { class: "coords" }, `${a.subject.lat.toFixed(6)}, ${a.subject.lon.toFixed(6)}`) : null,
+    a.view ? el("p", { class: "view" }, `🧭 Blick nach ${compass(a.view.bearing_deg)} (${Math.round(a.view.bearing_deg)}°) · ca. ${formatKm(a.view.distance_m / 1000)} bis zum Motiv · Bildwinkel ~${a.view.fov_deg}°`) : null,
     el("p", { class: "summary" }, a.summary),
   ].filter(Boolean));
 
+  if (r.truth) {
+    const km = haversineKm(r.truth.lat, r.truth.lon, cam.lat, cam.lon);
+    box.append(el("p", { class: "truth" }, `Tatsächlicher Aufnahmeort: ${r.truth.label} – die Analyse lag ${formatKm(km)} daneben.`));
+  }
   if (a.candidates.length) {
     box.append(el("details", {}, el("summary", {}, `Alternativen (${a.candidates.length})`),
       el("ul", { class: "list" }, a.candidates.map((c) =>
         el("li", {}, el("strong", {}, c.name), ` – ${Math.round(c.confidence * 100)} %`, el("div", { class: "small muted" }, c.rationale || ""))))));
-  }
-  if (a.clues.length) {
-    const overlay = $("#overlay");
-    box.append(el("details", { open: true }, el("summary", {}, `Hinweise im Bild (${a.clues.length})`),
-      el("ul", { class: "list" }, a.clues.map((c, i) => {
-        const node = c.box.length === 4 ? addBox(c.box, `clue ${c.strength}`, String(i + 1)) : null;
-        return el("li", {
-          class: "clue-item",
-          onmouseenter: () => { if (node) { overlay.classList.add("focus"); node.classList.add("active"); } },
-          onmouseleave: () => { if (node) { overlay.classList.remove("focus"); node.classList.remove("active"); } },
-        },
-          el("div", { class: "cat" }, el("span", { class: `strength ${c.strength}` }), `${node ? `#${i + 1} · ` : ""}${c.category} · ${c.strength}`),
-          el("div", {}, c.description),
-          el("div", { class: "small muted" }, `→ ${c.implication}`));
-      }))));
   }
   if (a.text_found.length) {
     box.append(el("details", {}, el("summary", {}, `Gelesener Text (${a.text_found.length})`),
@@ -565,10 +683,7 @@ function renderResult(r) {
       `${r.model} · ${u.requests} Anfragen · ${u.input_tokens.toLocaleString("de-DE")} Input- / ${(u.output_tokens + u.thought_tokens).toLocaleString("de-DE")} Output-Tokens · ${r.seconds} s`));
   }
 
-  if (r.truth) {
-    const km = haversineKm(r.truth.lat, r.truth.lon, best.lat, best.lon);
-    box.append(el("p", { class: "truth" }, `Tatsächlicher Aufnahmeort: ${r.truth.label} – die Analyse lag ${formatKm(km)} daneben.`));
-  }
+  renderClueGallery(a.clues);
 
   if (state.layer) {
     if (r.truth) {
@@ -576,11 +691,8 @@ function renderResult(r) {
         .bindPopup(`<b>Tatsächlicher Ort</b><br>${escapeHtml(r.truth.label)}`)
         .addTo(state.layer);
     }
-    a.candidates.slice().reverse().forEach((c) => drawLocation(c, false));
-    drawLocation(best, true);
-    if (!exif) setOsmLink(best.lat, best.lon);
-    const bounds = state.layer.getBounds();
-    if (bounds.isValid()) state.map.fitBounds(bounds.pad(0.2), { maxZoom: 16 });
+    drawResultMap(a);
+    if (!exif) setOsmLink(cam.lat, cam.lon);
   }
 }
 

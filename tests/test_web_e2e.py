@@ -31,7 +31,9 @@ SUBMISSION = {
     "country": "Deutschland",
     "region": "Baden-Württemberg",
     "city": "Freiburg",
-    "best_guess": {"name": "Bahnhofstraße, Freiburg", "lat": 47.99, "lon": 7.85, "radius_km": 0.3, "confidence": 0.8},
+    "camera": {"name": "Bahnhofstraße, Freiburg", "lat": 47.99, "lon": 7.85, "radius_km": 0.3, "confidence": 0.8},
+    "subject": {"name": "Martinstor", "lat": 47.9925, "lon": 7.8495, "radius_km": 0.05},
+    "view": {"bearing_deg": 352, "fov_deg": 65, "distance_m": 280},
     "candidates": [{"name": "Offenburg", "lat": 48.47, "lon": 7.94, "radius_km": 5, "confidence": 0.1, "rationale": "ähnliche Beschilderung"}],
     "clues": [
         {"category": "verkehrszeichen", "description": "Straßenschild „Bahnhofstraße“", "implication": "deutschsprachiger Raum", "strength": "stark", "box": [0.68, 0.63, 0.93, 0.73]},
@@ -51,6 +53,7 @@ GEMINI_SCRIPT = [
         {"type": "thought", "signature": "c2ln", "summary": [{"type": "text", "text": "Schild unten rechts – zoomen."}]},
         {"type": "function_call", "id": "c1", "name": "zoom_image", "arguments": {"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "enhance": True, "purpose": "Straßenschild lesen"}},
         {"type": "function_call", "id": "c2", "name": "geocode", "arguments": {"query": "Bahnhofstraße Freiburg", "country_codes": "de"}},
+        {"type": "function_call", "id": "c2b", "name": "mark_hypothesis", "arguments": {"label": "Vermutung: Südbaden", "camera_lat": 47.99, "camera_lon": 7.85, "radius_km": 30}},
     ]),
     _interaction([{"type": "function_call", "id": "c3", "name": "submit_result", "arguments": SUBMISSION}]),
 ]
@@ -136,12 +139,20 @@ def test_website_end_to_end(browser, site_url, tmp_path):
 
     page.set_input_files("#file", str(street))
     page.wait_for_selector(".answer", timeout=30000)
-    assert page.text_content(".answer") == "Bahnhofstraße, Freiburg"
+    answers = page.locator(".answer").all_text_contents()
+    assert answers == ["Bahnhofstraße, Freiburg", "Martinstor"]  # standpoint and motif
+    assert "Blick nach N" in page.text_content("#result")
     assert page.locator(".zooms figure").count() == 1
     assert page.locator(".box.clue").count() == 2
-    assert page.locator(".leaflet-interactive").count() >= 2
+    # Map: camera and subject pins plus view cone / areas.
+    assert page.locator(".pin-camera").count() == 1 and page.locator(".pin-subject").count() == 1
+    assert page.locator("path.leaflet-interactive").count() >= 3
+    # Clue gallery: one card per clue, with a crop from the photo for located clues.
+    assert page.locator("#clues-card").is_visible()
+    assert page.locator(".clue-card").count() == 2
+    assert page.locator(".clue-card img").first.get_attribute("src").startswith("data:image/jpeg")
     log = page.text_content("#log")
-    assert "Schild unten rechts" in log and "Ortssuche" in log
+    assert "Schild unten rechts" in log and "Ortssuche" in log and "Zwischenstand: Vermutung: Südbaden" in log
 
     first, second = gemini_bodies
     assert first["store"] is False and first["model"] == "gemini-3.8-flash"
@@ -185,7 +196,7 @@ def _synthetic_recording() -> dict:
     thumb = "data:image/png;base64," + base64.b64encode(PNG_1X1).decode()
     result = {"metadata": {"has_exif": False}, "model": "gemini-3.8-flash", "seconds": 42.0, "analysis": SUBMISSION,
               "usage": {"requests": 2, "input_tokens": 6000, "output_tokens": 400, "thought_tokens": 200, "cached_tokens": 0},
-              "final": {"source": "visual_analysis", **SUBMISSION["best_guess"], "precision": "strasse"}}
+              "final": {"source": "visual_analysis", **SUBMISSION["camera"], "precision": "strasse"}}
     return {
         "model": "gemini-3.8-flash", "date": "01.01.2026", "image": "beispiel.jpg",
         "credit": {"text": "Testbild", "url": "https://example.org/"},
@@ -230,8 +241,9 @@ def test_example_replays_a_recording_without_api_key(browser, site_url, tmp_path
     page.click("#demo")
     assert page.is_visible("#demo-banner")
     page.wait_for_selector(".answer", timeout=60000)
-    assert page.text_content(".answer") == "Bahnhofstraße, Freiburg"
+    assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
     assert "Tatsächlicher Aufnahmeort: Testort" in page.text_content("#result")
+    assert page.locator(".clue-card img").count() == 2
     assert page.locator(".zooms figure").count() == 1
     assert "42.0s" in page.text_content("#log")  # original timestamps are kept in the replay
     assert page.evaluate("document.querySelector('#photo').naturalWidth") == 1600
