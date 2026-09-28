@@ -286,19 +286,22 @@ test("solve_camera: checks the points, reports the pose and flags a mismatched p
   ];
   const { result, isError } = await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, eye_height_m: 10, points });
   assert.equal(isError, false);
-  const out = JSON.parse(result);
+  // The top view for the solved pose comes along (saves a round).
+  assert.equal(result[1].type, "image");
+  const out = JSON.parse(result[0].text);
+  assert.match(out.note, /Dazu die Draufsicht mit dieser Pose/);
+  assert.equal(mapCalls[1].top.bearingDeg, 81.42);
+  assert.deepEqual(events.slice(-2).map(([t]) => t), ["solve", "topview"]);
   assert.deepEqual(out.view, { bearing_deg: 81.4, pitch_deg: -4.3, roll_deg: 0.7, fov_deg: 36 });
   assert.equal(out.camera.eye_height_m, 6.2);
   assert.equal(out.rms_pct_of_width, 1.2);
   assert.match(out.note, /Verdächtig: Scheune SW/);
   assert.match(out.note, /Standpunkt festgehalten/);
-  assert.match(out.note, /top_view mit genau diesen Werten/);
   assert.equal(mapCalls[0].solve.fixFov, false);
   assert.equal(mapCalls[0].solve.positionSigmaM, 25);
-  assert.equal(events.at(-1)[0], "solve");
   // Known focal length: kept fixed.
   await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, fov_deg: 36, fov_fixed: true, points });
-  assert.equal(mapCalls[1].solve.fixFov, true);
+  assert.equal(mapCalls[2].solve.fixFov, true);
   // Bad input.
   assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: points.slice(0, 2) })).result, /Mindestens 3/);
   assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: [...points, { x: 1.4, y: 0.5, lat: 46.6, lon: 7.8 }] })).result, /'x' muss zwischen 0 und 1/);

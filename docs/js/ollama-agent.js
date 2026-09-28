@@ -3,6 +3,7 @@
 // request; Ollama's default of 4096 tokens is far too small for photos.
 
 import { preview } from "./agent.js";
+import { compactOllama, splitTiles } from "./compact.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { OPENAI_TOOLS } from "./puter-agent.js";
 import { SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
@@ -20,7 +21,6 @@ export const OLLAMA_SUGGESTIONS = [
 const MAX_NUDGES = 2;
 const MAX_RETRIES = 3;
 // Older photos and zooms are dropped from what is sent, so the conversation fits a local context window.
-const KEEP_IMAGES = 8;
 
 export class OllamaError extends Error {
   constructor(message, { code = "", retryable = false } = {}) {
@@ -85,28 +85,6 @@ export async function listOllamaModels(baseUrl, fetchImpl = globalThis.fetch.bin
   }));
 }
 
-/**
- * What is actually sent: all but the newest KEEP_IMAGES images are replaced by a short note. The
- * first message (overview + grid) is always kept, so the model never loses the photo itself.
- */
-export function pruneImages(messages, keep = KEEP_IMAGES) {
-  let budget = keep;
-  const out = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    const n = m.images?.length || 0;
-    if (!n || i <= 1 || n <= budget) {
-      if (i > 1) budget -= n;
-      out.push(m);
-      continue;
-    }
-    budget = 0;
-    const { images, ...rest } = m;
-    out.push({ ...rest, content: `${m.content || ""}\n[${n} Bild(er) aus einer früheren Runde entfernt, um Platz zu sparen]`.trim() });
-  }
-  return out.reverse();
-}
-
 export class OllamaAgent {
   /**
    * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
@@ -143,7 +121,7 @@ export class OllamaAgent {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: this.model,
-        messages: pruneImages(messages),
+        messages: compactOllama(messages), // earlier rounds' images and long results as short notes
         tools: OPENAI_TOOLS,
         stream: true,
         keep_alive: "30m",
@@ -231,16 +209,16 @@ export class OllamaAgent {
       messages = [...resume.conversation];
       this.usage = { ...this.usage, ...resume.usage };
     } else {
-      // Ollama takes images as a list per message: overview and grid first, the detail tiles in a
-      // second message that may later be dropped to save context.
-      const pics = images.filter((b) => b.type === "image");
-      const labels = images.filter((b) => b.type === "text").map((b) => b.text);
+      // Ollama takes images as a list per message: the photo first, the detail tiles in a second
+      // message that is dropped after the first answer (see compact.js).
+      const [keep, tiles] = splitTiles(images);
       messages = [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `${intro}\n\n${budget}`, images: pics.slice(0, 2).map((b) => b.data) },
+        { role: "user", content: `${intro}\n\n${budget}`, images: keep.filter((b) => b.type === "image").map((b) => b.data) },
       ];
-      if (pics.length > 2) {
-        messages.push({ role: "user", content: `Hochaufgelöste Detail-Kacheln, in dieser Reihenfolge:\n${labels.join("\n")}`, images: pics.slice(2).map((b) => b.data) });
+      if (tiles.some((b) => b.type === "image")) {
+        const labels = tiles.filter((b) => b.type === "text").map((b) => b.text);
+        messages.push({ role: "user", content: labels.join("\n"), images: tiles.filter((b) => b.type === "image").map((b) => b.data) });
       }
     }
     let nudges = resume?.nudges ?? 0;

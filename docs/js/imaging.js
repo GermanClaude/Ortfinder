@@ -68,6 +68,52 @@ export function overview(source, maxSide = MODEL_MAX_SIDE) {
   return { data, width: w, height: h, dataUrl: `data:image/jpeg;base64,${data}` };
 }
 
+/**
+ * The photo for the model with a 0–1 ruler in a margin around it (ticks every 0.05, labels every 0.1), so
+ * it can aim zooms and name photo positions without a second, gridded copy of the picture. The ruler sits
+ * outside the photo, so no detail is covered; 0–1 refers to the photo itself.
+ */
+export function rulerOverview(source, maxSide = MODEL_MAX_SIDE, margin = 22) {
+  const [w, h] = fitSize(source.width, source.height, maxSide);
+  const c = canvas(w + 2 * margin, h + 2 * margin);
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#1b1b1b";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, source.width, source.height, margin, margin, w, h);
+  ctx.strokeStyle = "#ffd54a";
+  ctx.fillStyle = "#ffd54a";
+  ctx.font = "bold 11px sans-serif";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    const long = i % 2 === 0;
+    const x = margin + t * w;
+    const y = margin + t * h;
+    const len = long ? 9 : 5;
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, margin - len); ctx.lineTo(x + 0.5, margin);
+    ctx.moveTo(x + 0.5, margin + h); ctx.lineTo(x + 0.5, margin + h + len);
+    ctx.moveTo(margin - len, y + 0.5); ctx.lineTo(margin, y + 0.5);
+    ctx.moveTo(margin + w, y + 0.5); ctx.lineTo(margin + w + len, y + 0.5);
+    ctx.stroke();
+    if (!long || i === 0 || i === 20) continue;
+    const label = t.toFixed(1).slice(1); // ".1" … ".9" keeps the labels inside the narrow margin
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, x, 1);
+    ctx.textBaseline = "bottom";
+    ctx.fillText(label, x, c.height - 1);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 1, y);
+    ctx.textAlign = "right";
+    ctx.fillText(label, c.width - 1, y);
+  }
+  return { data: toBase64(c), width: c.width, height: c.height, photoWidth: w, photoHeight: h };
+}
+
 /** Overlay a labelled 0.0-1.0 grid so the model can aim its zoom requests. */
 export function gridImage(source, maxSide = 1024, divisions = 10) {
   const [w, h] = fitSize(source.width, source.height, maxSide);

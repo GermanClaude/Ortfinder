@@ -3,7 +3,8 @@
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
 import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent } from "./claude-agent.js";
 import { OSMClient, haversineKm, viewCone } from "./geo.js";
-import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
+import { decodeImage, detailTiles, overview, rulerOverview, zoomCrop } from "./imaging.js";
+import { TILES_MARK } from "./compact.js";
 import { drapedTerrain, topViewImage } from "./groundview.js";
 import { DEVICES, GUIDES, detectDevice, guideNodes } from "./guides.js";
 import { renderMapView } from "./mapview.js";
@@ -703,7 +704,7 @@ function buildIntro(image, metadata) {
   const hints = hintsForModel(metadata);
   const parts = [
     `Bestimme, wo dieses Foto aufgenommen wurde. Originalauflösung: ${image.width}×${image.height} Pixel (zoom_image arbeitet auf dem Original).`,
-    "Bild 1: das Foto. Bild 2: dasselbe Foto mit Koordinatenraster (0.0–1.0) zum Zielen für zoom_image.",
+    "Bild 1: das Foto mit gelbem Lineal im Rand (0–1 bezieht sich auf das Foto selbst; für zoom_image und solve_camera).",
     hints.length
       ? "Metadaten aus der Datei (GPS-Daten, falls vorhanden, werden dir absichtlich nicht gezeigt):\n- " + hints.join("\n- ")
       : "Die Datei enthält keine verwertbaren Metadaten – nur der Bildinhalt zählt.",
@@ -737,7 +738,7 @@ function createAgent(cfg, common) {
     case "puter":
       return new PuterAgent({ model: cfg.puterModel, ...common });
     case "openrouter": {
-      // Same OpenAI-style loop as Puter; only the newest 8 images are sent (mobile data, free providers).
+      // Same OpenAI-style loop as Puter.
       const announced = new Set([cfg.openrouterModel]);
       const onModel = (used) => {
         if (announced.has(used)) return;
@@ -747,23 +748,67 @@ function createAgent(cfg, common) {
       return new PuterAgent({
         model: cfg.openrouterModel,
         chat: openRouterChat({ key: settings.openrouterKey, signal: common.signal, fallbacks: common.fallbacks, onModel }),
-        describeError: describeOpenRouterError, keepImages: 8, ...common,
+        describeError: describeOpenRouterError, ...common,
       });
     }
     case "ollama":
       return new OllamaAgent({ baseUrl: cfg.ollamaUrl, model: cfg.ollamaModel, numCtx: cfg.ollamaCtx, ...common });
     case "claude":
       return new ClaudeAgent({ apiKey: settings.claudeKey, model: cfg.claudeModel || CLAUDE_DEFAULT_MODEL, ...common });
-    default:
-      return new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
+    default: {
+      // Google counts free requests per model and day: when one model is used up, the next one continues.
+      const [model, ...fallbackModels] = geminiModels(cfg.model);
+      return new GeminiAgent({
+        apiKey: settings.apiKey, model, fallbackModels, onModelExhausted: markGeminiExhausted,
+        thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common,
+      });
+    }
   }
 }
 
-function firstImages(bitmap, ov) {
+// ---------- Gemini free tier: one daily quota per model ----------
+
+const FREE_GEMINI = ["gemini-3.8-flash", "gemini-3.7-flash"];
+const EXHAUSTED_KEY = "ortfinder.gemini.exhausted.v1";
+/** Google resets the free quotas at midnight Pacific time (9:00 in Germany). */
+const quotaDay = (now = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(now);
+
+function exhaustedToday() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXHAUSTED_KEY) || "{}");
+    return saved.day === quotaDay() ? saved.models || [] : [];
+  } catch {
+    return [];
+  }
+}
+
+function markGeminiExhausted(model) {
+  try {
+    localStorage.setItem(EXHAUSTED_KEY, JSON.stringify({ day: quotaDay(), models: [...new Set([...exhaustedToday(), model])] }));
+  } catch {
+    // no storage: the next analysis finds out again after one request
+  }
+}
+
+/** The chosen model first, then the other free models; those used up today are skipped (unless all are). */
+function geminiModels(chosen) {
+  if (!FREE_GEMINI.includes(chosen)) return [chosen];
+  const used = exhaustedToday();
+  const order = [chosen, ...FREE_GEMINI.filter((m) => m !== chosen)];
+  const left = order.filter((m) => !used.includes(m));
+  return left.length ? left : [chosen];
+}
+
+/**
+ * The photo with its ruler (always sent) and, for large photos, the detail tiles (first request only, see
+ * compact.js) – one picture fewer per request than the former separate grid image.
+ */
+function firstImages(bitmap) {
+  const tiles = detailTiles(bitmap);
   return [
-    { type: "image", mime_type: "image/jpeg", data: ov.data, resolution: "high" },
-    { type: "image", mime_type: "image/jpeg", data: gridImage(bitmap).data, resolution: "medium" },
-    ...detailTiles(bitmap).flatMap((t) => [
+    { type: "image", mime_type: "image/jpeg", data: rulerOverview(bitmap).data, resolution: "high" },
+    ...(tiles.length ? [{ type: "text", text: TILES_MARK }] : []),
+    ...tiles.flatMap((t) => [
       { type: "text", text: `Detail-Kachel ${t.name} (x ${t.box[0].toFixed(2)}–${t.box[2].toFixed(2)}, y ${t.box[1].toFixed(2)}–${t.box[3].toFixed(2)}):` },
       { type: "image", mime_type: "image/jpeg", data: t.data, resolution: "high" },
     ]),
@@ -881,7 +926,7 @@ async function analyze(file, resumed = null) {
       const agent = createAgent(cfg, { ...common, fallbacks });
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
-        images: resumed?.agentState ? [] : firstImages(bitmap, ov),
+        images: resumed?.agentState ? [] : firstImages(bitmap),
         executor,
         resume: resumed?.agentState ?? null,
       }));
