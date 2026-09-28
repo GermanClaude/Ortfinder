@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ortfinder</title>
-  <meta name="description" content="Findet heraus, wo ein Foto aufgenommen wurde – EXIF-GPS, KI-Bildanalyse mit Gemini und OpenStreetMap-Abgleich, komplett im Browser.">
+  <meta name="description" content="Findet heraus, wo ein Foto aufgenommen wurde – EXIF-GPS, KI-Bildanalyse und OpenStreetMap-Abgleich, komplett im Browser.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%230b6bcb' d='M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="css/style.css">
@@ -41,6 +41,7 @@
       </p>
       <p id="ollama-note" class="puter-note small" hidden></p>
       <p id="openrouter-note" class="puter-note small" hidden></p>
+      <p id="claude-note" class="puter-note small" hidden></p>
 
       <div id="key-bar" class="key-bar" hidden>
         <p class="key-title"><strong>Für eigene Fotos einmalig einen Gemini-API-Key eintragen</strong></p>
@@ -64,7 +65,20 @@
               <option value="gemini">Google Gemini – eigener API-Key</option>
               <option value="openrouter">OpenRouter – kostenlos, 50 Anfragen am Tag, Anmeldung z.B. mit Google</option>
               <option value="ollama">Eigener PC (Ollama) – unbegrenzt &amp; kostenlos, auch fürs Handy</option>
+              <option value="claude">Claude (Anthropic) – eigener API-Key, kostenpflichtig</option>
             </select>
+          </div>
+          <div class="claude-only">
+            <label for="claude-model">Modell</label>
+            <select id="claude-model"></select>
+          </div>
+          <div class="claude-only wide">
+            <label for="claude-key">Claude-API-Key</label>
+            <div class="row nowrap">
+              <input id="claude-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" aria-label="Claude-API-Key">
+              <button id="claude-key-visibility" type="button" class="ghost">Zeigen</button>
+            </div>
+            <p id="claude-key-hint" class="small muted"></p>
           </div>
           <div class="openrouter-only">
             <label for="or-model">Modell (kostenlos)</label>
@@ -120,7 +134,7 @@
           <div class="check-cell">
             <label class="check gemini-only"><input id="web-search" type="checkbox" checked> Google-Suche (nur bezahlter Gemini-Tarif)</label>
             <label class="check"><input id="use-ai" type="checkbox" checked> KI-Bildanalyse (sonst nur GPS/EXIF)</label>
-            <label class="check gemini-only"><input id="remember-key" type="checkbox" checked> Key in diesem Browser merken</label>
+            <label class="check key-only"><input id="remember-key" type="checkbox" checked> Key in diesem Browser merken</label>
           </div>
         </div>
         <p class="small muted puter-only">
@@ -130,6 +144,11 @@
         <p class="small muted gemini-only">
           Gemini: 3.8 Flash läuft auch im kostenlosen Tarif (20 Anfragen pro Tag); 3.1 Pro und die Google-Suche brauchen den bezahlten Tarif.
           Im kostenlosen Tarif darf Google die Eingaben zur Verbesserung seiner Produkte verwenden – dort keine privaten Fotos anderer hochladen.
+        </p>
+        <p class="small muted claude-only">
+          Claude: Anthropic rechnet jede Anfrage über dein Guthaben in der Claude Console ab (Richtwert Opus 5: etwa 0,50–2 $ pro Analyse,
+          Sonnet 5 und Haiku 4.5 günstiger). Lehnt Opus 5 ein Bild ab, beantwortet Anthropic die Anfrage automatisch mit einem Ersatzmodell.
+          Ein Claude-Abo (Pro/Max) gilt hier nicht – das erlaubt Anthropic für fremde Websites nicht.
         </p>
         <div class="openrouter-only ollama-box">
           <p id="or-status" class="small muted" role="status"></p>
@@ -199,6 +218,13 @@
             </p>
           </details>
         </div>
+        <details id="guide" class="guide">
+          <summary id="guide-title">📖 Anleitung Schritt für Schritt</summary>
+          <div id="guide-tabs" class="tabs" role="tablist" aria-label="Gerät"></div>
+          <div id="guide-body"></div>
+          <p class="small"><a id="guide-link" href="anleitung.html" target="_blank" rel="noopener">Alle Anleitungen auf einer eigenen Seite öffnen</a>
+            (praktisch, um sie am Handy zu lesen, während du am PC tippst).</p>
+        </details>
         <div class="row end">
           <button id="save-settings" type="button" class="primary">Speichern</button>
         </div>
@@ -253,11 +279,12 @@
 
   <footer>
     Ortfinder zeigt, wie viel ein einzelnes Foto über seinen Aufnahmeort verrät. Alles läuft in deinem Browser;
-    Bilder gehen nur an die gewählte KI (Puter, Google Gemini oder dein eigener PC); Suchbegriffe und Kartenausschnitte werden bei
+    Bilder gehen nur an die gewählte KI (Puter, Google Gemini, OpenRouter, Anthropic/Claude oder dein eigener PC); Suchbegriffe und Kartenausschnitte werden bei
     OpenStreetMap, Esri und AWS (Geländedaten) abgerufen.
     Bitte nur eigene Bilder oder Bilder mit Einverständnis analysieren – nicht, um Personen aufzuspüren.
     · Karten und 3D-Gebäude © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
     · Luftbilder: Esri, Maxar, Earthstar Geographics · Gelände: Mapzen Terrain Tiles
+    · <a href="anleitung.html">Anleitungen für alle KI-Optionen</a>
   </footer>
 
   <script src="vendor/leaflet/leaflet.js"></script>

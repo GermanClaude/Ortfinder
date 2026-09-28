@@ -682,3 +682,188 @@ def test_openrouter_sign_in_on_the_phone_then_the_analysis_starts(browser, site_
     assert stored["openrouterKey"] == "sk-or-v1-phone" and stored["provider"] == "openrouter"
     assert errors == []
     context.close()
+
+
+def _claude_sse(content: list, stop_reason: str = "tool_use", model: str = "claude-opus-5") -> str:
+    """A streamed Messages API answer (server-sent events) as api.anthropic.com sends it."""
+    events = [("message_start", {"type": "message_start", "message": {
+        "id": "msg_1", "type": "message", "role": "assistant", "model": model, "content": [], "stop_reason": None, "stop_sequence": None,
+        "usage": {"input_tokens": 2500, "output_tokens": 1, "cache_read_input_tokens": 1500, "cache_creation_input_tokens": 500}}})]
+    for i, block in enumerate(content):
+        if block["type"] == "text":
+            events.append(("content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}}))
+            events.append(("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": block["text"]}}))
+        elif block["type"] == "thinking":
+            events.append(("content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}))
+            events.append(("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "thinking_delta", "thinking": block["thinking"]}}))
+            events.append(("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "signature_delta", "signature": "c2ln"}}))
+        else:
+            events.append(("content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}}))
+            events.append(("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}}))
+        events.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
+    events.append(("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": 180}}))
+    events.append(("message_stop", {"type": "message_stop"}))
+    return "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
+
+
+def test_claude_provider_with_own_api_key(browser, site_url, tmp_path):
+    """Fifth provider: Claude with the visitor's own API key, through the official SDK in the browser."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    requests: list[dict] = []
+    script = [
+        _claude_sse([
+            {"type": "thinking", "thinking": "Straßenschild unten rechts."},
+            {"type": "text", "text": "Ich lese das Schild."},
+            {"type": "tool_use", "id": "t1", "name": "zoom_image", "input": {"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "purpose": "Straßenschild lesen"}},
+            {"type": "tool_use", "id": "t2", "name": "mark_hypothesis", "input": {"label": "Südbaden", "camera_lat": 47.99, "camera_lon": 7.85, "radius_km": 30}},
+        ]),
+        _claude_sse([{"type": "tool_use", "id": "t3", "name": "submit_result", "input": SUBMISSION}]),
+    ]
+    cors = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*"}
+
+    def anthropic(route):
+        if route.request.method == "OPTIONS":
+            route.fulfill(status=200, headers=cors, body="")
+            return
+        requests.append({"url": route.request.url, "headers": route.request.headers, "body": json.loads(route.request.post_data)})
+        route.fulfill(status=200, content_type="text/event-stream", headers=cors, body=script.pop(0))
+
+    page.route("https://api.anthropic.com/**", anthropic)
+    page.goto(site_url)
+
+    # Choose Claude: the key field, the cost note and the step-by-step guide appear.
+    page.click("#settings-toggle")
+    page.select_option("#provider", "claude")
+    assert page.is_visible("#claude-key") and page.is_visible("#remember-key")
+    assert not page.is_visible("#or-signin") and not page.is_visible("#ollama-url")
+    assert page.eval_on_selector_all("#claude-model option", "os => os.map(o => o.value)") == ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]
+    assert "Claude (Anthropic)" in page.text_content("#guide-title")
+    page.click("#guide-title")
+    assert page.eval_on_selector_all("#guide-tabs .tab", "ts => ts.map(t => t.textContent)") == ["Windows", "macOS", "Android", "iPhone"]
+    assert "Strg+V" in page.text_content("#guide-body") and "platform.claude.com" in page.text_content("#guide-body")
+    page.click("#guide-tabs .tab:nth-child(4)")
+    assert "Einfügen erlauben" in page.text_content("#guide-body")
+    assert page.get_attribute("#guide-link", "href") == "anleitung.html#claude/ios"
+
+    # Starting without a key explains what is missing.
+    page.click("#save-settings")
+    assert "Claude: API-Key fehlt" in page.text_content("#settings-toggle")
+    page.click("#settings-toggle")
+    page.fill("#claude-key", "nicht-der-key")
+    assert "sk-ant-" in page.text_content("#claude-key-hint")
+    page.fill("#claude-key", "sk-ant-api03-" + "x" * 40)
+    page.click("#save-settings")
+    assert "claude-opus-5 · eigener Claude-Key" in page.text_content("#settings-toggle")
+    assert page.is_visible("#claude-note")
+
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector(".answer", timeout=30000)
+    assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
+    assert "claude-opus-5" in page.text_content("#result")
+    assert "Zwischenstand: Südbaden" in page.text_content("#log")
+    assert "Straßenschild unten rechts." in page.text_content("#log")
+    assert len(requests) == 2
+    first = requests[0]
+    assert first["url"] == "https://api.anthropic.com/v1/messages?beta=true"
+    assert first["headers"]["x-api-key"] == "sk-ant-api03-" + "x" * 40
+    assert first["headers"]["anthropic-dangerous-direct-browser-access"] == "true"
+    assert first["headers"]["anthropic-beta"] == "server-side-fallback-2026-07-01"
+    body = first["body"]
+    assert body["model"] == "claude-opus-5" and body["stream"] is True and body["fallbacks"] == "default"
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert len(body["tools"]) == 13 and all(t["eager_input_streaming"] for t in body["tools"])
+    first_user = body["messages"][0]["content"]
+    assert [b["type"] for b in first_user][:3] == ["text", "image", "image"]
+    assert first_user[1]["source"]["media_type"] == "image/jpeg"
+    # Second request: the answer is sent back unchanged, both tool results in one message, the zoom as an image.
+    second = requests[1]["body"]["messages"]
+    assert [m["role"] for m in second] == ["user", "assistant", "user"]
+    assert second[1]["content"][0] == {"type": "thinking", "thinking": "Straßenschild unten rechts.", "signature": "c2ln"}
+    results = second[2]["content"]
+    assert [r["tool_use_id"] for r in results] == ["t1", "t2"]
+    assert results[0]["content"][1]["type"] == "image"
+    stored = page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1'))")
+    assert stored["provider"] == "claude" and stored["claudeKey"].startswith("sk-ant-api03-")
+    assert errors == []
+    context.close()
+
+
+def test_claude_key_is_forgotten_when_not_remembered(browser, site_url):
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto(site_url)
+    page.click("#settings-toggle")
+    page.select_option("#provider", "claude")
+    page.fill("#claude-key", "sk-ant-api03-" + "y" * 40)
+    page.uncheck("#remember-key")
+    page.click("#save-settings")
+    stored = page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1'))")
+    assert stored["claudeKey"] == "" and stored["remember"] is False
+    assert "eigener Claude-Key" in page.text_content("#settings-toggle"), "still usable in this visit"
+    context.close()
+
+
+def test_claude_without_key_explains_what_is_missing(browser, site_url, tmp_path):
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context()
+    context.add_init_script("localStorage.setItem('ortfinder.settings.v1', JSON.stringify({provider: 'claude'}));")
+    page = context.new_page()
+    _mock_network(page, [])
+    page.route("https://api.anthropic.com/**", lambda r: r.abort())
+    page.goto(site_url)
+    assert "API-Key" in page.text_content("#claude-note")
+    page.set_input_files("#file", str(street))
+    page.wait_for_function("document.querySelector('#log').textContent.includes('Für Claude fehlt noch dein API-Key')", timeout=20000)
+    assert page.is_visible("#settings") and page.is_visible("#claude-key")
+    context.close()
+
+
+def test_guides_for_every_option_and_device(browser, site_url):
+    """Each AI option has a guide per device; on an iPhone the iPhone steps open first."""
+    iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 19_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.0 Mobile/15E148 Safari/604.1"
+    context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, user_agent=iphone)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(site_url)
+    page.click("#settings-toggle")
+    for provider, expected in [("puter", "Pop-ups blockieren"), ("gemini", "aistudio.google.com"), ("openrouter", "Authorize"),
+                               ("claude", "Buy credits"), ("ollama", "Kamera")]:
+        page.select_option("#provider", provider)
+        assert page.eval_on_selector("#guide-tabs .tab.active", "t => t.textContent") == "iPhone"
+        assert expected in page.text_content("#guide"), provider
+    # Tapping a command copies it.
+    context.grant_permissions(["clipboard-read", "clipboard-write"], origin=site_url.rstrip("/"))
+    page.click("#guide-title")
+    page.click("#guide-tabs .tab:nth-child(1)")
+    assert page.eval_on_selector("#guide-tabs .tab.active", "t => t.textContent") == "Windows"
+    page.click("#guide-body code.copy")
+    page.wait_for_selector("#guide-body code.copy.copied")
+    assert page.evaluate("navigator.clipboard.readText()") == "winget install Cloudflare.cloudflared"
+
+    # The guides page: all options, shareable address.
+    guide = context.new_page()
+    guide.on("pageerror", lambda e: errors.append(str(e)))
+    guide.goto(site_url + "anleitung.html#gemini/android")
+    guide.wait_for_selector("#guide-body li")
+    assert guide.text_content("#guide-heading") == "Google Gemini (eigener Key) · Android"
+    assert "lange in das Feld tippen" in guide.text_content("#guide-body")
+    guide.click("#provider-tabs .tab:has-text('Claude')")
+    guide.wait_for_function("document.querySelector('#guide-heading').textContent.startsWith('Claude')")
+    assert guide.url.endswith("#claude/android")
+    assert "sk-ant-" in guide.text_content("#guide-body")
+    guide.click("#device-tabs .tab:has-text('macOS')")
+    guide.wait_for_function("document.querySelector('#guide-heading').textContent.endsWith('· macOS')")
+    assert "⌘+V" in guide.text_content("#guide-body")
+    guide.goto(site_url + "anleitung.html#ollama/windows")
+    guide.wait_for_selector("#guide-body code.copy")
+    assert guide.get_attribute("#guide-body a[download]", "href") == "ki/ortfinder-ki-windows.bat"
+    assert errors == []
+    context.close()
