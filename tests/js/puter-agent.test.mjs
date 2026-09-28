@@ -29,7 +29,7 @@ function setup(responses, options = {}) {
     images: [{ type: "image", mime_type: "image/jpeg", data: "QkFTRQ==", resolution: "high" }, { type: "text", text: "Kachel" }],
     executor,
   });
-  return { run, calls, events };
+  return { run, calls, events, executor, agent };
 }
 
 test("tools are declared in the OpenAI function format", () => {
@@ -119,4 +119,35 @@ test("refusal and step limit", async () => {
   const limited = setup(loop, { maxSteps: 3 });
   await assert.rejects(limited.run(), /Schrittlimit/);
   assert.match(limited.calls[2].messages.at(-1).content.at(-1).text, /Nur noch 1 Runde/);
+});
+
+test("Puter: checkpoints after every round and resumes from the saved messages", async () => {
+  const saved = [];
+  const first = setup([reply({ tool_calls: [toolCall("c1", "geocode", { query: "Bahnhofstraße" })] })], {
+    checkpoint: async (s) => { saved.push(structuredClone(s)); throw new Error("Seite verworfen"); },
+  });
+  await assert.rejects(first.run(), /Seite verworfen/);
+  const [state] = saved;
+  assert.equal(state.step, 1);
+  assert.deepEqual(state.conversation.map((m) => m.role), ["system", "user", "assistant", "tool"]);
+
+  const second = setup([reply({ tool_calls: [toolCall("c2", "submit_result", VALID_SUBMISSION)] })]);
+  const { analysis, usage } = await second.agent.run({ intro: "egal", images: [], executor: second.executor, resume: state });
+  assert.equal(analysis.city, "Freiburg");
+  assert.deepEqual(second.calls[0].messages, state.conversation);
+  assert.deepEqual(second.events.filter(([t]) => t === "step").map(([, d]) => d.step), [2]);
+  assert.equal(usage.requests, 2);
+});
+
+test("Puter: a connection dropped in the background is retried once the page is visible", async () => {
+  const drop = () => Promise.reject({ error: { message: "Failed to fetch" } });
+  let waits = 0;
+  const started = Date.now();
+  const { run, calls } = setup([drop, drop, drop, drop, drop, reply({ tool_calls: [toolCall("c1", "submit_result", VALID_SUBMISSION)] })], {
+    whenActive: async () => (waits++ < 5),
+  });
+  const { analysis } = await run();
+  assert.equal(analysis.city, "Freiburg");
+  assert.equal(calls.length, 6);
+  assert.ok(Date.now() - started < 1500);
 });

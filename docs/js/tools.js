@@ -357,6 +357,17 @@ export class ToolExecutor {
     this.renderCount = 0;
   }
 
+  /** Usage counters, saved with a checkpoint so limits still hold after resuming. */
+  get counts() {
+    return { zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount };
+  }
+
+  restoreCounts({ zoom = 0, mapView = 0, render = 0 } = {}) {
+    this.zoomCount = zoom;
+    this.mapViewCount = mapView;
+    this.renderCount = render;
+  }
+
   /** Returns { result, isError } where result is a string or an array of text/image content blocks. */
   async run(name, args) {
     if (!args || typeof args !== "object" || Array.isArray(args)) {

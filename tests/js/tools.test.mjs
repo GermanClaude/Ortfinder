@@ -221,3 +221,13 @@ test("bearing_distance and destination_point are inverse", async () => {
   const dp = JSON.parse((await ex.run("destination_point", { lat: 48.0, lon: 7.85, bearing_deg: 90, distance_m: bd.distance_m })).result);
   assert.ok(Math.abs(dp.lat - 48.0) < 1e-4 && Math.abs(dp.lon - 7.86) < 1e-4, JSON.stringify(dp));
 });
+
+test("usage counters survive a resume, so limits still hold", async () => {
+  const { ex } = executor();
+  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1 });
+  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1 });
+  const r = await ex.run("zoom_image", { x_min: 0, y_min: 0, x_max: 0.5, y_max: 0.5, purpose: "" });
+  assert.match(r.result, /Zoom-Limit/);
+  ex.restoreCounts(undefined);
+  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0 });
+});

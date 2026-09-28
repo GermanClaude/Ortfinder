@@ -89,13 +89,28 @@ function parseArguments(raw) {
 }
 
 export class PuterAgent {
-  constructor({ model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal } = {}) {
+  /**
+   * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
+   * `whenActive()` resolves to true after waiting for a page that was in the background.
+   */
+  constructor({ model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false } = {}) {
     this.model = model;
     this.maxSteps = maxSteps;
     this.chat = chat ?? ((messages, options) => globalThis.puter.ai.chat(messages, options));
     this.emit = emit;
     this.signal = signal;
+    this.checkpoint = checkpoint;
+    this.whenActive = whenActive;
     this.usage = { requests: 0, input_tokens: 0, output_tokens: 0, thought_tokens: 0, cached_tokens: 0 };
+  }
+
+  async waitIfBackground() {
+    const pending = this.whenActive();
+    // Only announce the wait when there is one (whenActive resolves at once for a visible page).
+    const waited = await Promise.race([pending, new Promise((r) => setTimeout(() => r("waiting"), 50))]);
+    if (waited !== "waiting") return waited;
+    this.emit("status", { message: "Ortfinder ist im Hintergrund – die Anfrage wird wiederholt, sobald die Seite wieder sichtbar ist." });
+    return pending;
   }
 
   async request(messages) {
@@ -112,6 +127,11 @@ export class PuterAgent {
       } catch (raw) {
         if (raw?.name === "AbortError") throw raw;
         const err = describePuterError(raw);
+        // Browsers cut connections of pages in the background: wait until Ortfinder is visible again.
+        if (err.retryable && (await this.waitIfBackground())) {
+          attempt = -1;
+          continue;
+        }
         if (err.retryable && attempt < MAX_RETRIES) {
           this.emit("status", { message: `${err.message} Neuer Versuch in ${2 * 2 ** attempt} s …` });
           await sleep(2000 * 2 ** attempt, this.signal);
@@ -128,17 +148,19 @@ export class PuterAgent {
     this.usage.output_tokens += usage.completion_tokens ?? usage.output_tokens ?? 0;
   }
 
-  async run({ intro, images, executor }) {
+  async run({ intro, images, executor, resume = null }) {
     const budget =
       `Budget: höchstens ${this.maxSteps} Runden (jede Antwort von dir ist eine Runde). ` +
       "Bündle deshalb alle Zooms und Kartenabfragen, die du gerade brauchst, parallel in EINER Antwort.";
-    const messages = [
+    const messages = resume ? [...resume.conversation] : [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...toParts(images)] },
     ];
-    let nudges = 0;
+    let nudges = resume?.nudges ?? 0;
+    if (resume) this.usage = { ...this.usage, ...resume.usage };
+    const save = (step) => this.checkpoint({ conversation: messages, step, nudges, usage: this.usage });
 
-    for (let step = 1; step <= this.maxSteps; step++) {
+    for (let step = (resume?.step ?? 0) + 1; step <= this.maxSteps; step++) {
       this.emit("step", { step, max_steps: this.maxSteps });
       const response = await this.request(messages);
       this.addUsage(response?.usage);
@@ -157,6 +179,7 @@ export class PuterAgent {
         nudges += 1;
         if (nudges > MAX_NUDGES) break;
         messages.push({ role: "user", content: `Bitte gib dein Ergebnis jetzt mit dem Werkzeug \`${SUBMIT_TOOL}\` ab.` });
+        await save(step);
         continue;
       }
 
@@ -192,6 +215,7 @@ export class PuterAgent {
       for (const { label, block } of images) followUp.push({ type: "text", text: label }, ...toParts([block]));
       if (remaining <= 2) followUp.push({ type: "text", text: `Hinweis: Nur noch ${remaining} Runde(n) übrig – gib dein Ergebnis jetzt mit \`${SUBMIT_TOOL}\` ab.` });
       if (followUp.length) messages.push({ role: "user", content: followUp });
+      await save(step);
     }
     throw new PuterError("Die KI hat innerhalb des Schrittlimits kein Ergebnis abgegeben (unter ⚙ mehr Runden erlauben).");
   }

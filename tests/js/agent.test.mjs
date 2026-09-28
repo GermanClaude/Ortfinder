@@ -39,7 +39,7 @@ function setup(responses, options = {}) {
   });
   const agent = new GeminiAgent({ apiKey: "AIza-test", maxSteps: 6, fetchImpl, emit, ...options });
   const run = () => agent.run({ intro: "Wo ist das?", images: [{ type: "image", mime_type: "image/jpeg", data: "QkFTRQ==", resolution: "high" }], executor });
-  return { agent, run, requests, events, osmCalls };
+  return { agent, run, requests, events, osmCalls, executor };
 }
 
 test("full loop: zoom + geocode, then submit", async () => {
@@ -244,4 +244,48 @@ test("tools of one round run in parallel", async () => {
   await agent.run({ intro: "x", images: [], executor });
   assert.deepEqual(started, ["a", "b"]);
   assert.ok(Date.now() - t0 < 290, "both lookups overlapped");
+});
+
+test("a checkpoint after every round lets a new agent continue where the page was interrupted", async () => {
+  const saved = [];
+  const first = setup([interaction([call("c1", "geocode", { query: "Bahnhofstraße" })])], {
+    webSearch: true,
+    // The browser discards the page right after round 1 was saved.
+    checkpoint: async (s) => { saved.push(structuredClone(s)); throw new Error("Seite verworfen"); },
+  });
+  await assert.rejects(first.run(), /Seite verworfen/);
+  assert.equal(saved.length, 1);
+  const [state] = saved;
+  assert.equal(state.step, 1);
+  assert.deepEqual(state.conversation.map((s) => s.type), ["user_input", "function_call", "function_result"]);
+  assert.equal(state.usage.requests, 1);
+
+  const second = setup([interaction([call("c2", "submit_result", VALID_SUBMISSION)])]);
+  const { analysis, usage } = await second.agent.run({ intro: "egal", images: [], executor: second.executor, resume: state });
+  assert.equal(analysis.city, "Freiburg");
+  assert.deepEqual(second.requests[0].body.input, state.conversation, "continues with the saved history, not from scratch");
+  assert.deepEqual(second.events.filter(([t]) => t === "step").map(([, d]) => d.step), [2]);
+  assert.equal(usage.requests, 2);
+});
+
+test("while the page is in the background, dropped requests wait instead of failing", async () => {
+  const drop = () => { throw new TypeError("Failed to fetch"); };
+  let waits = 0;
+  const started = Date.now();
+  const { run, requests } = setup([drop, drop, drop, drop, interaction([call("c1", "submit_result", VALID_SUBMISSION)])], {
+    whenActive: async () => (waits++ < 4), // hidden for the first four failures, then visible
+  });
+  const { analysis } = await run();
+  assert.equal(analysis.city, "Freiburg");
+  assert.equal(requests.length, 5, "four dropped requests, then the successful one");
+  assert.ok(Date.now() - started < 1500, "no retry back-off: the wait for visibility replaces it");
+});
+
+test("the background wait is announced when it actually waits", async () => {
+  let first = true;
+  const { run, events } = setup([() => { throw new TypeError("Failed to fetch"); }, interaction([call("c1", "submit_result", VALID_SUBMISSION)])], {
+    whenActive: () => (first ? ((first = false), new Promise((r) => setTimeout(() => r(true), 120))) : Promise.resolve(false)),
+  });
+  await run();
+  assert.ok(events.some(([t, d]) => t === "status" && /im Hintergrund/.test(d.message)));
 });

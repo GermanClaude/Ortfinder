@@ -391,3 +391,146 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     assert roles == ["system", "user", "assistant", "tool", "tool", "user"]  # zoom crop follows as a user image
     assert errors == []
     context.close()
+
+
+GEMINI_SETTINGS = "localStorage.setItem('ortfinder.settings.v1', JSON.stringify({provider: 'gemini', apiKey: 'AIza' + 'x'.repeat(35), remember: true}));"
+
+
+def _wait_until(page, condition, timeout_s=30.0):
+    for _ in range(int(timeout_s * 10)):
+        if condition():
+            return
+        page.wait_for_timeout(100)
+    raise AssertionError("condition not reached in time")
+
+
+def test_analysis_resumes_after_the_browser_reloads_the_page(browser, site_url, tmp_path):
+    """Phones discard pages that are off screen and reload them later: the run continues after the saved round."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(GEMINI_SETTINGS)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    bodies: list[dict] = []
+    held = []
+
+    def gemini(route):
+        bodies.append(json.loads(route.request.post_data))
+        if len(bodies) == 1:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(_interaction([
+                {"type": "function_call", "id": "c1", "name": "zoom_image", "arguments": {"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "purpose": "Straßenschild lesen"}},
+                {"type": "function_call", "id": "c2", "name": "geocode", "arguments": {"query": "Bahnhofstraße Freiburg"}},
+            ])))
+        elif len(bodies) == 2:
+            held.append(route)  # round 2 never answers: the page is "discarded" meanwhile
+        else:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(_interaction([
+                {"type": "function_call", "id": "c3", "name": "submit_result", "arguments": SUBMISSION},
+            ])))
+
+    page.route("https://generativelanguage.googleapis.com/**", gemini)
+    page.goto(site_url)
+    page.set_input_files("#file", str(street))
+    _wait_until(page, lambda: len(bodies) == 2)
+    assert "Runde 2" in page.text_content("#log")
+
+    page.reload()  # what the browser does with a discarded tab when the user comes back
+    page.wait_for_selector(".answer", timeout=30000)
+    assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
+    assert len(bodies) == 3
+    assert bodies[2]["input"] == bodies[1]["input"], "round 2 is repeated with the saved history"
+    assert [s["type"] for s in bodies[2]["input"]] == ["user_input", "function_call", "function_call", "function_result", "function_result"]
+    log = page.text_content("#log")
+    assert "Unterbrochene Analyse wird nach Runde 1 fortgesetzt" in log
+    assert "Zoom #1: Straßenschild lesen" in log, "log and zooms are restored"
+    assert page.locator(".zooms figure").count() == 1
+    assert page.evaluate("document.querySelector('#photo').naturalWidth") > 0
+
+    # Finished runs are not resumed again.
+    page.wait_for_timeout(500)
+    page.reload()
+    page.wait_for_timeout(1500)
+    assert len(bodies) == 3 and not page.is_visible("#workspace")
+    assert errors == []
+    context.close()
+
+
+VISIBILITY = """
+Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get() { return window.__vis || 'visible'; } });
+Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get() { return (window.__vis || 'visible') === 'hidden'; } });
+window.__setVisible = (visible) => { window.__vis = visible ? 'visible' : 'hidden'; document.dispatchEvent(new Event('visibilitychange')); };
+"""
+
+
+def test_request_dropped_in_the_background_waits_for_the_page(browser, site_url, tmp_path):
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(GEMINI_SETTINGS)
+    context.add_init_script(VISIBILITY)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    calls: list[str] = []
+
+    def gemini(route):
+        calls.append(route.request.url)
+        if len(calls) == 1:
+            route.abort("connectionreset")  # the phone cut the connection of the hidden page
+        else:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(_interaction([
+                {"type": "function_call", "id": "c1", "name": "submit_result", "arguments": SUBMISSION},
+            ])))
+
+    page.route("https://generativelanguage.googleapis.com/**", gemini)
+    page.goto(site_url)
+    page.evaluate("window.__setVisible(false)")
+    page.set_input_files("#file", str(street))
+    page.wait_for_function("document.querySelector('#log').textContent.includes('im Hintergrund')", timeout=30000)
+    assert page.title().startswith("(1/10)"), page.title()
+    page.wait_for_timeout(3000)
+    assert len(calls) == 1, "no retries while hidden"
+    assert page.locator(".answer").count() == 0
+
+    page.evaluate("window.__setVisible(true)")
+    page.wait_for_selector(".answer", timeout=30000)
+    assert len(calls) == 2
+    assert page.title() == "Ortfinder"
+    assert errors == []
+    context.close()
+
+
+def test_result_in_the_background_is_announced(browser, site_url, tmp_path):
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.grant_permissions(["notifications"], origin=site_url.rstrip("/"))
+    context.add_init_script(GEMINI_SETTINGS)
+    context.add_init_script(VISIBILITY)
+    context.add_init_script("""
+      window.__notes = [];
+      const orig = ServiceWorkerRegistration.prototype.showNotification;
+      ServiceWorkerRegistration.prototype.showNotification = function (title, options) { window.__notes.push([title, options.body]); return orig.call(this, title, options); };
+    """)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    page.route("https://generativelanguage.googleapis.com/**", lambda r: r.fulfill(
+        status=200, content_type="application/json",
+        body=json.dumps(_interaction([{"type": "function_call", "id": "c1", "name": "submit_result", "arguments": SUBMISSION}]))))
+    page.goto(site_url)
+    page.evaluate("window.__setVisible(false)")
+    page.set_input_files("#file", str(street))
+    page.wait_for_function("window.__notes.length > 0", timeout=30000)
+    assert page.evaluate("window.__notes") == [["Ortfinder", "Ergebnis: Bahnhofstraße, Freiburg"]]
+    assert page.title() == "✔ Ortfinder"
+    assert not page.is_visible("#notify"), "permission already granted: no button needed"
+    page.evaluate("window.__setVisible(true)")
+    assert page.title() == "Ortfinder"
+    assert errors == []
+    context.close()
