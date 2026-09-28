@@ -26,6 +26,34 @@ export function haversineKm(lat1, lon1, lat2, lon2) {
   return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+/** Initial bearing from point 1 to point 2, degrees clockwise from north. */
+export function bearingDeg(lat1, lon1, lat2, lon2) {
+  const p1 = rad(lat1);
+  const p2 = rad(lat2);
+  const dl = rad(lon2 - lon1);
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (deg(Math.atan2(y, x)) + 360) % 360;
+}
+
+/** Point reached from (lat, lon) after distanceKm along the given bearing. Returns [lat, lon]. */
+export function destinationPoint(lat, lon, bearing, distanceKm) {
+  const d = distanceKm / EARTH_RADIUS_KM;
+  const b = rad(bearing);
+  const p1 = rad(lat);
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = rad(lon) + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [deg(p2), ((deg(l2) + 540) % 360) - 180];
+}
+
+/** Polygon (list of [lat, lon]) for a camera's field of view, for drawing on the map. */
+export function viewCone(lat, lon, bearing, fov, distanceKm, steps = 12) {
+  const points = [[lat, lon]];
+  for (let i = 0; i <= steps; i++) points.push(destinationPoint(lat, lon, bearing - fov / 2 + (fov * i) / steps, distanceKm));
+  points.push([lat, lon]);
+  return points;
+}
+
 // Approximate solar azimuth/elevation (degrees, azimuth clockwise from north). Good to ~0.5°.
 export function sunPosition(lat, lon, date) {
   const jd = date.getTime() / 86400000 + 2440587.5;

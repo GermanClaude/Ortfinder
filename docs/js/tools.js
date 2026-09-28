@@ -1,13 +1,14 @@
 // Tools the geolocation agent can call: declarations for Gemini, input validation and execution.
 
-import { OSMError, sunPosition } from "./geo.js";
+import { OSMError, bearingDeg, destinationPoint, haversineKm, sunPosition } from "./geo.js";
 
 export const SUBMIT_TOOL = "submit_result";
+export const HYPOTHESIS_TOOL = "mark_hypothesis";
 export const PRECISION_LEVELS = ["exakt", "strasse", "stadtteil", "stadt", "region", "land", "kontinent", "unbekannt"];
 export const CLUE_CATEGORIES = [
   "text", "sprache", "verkehrszeichen", "schild", "strasse", "kennzeichen", "fahrzeug", "architektur",
   "infrastruktur", "menschen", "gegenstand", "marke", "vegetation", "tiere", "landschaft", "klima", "sonne",
-  "innenraum", "wahrzeichen", "kultur", "sonstiges",
+  "innenraum", "wahrzeichen", "kultur", "symbol", "sonstiges",
 ];
 const STRENGTHS = ["stark", "mittel", "schwach"];
 
@@ -85,6 +86,35 @@ export const FUNCTION_TOOLS = [
   },
   {
     type: "function",
+    name: HYPOTHESIS_TOOL,
+    description:
+      "Zeigt deine aktuelle Vermutung sofort auf der Karte des Nutzers (Zwischenstand). Rufe es in Runde 1 und immer, " +
+      "wenn sich deine Vermutung deutlich ändert – parallel zu anderen Werkzeugen, damit keine Extra-Runde entsteht.",
+    parameters: obj({
+      label: { type: "string", description: "Kurz, z.B. 'Vermutung: Süddeutschland, Kleinstadt'" },
+      camera_lat: { type: "number" },
+      camera_lon: { type: "number" },
+      radius_km: { type: "number", description: "Unsicherheit in km (Land ~300, Region ~50, Stadt ~5, Straße ~0.3)" },
+      subject_lat: { type: "number", description: "Motiv, falls schon bekannt" },
+      subject_lon: { type: "number" },
+    }, ["label", "camera_lat", "camera_lon", "radius_km"]),
+  },
+  {
+    type: "function",
+    name: "bearing_distance",
+    description: "Berechnet Richtung (Grad ab Norden, im Uhrzeigersinn) und Entfernung in Metern von Punkt A nach Punkt B.",
+    parameters: obj({ from_lat: { type: "number" }, from_lon: { type: "number" }, to_lat: { type: "number" }, to_lon: { type: "number" } }),
+  },
+  {
+    type: "function",
+    name: "destination_point",
+    description:
+      "Berechnet den Punkt, der von (lat, lon) in Richtung bearing_deg nach distance_m Metern liegt. Beispiel: Kamera-Standpunkt " +
+      "bestimmen, wenn das Motiv bekannt ist und man es aus Richtung Süd-West aus ~200 m sieht → vom Motiv 225° und 200 m.",
+    parameters: obj({ lat: { type: "number" }, lon: { type: "number" }, bearing_deg: { type: "number" }, distance_m: { type: "number" } }),
+  },
+  {
+    type: "function",
     name: SUBMIT_TOOL,
     description: "Gibt das Endergebnis ab. Genau einmal am Ende aufrufen. Alle Texte auf Deutsch.",
     parameters: obj({
@@ -93,10 +123,21 @@ export const FUNCTION_TOOLS = [
       country: { type: "string" },
       region: { type: "string" },
       city: { type: "string" },
-      best_guess: obj(LOCATION),
+      camera: obj({ ...LOCATION, name: { type: "string", description: "Standpunkt des Fotografen, z.B. 'Gehweg Hauptstraße vor Nr. 12'" } }),
+      subject: obj({
+        name: { type: "string", description: "Was hauptsächlich zu sehen ist, z.B. 'Stadtkirche St. Fabian'" },
+        lat: { type: "number" },
+        lon: { type: "number" },
+        radius_km: { type: "number" },
+      }),
+      view: obj({
+        bearing_deg: { type: "number", description: "Blickrichtung der Kamera, Grad ab Norden im Uhrzeigersinn" },
+        fov_deg: { type: "number", description: "Geschätzter Bildwinkel (Handy ca. 65, Weitwinkel 90, Zoom 20)" },
+        distance_m: { type: "number", description: "Entfernung Kamera → Motiv in Metern" },
+      }),
       candidates: {
         type: "array",
-        description: "Alternative Orte (ohne best_guess), absteigend nach Wahrscheinlichkeit, max. 5",
+        description: "Alternative Standpunkte (ohne camera), absteigend nach Wahrscheinlichkeit, max. 5",
         items: obj({ ...LOCATION, rationale: { type: "string" } }),
       },
       clues: {
@@ -112,7 +153,7 @@ export const FUNCTION_TOOLS = [
       },
       text_found: { type: "array", items: { type: "string" }, description: "Alle im Bild gelesenen Texte" },
       verification: { type: "string", description: "Was mit Karten-/Websuche bestätigt oder widerlegt wurde" },
-    }, ["summary", "precision", "country", "region", "city", "best_guess", "candidates", "clues", "text_found", "verification"]),
+    }, ["summary", "precision", "country", "region", "city", "camera", "subject", "view", "candidates", "clues", "text_found", "verification"]),
   },
 ];
 
@@ -168,7 +209,9 @@ export function validateSubmission(inp) {
     country: String(inp.country || ""),
     region: String(inp.region || ""),
     city: String(inp.city || ""),
-    best_guess: cleanLocation(inp.best_guess, "best_guess"),
+    camera: cleanLocation(inp.camera, "camera"),
+    subject: null,
+    view: null,
     candidates: [],
     clues: [],
     text_found: (Array.isArray(inp.text_found) ? inp.text_found : []).map(String).filter((t) => t.trim()),
@@ -182,6 +225,22 @@ export function validateSubmission(inp) {
     }
   }
   result.candidates = result.candidates.slice(0, 5);
+  const cam = result.camera;
+  const subj = inp.subject;
+  if (subj && typeof subj === "object" && Number.isFinite(subj.lat) && Number.isFinite(subj.lon) && Math.abs(subj.lat) <= 90 && Math.abs(subj.lon) <= 180) {
+    const r = Number.isFinite(subj.radius_km) && subj.radius_km > 0 ? Math.min(subj.radius_km, 20000) : cam.radius_km;
+    result.subject = { name: String(subj.name || "").trim() || "Motiv", lat: subj.lat, lon: subj.lon, radius_km: Math.round(r * 1000) / 1000 };
+  }
+  // Direction and distance: taken from the model, else derived from camera → subject.
+  const v = inp.view && typeof inp.view === "object" ? inp.view : {};
+  const derivedKm = result.subject ? haversineKm(cam.lat, cam.lon, result.subject.lat, result.subject.lon) : null;
+  const bearing = Number.isFinite(v.bearing_deg) ? ((v.bearing_deg % 360) + 360) % 360
+    : result.subject && derivedKm > 0.005 ? bearingDeg(cam.lat, cam.lon, result.subject.lat, result.subject.lon) : null;
+  if (bearing != null) {
+    const fov = Number.isFinite(v.fov_deg) ? Math.min(Math.max(v.fov_deg, 5), 180) : 65;
+    const dist = Number.isFinite(v.distance_m) && v.distance_m > 0 ? v.distance_m : derivedKm != null && derivedKm > 0.005 ? derivedKm * 1000 : 150;
+    result.view = { bearing_deg: Math.round(bearing * 10) / 10, fov_deg: Math.round(fov), distance_m: Math.round(Math.min(dist, 200000)) };
+  }
   for (const clue of Array.isArray(inp.clues) ? inp.clues : []) {
     if (!clue || typeof clue !== "object") continue;
     const box = Array.isArray(clue.box) && clue.box.length === 4 && clue.box.every((v) => typeof v === "number")
@@ -265,6 +324,29 @@ export class ToolExecutor {
 
   async tool_overpass_query(args) {
     return JSON.stringify(await this.osm.overpass(str(args, "query")));
+  }
+
+  async tool_mark_hypothesis(args) {
+    const hypo = {
+      label: str(args, "label"),
+      camera: { lat: num(args, "camera_lat", -90, 90), lon: num(args, "camera_lon", -180, 180) },
+      radius_km: Math.min(Math.max(num(args, "radius_km"), 0.05), 5000),
+    };
+    if (Number.isFinite(args.subject_lat) && Number.isFinite(args.subject_lon)) {
+      hypo.subject = { lat: num(args, "subject_lat", -90, 90), lon: num(args, "subject_lon", -180, 180) };
+    }
+    this.emit("hypothesis", hypo);
+    return "Auf der Karte markiert.";
+  }
+
+  async tool_bearing_distance(args) {
+    const [a, b, c, d] = [num(args, "from_lat", -90, 90), num(args, "from_lon", -180, 180), num(args, "to_lat", -90, 90), num(args, "to_lon", -180, 180)];
+    return JSON.stringify({ bearing_deg: Math.round(bearingDeg(a, b, c, d) * 10) / 10, distance_m: Math.round(haversineKm(a, b, c, d) * 1000) });
+  }
+
+  async tool_destination_point(args) {
+    const [lat, lon] = destinationPoint(num(args, "lat", -90, 90), num(args, "lon", -180, 180), num(args, "bearing_deg"), num(args, "distance_m", 0, 2e7) / 1000);
+    return JSON.stringify({ lat: Math.round(lat * 1e6) / 1e6, lon: Math.round(lon * 1e6) / 1e6 });
   }
 
   async tool_sun_position(args) {

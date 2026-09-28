@@ -7,7 +7,7 @@ herauszufinden, wo es entstanden ist, bis hin zur Straße oder zum Standpunkt.
 Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs)) und läuft direkt auf
 **GitHub Pages**, ganz ohne Server. Die KI-Analyse übernimmt **Google Gemini**.
 
-![Oberfläche (Demo-Lauf)](docs/screenshot.png)
+![Oberfläche mit simulierter KI-Antwort (Foto: R.kaelcke, Wikimedia Commons, CC BY-SA 4.0)](docs/screenshot.png)
 
 ## Benutzung
 
@@ -15,8 +15,14 @@ Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs))
 
 1. Einmalig den Gemini-API-Key in das Feld unter dem Upload-Bereich eintragen (siehe unten).
 2. Ein Foto in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
-3. Live verfolgen, wohin die KI zoomt und was sie sucht. Am Ende stehen Ort, Karte, Konfidenz und die im
-   Bild markierten Hinweise.
+3. Live verfolgen, wohin die KI zoomt und was sie sucht. Ihre Zwischenstände erscheinen sofort auf der
+   Karte, die von der Weltkarte aus immer weiter heranzoomt.
+4. Am Ende zeigt die Karte zwei Punkte:
+   - **📷 Standpunkt**: von hier wurde fotografiert (mit Unsicherheits-Areal),
+   - **🎯 Motiv**: das ist auf dem Foto zu sehen,
+   dazwischen das **Sichtfeld** (Blickrichtung und Bildwinkel). Darunter zeigt „Woran Ortfinder den Ort
+   erkennt“ jeden Hinweis als Bildausschnitt: Verkehrszeichen, Schrift und Sprache, Symbole, Pflanzen,
+   Architektur, Kleidung usw.
 
 ## Wie es funktioniert
 
@@ -44,8 +50,13 @@ Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs))
    - **mit Google suchen** (Google-Suche von Gemini, im bezahlten Tarif);
    - **den Sonnenstand berechnen** (`sun_position`), um Schatten gegen Kandidatenorte zu prüfen.
 
-   Am Ende steht ein strukturiertes Ergebnis: bester Tipp mit Koordinaten, Unsicherheitsradius und
-   Konfidenz, Alternativen, alle Hinweise (im Bild markiert), gelesene Texte und die Überprüfung.
+   Am Ende steht ein strukturiertes Ergebnis: Standpunkt der Kamera und Motiv mit Koordinaten,
+   Blickrichtung, Unsicherheitsradius und Konfidenz, Alternativen, alle Hinweise (im Bild markiert und
+   als Ausschnitte), gelesene Texte und die Überprüfung.
+
+   Hautfarbe, Gesichter oder Körpermerkmale werden bewusst **nicht** als Hinweis verwendet: Sie verraten
+   keinen Ort zuverlässig und würden auf Stereotype hinauslaufen. Menschen zählen nur über Kleidung,
+   Uniformen, Trikots und Schriftzüge.
 3. **Blindtest.** Hat das Bild GPS-Daten, bekommt die KI diese *nicht* zu sehen. Am Ende zeigt
    Ortfinder, wie weit die reine Bildanalyse vom echten Ort entfernt lag. Das eignet sich gut zum
    Vorführen.
@@ -106,8 +117,12 @@ lokale Tests `http://localhost:8000/*`), *API restrictions* auf die „Generativ
 Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen. Meldet Google ein
 Anfrage-Limit, wartet Ortfinder automatisch die angegebene Zeit ab und verteilt die weiteren
 Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit erreicht, bricht Ortfinder mit einem
-klaren Hinweis ab. Standardmäßig nutzt eine Analyse höchstens 12 Runden (einstellbar unter ⚙); die KI
-bündelt Zooms und Suchen pro Runde, um mit wenigen Anfragen auszukommen.
+klaren Hinweis ab.
+
+**Tempo:** Große Fotos gehen gleich mit vier hochaufgelösten Detail-Kacheln an die KI, die Werkzeuge einer
+Runde laufen parallel, und die KI soll nach 2–4 Runden abgeben (höchstens 8, einstellbar unter ⚙).
+Standard-Denktiefe ist „mittel“; „hoch“ ist gründlicher, aber langsamer. Im bezahlten Tarif dauert eine
+Analyse so meist unter einer Minute; im kostenlosen bremst das Limit von 5 Anfragen pro Minute.
 
 Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
 **zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;

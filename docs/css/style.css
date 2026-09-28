@@ -222,3 +222,41 @@ button.chip:hover { border-color: var(--accent); }
   .key-bar .row input { flex-basis: 100%; }
   .drop-title { font-size: 1.1rem; }
 }
+
+/* ---- map: pins, legend ---- */
+.pin { background: none; border: 0; }
+.pin span {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+  font-size: 18px; line-height: 1; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45); border: 2px solid #fff;
+}
+.pin-camera span { background: #0b6bcb; }
+.pin-subject span { background: #e8590c; }
+.pin-exif span { background: #12805c; }
+.pin-hypo span { background: #7a4cc2; opacity: 0.8; }
+.legend { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.legend span { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: middle; }
+.lg-cone { background: rgba(255, 146, 43, 0.5); border: 1px solid #e8590c; }
+.lg-area { background: rgba(11, 107, 203, 0.2); border: 1px solid #0b6bcb; }
+.lg-hypo { border: 2px dashed #7a4cc2; }
+.lg-alt { background: #8a94a3; border-radius: 50% !important; width: 10px !important; }
+
+/* ---- result labels ---- */
+.label { margin: 12px 0 2px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.small-answer { font-size: 1rem; }
+.view { margin: 10px 0; padding: 8px 10px; border-radius: 8px; background: rgba(232, 89, 12, 0.1); font-size: 0.9rem; }
+
+/* ---- clue gallery ---- */
+.clues-card { margin-bottom: 16px; }
+.clue-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.clue-card {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg);
+  display: flex; flex-direction: column; transition: border-color .15s, transform .15s;
+}
+.clue-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.clue-card.stark { border-top: 3px solid #ff4d6d; }
+.clue-card.mittel { border-top: 3px solid #ffb020; }
+.clue-card.schwach { border-top: 3px solid #9aa5b1; }
+.clue-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; display: block; background: #111; }
+.clue-noimg { aspect-ratio: 4 / 3; display: grid; place-items: center; color: var(--muted); font-size: 0.85rem; background: var(--accent-soft); }
+.clue-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+.clue-desc { font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; hyphens: auto; }

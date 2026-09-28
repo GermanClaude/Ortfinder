@@ -93,7 +93,7 @@ export function preview(result) {
 }
 
 export class GeminiAgent {
-  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "high", webSearch = true, maxSteps = 12, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
+  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 8, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
     this.apiKey = apiKey;
     this.model = model;
     this.thinkingLevel = thinkingLevel;
@@ -229,24 +229,24 @@ export class GeminiAgent {
         continue;
       }
 
-      const results = [];
       let submission = null;
-      for (const call of calls) {
+      // Tools of one round run in parallel (OpenStreetMap lookups queue themselves for rate limits);
+      // results keep the order of the calls.
+      const results = await Promise.all(calls.map(async (call) => {
         if (call.name === SUBMIT_TOOL) {
           try {
             submission = validateSubmission(call.arguments);
-            results.push({ type: "function_result", name: call.name, call_id: call.id, result: "Ergebnis übernommen." });
+            return { type: "function_result", name: call.name, call_id: call.id, result: "Ergebnis übernommen." };
           } catch (err) {
             if (!(err instanceof ToolInputError)) throw err;
-            results.push({ type: "function_result", name: call.name, call_id: call.id, is_error: true, result: `Ergebnis ungültig: ${err.message}. Bitte korrigiert erneut abgeben.` });
+            return { type: "function_result", name: call.name, call_id: call.id, is_error: true, result: `Ergebnis ungültig: ${err.message}. Bitte korrigiert erneut abgeben.` };
           }
-          continue;
         }
         this.emit("tool_call", { tool: call.name, input: call.arguments });
         const { result, isError } = await executor.run(call.name, call.arguments);
         this.emit("tool_result", { tool: call.name, is_error: isError, preview: preview(result) });
-        results.push({ type: "function_result", name: call.name, call_id: call.id, result, ...(isError ? { is_error: true } : {}) });
-      }
+        return { type: "function_result", name: call.name, call_id: call.id, result, ...(isError ? { is_error: true } : {}) };
+      }));
       if (submission) return { analysis: submission, usage: this.usage };
 
       const remaining = this.maxSteps - step;
@@ -270,14 +270,15 @@ export function assembleResult({ metadata, exifLocation, analysis, usage, model,
     result.analysis = analysis;
     result.usage = usage;
     if (exifLocation) {
-      const b = analysis.best_guess;
+      // EXIF GPS is where the camera was, so it is compared with the estimated standpoint.
+      const b = analysis.camera;
       result.exif_vs_analysis_km = Math.round(haversineKm(exifLocation.lat, exifLocation.lon, b.lat, b.lon) * 1000) / 1000;
     }
   }
   if (exifLocation) {
     result.final = { source: "exif_gps", name: exifLocation.address || "GPS-Position aus den Bild-Metadaten", lat: exifLocation.lat, lon: exifLocation.lon, radius_km: 0.05, confidence: 0.99, precision: "exakt" };
   } else if (analysis) {
-    result.final = { source: "visual_analysis", ...analysis.best_guess, precision: analysis.precision };
+    result.final = { source: "visual_analysis", ...analysis.camera, precision: analysis.precision };
   } else {
     result.final = null;
   }

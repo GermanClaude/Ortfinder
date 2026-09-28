@@ -65,7 +65,7 @@ test("full loop: zoom + geocode, then submit", async () => {
   assert.equal(first.body.model, "gemini-3.8-flash");
   assert.equal(first.body.store, false);
   assert.match(first.body.system_instruction, /Ortfinder/);
-  assert.deepEqual(first.body.generation_config, { thinking_level: "high", thinking_summaries: "auto" });
+  assert.deepEqual(first.body.generation_config, { thinking_level: "medium", thinking_summaries: "auto" });
   assert.deepEqual(first.body.tools.at(-1), { type: "google_search" });
   assert.equal(first.body.input.length, 1);
   assert.equal(first.body.input[0].type, "user_input");
@@ -208,7 +208,7 @@ test("abort stops the loop", async () => {
 });
 
 test("assembleResult prefers EXIF GPS and reports the blind-test distance", () => {
-  const analysis = { precision: "strasse", best_guess: { name: "X", lat: 47.99, lon: 7.85, radius_km: 1, confidence: 0.5 } };
+  const analysis = { precision: "strasse", camera: { name: "X", lat: 47.99, lon: 7.85, radius_km: 1, confidence: 0.5 } };
   const r = assembleResult({ metadata: {}, exifLocation: { lat: 48.0, lon: 7.85, address: "Y" }, analysis, usage: {}, model: "m", seconds: 1 });
   assert.equal(r.final.source, "exif_gps");
   assert.ok(Math.abs(r.exif_vs_analysis_km - 1.11) < 0.05);
@@ -221,4 +221,27 @@ test("preview makes OSM results readable", () => {
   assert.match(preview(JSON.stringify([{ name: "A", lat: 1, lon: 2 }])), /^1 Treffer: A \(1\.00000, 2\.00000\)/);
   assert.equal(preview(JSON.stringify({ total: 2, elements: [{ type: "node", tags: { name: "B" } }, { type: "way" }] })), "2 OSM-Treffer: B, way");
   assert.equal(preview([{ type: "text", text: "Ausschnitt" }, { type: "image" }]), "Ausschnitt [Bild]");
+});
+
+test("tools of one round run in parallel", async () => {
+  const started = [];
+  const finished = [];
+  const { fetchImpl } = fakeGemini([
+    interaction([call("c1", "geocode", { query: "a" }), call("c2", "geocode", { query: "b" })]),
+    interaction([call("c3", "submit_result", VALID_SUBMISSION)]),
+  ]);
+  const slowOsm = {
+    geocode: async (q) => {
+      started.push(q);
+      await new Promise((r) => setTimeout(r, 150));
+      finished.push(q);
+      return [{ name: q, lat: 1, lon: 2 }];
+    },
+  };
+  const executor = new ToolExecutor({ zoom: async () => ({}), osm: slowOsm });
+  const agent = new GeminiAgent({ apiKey: "k", webSearch: false, fetchImpl });
+  const t0 = Date.now();
+  await agent.run({ intro: "x", images: [], executor });
+  assert.deepEqual(started, ["a", "b"]);
+  assert.ok(Date.now() - t0 < 290, "both lookups overlapped");
 });

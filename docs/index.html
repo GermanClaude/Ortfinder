@@ -56,14 +56,14 @@
           <div>
             <label for="thinking">Denktiefe</label>
             <select id="thinking">
-              <option value="high">hoch (gründlich)</option>
-              <option value="medium">mittel</option>
-              <option value="low">niedrig (schnell)</option>
+              <option value="high">hoch (gründlicher, langsamer)</option>
+              <option value="medium" selected>mittel (empfohlen)</option>
+              <option value="low">niedrig (am schnellsten)</option>
             </select>
           </div>
           <div>
             <label for="max-steps">Max. Runden</label>
-            <input id="max-steps" type="number" min="3" max="60" value="12">
+            <input id="max-steps" type="number" min="3" max="60" value="8">
           </div>
           <div class="check-cell">
             <label class="check"><input id="web-search" type="checkbox" checked> Google-Suche (nur bezahlter Tarif)</label>
@@ -105,12 +105,18 @@
           <div class="card map-card">
             <div class="card-head"><h2>Karte</h2><a id="osm-link" class="small" target="_blank" rel="noopener" hidden>In OpenStreetMap öffnen</a></div>
             <div id="map"></div>
+            <p class="legend small muted">📷 Standpunkt · 🎯 Motiv · <span class="lg-cone"></span> Sichtfeld · <span class="lg-area"></span> Aufnahme-Areal · <span class="lg-hypo"></span> Zwischenstand · <span class="lg-alt"></span> Alternativen</p>
           </div>
           <div class="card">
             <div class="card-head"><h2>Ergebnis</h2></div>
             <div id="result"></div>
           </div>
         </div>
+      </div>
+
+      <div id="clues-card" class="card clues-card" hidden>
+        <div class="card-head"><h2>Woran Ortfinder den Ort erkennt</h2><span id="clue-count" class="muted small"></span></div>
+        <div id="clue-gallery" class="clue-gallery"></div>
       </div>
 
       <div class="card">
