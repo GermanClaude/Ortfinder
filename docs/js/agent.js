@@ -3,6 +3,7 @@
 import { haversineKm } from "./geo.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { SUBMIT_TOOL, ToolInputError, buildTools, validateSubmission } from "./tools.js";
+import { compactGemini } from "./compact.js";
 
 export const API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 export const MODELS = [
@@ -97,12 +98,18 @@ export class GeminiAgent {
    * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
    * `whenActive()` resolves to true after waiting for a page that was in the background.
    */
+  /**
+   * fallbackModels: free models with their own daily quota to continue with when `model` has used up its
+   * requests for today (Google counts the free tier per model); onModelExhausted(model) is told about it.
+   */
   constructor({
     apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
-    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
+    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, fallbackModels = [], onModelExhausted = () => {},
   } = {}) {
     this.apiKey = apiKey;
     this.model = model;
+    this.fallbackModels = [...fallbackModels];
+    this.onModelExhausted = onModelExhausted;
     this.thinkingLevel = thinkingLevel;
     this.webSearch = webSearch;
     this.maxSteps = maxSteps;
@@ -128,7 +135,7 @@ export class GeminiAgent {
       model: this.model,
       store: false,
       system_instruction: SYSTEM_PROMPT,
-      input,
+      input: compactGemini(input), // earlier rounds' images and long results as short notes
       generation_config: { thinking_level: this.thinkingLevel, thinking_summaries: "auto" },
     };
     for (let attempt = 0; ; attempt++) {
@@ -236,13 +243,32 @@ export class GeminiAgent {
     if (resume) {
       this.usage = { ...this.usage, ...resume.usage };
       if (resume.webSearch === false) this.webSearch = false;
+      if (resume.model) {
+        this.model = resume.model;
+        this.fallbackModels = this.fallbackModels.filter((m) => m !== resume.model);
+      }
     }
-    const save = (step) => this.checkpoint({ conversation: history, step, nudges, usage: this.usage, webSearch: this.webSearch });
+    const save = (step) => this.checkpoint({ conversation: history, step, nudges, usage: this.usage, webSearch: this.webSearch, model: this.model });
 
     for (let step = (resume?.step ?? 0) + 1; step <= this.maxSteps; step++) {
       this.signal?.throwIfAborted();
       this.emit("step", { step, max_steps: this.maxSteps });
-      const interaction = await this.request(history);
+      let interaction;
+      try {
+        interaction = await this.request(history);
+      } catch (err) {
+        if (err.code !== "DAILY_LIMIT" || !this.fallbackModels.length) throw err;
+        // Today's free requests of this model are used up; the next free model has its own. Its thinking
+        // cannot continue this model's, so it starts over with the photo (tools run locally and fast).
+        const used = this.model;
+        this.onModelExhausted(used);
+        this.model = this.fallbackModels.shift();
+        this.emit("status", { message: `Tageslimit von ${used} erreicht – Ortfinder macht mit ${this.model} weiter (eigenes Tageskontingent).` });
+        history.splice(1);
+        nudges = 0;
+        step = 0;
+        continue;
+      }
       this.addUsage(interaction.usage);
       // Echo model steps exactly as received (thought signatures included); inputs are ours already.
       const steps = (interaction.steps || []).filter((s) => s.type !== "user_input" && s.type !== "function_result");

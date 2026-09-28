@@ -63,7 +63,7 @@ export const GUIDES = {
 
   gemini: {
     title: "Google Gemini (eigener Key)",
-    intro: "Du brauchst ein Google-Konto. Der kostenlose Tarif reicht für etwa 2 Analysen am Tag (20 Anfragen); das Limit setzt sich jeden Tag um 9 Uhr (deutsche Zeit) zurück.",
+    intro: "Du brauchst ein Google-Konto. Der kostenlose Tarif reicht für etwa 6–7 Analysen am Tag (je 20 Anfragen für Gemini 3.8 und 3.7 Flash, Ortfinder wechselt selbst); das Limit setzt sich jeden Tag um 9 Uhr (deutsche Zeit) zurück.",
     steps: each((d) => [
       `[aistudio.google.com/apikey](https://aistudio.google.com/apikey) in ${BROWSER[d]} öffnen und mit deinem Google-Konto anmelden (beim ersten Mal die Nutzungsbedingungen bestätigen).` +
         (d === "android" ? " Ist die Seite zu klein: Chrome **⋮** → **Desktopwebsite**." : d === "ios" ? " Ist die Seite zu klein: in der Adressleiste **aA** → **Desktop-Website anfordern**." : ""),
@@ -90,7 +90,7 @@ export const GUIDES = {
       PICK_PHOTO[d],
     ]),
     notes: {
-      all: "Meldet Ortfinder „Datenschutz-Einstellungen“: [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy) öffnen und die kostenlosen Modelle erlauben. Die 50 Anfragen reichen für etwa 5–8 Analysen am Tag.",
+      all: "Meldet Ortfinder „Datenschutz-Einstellungen“: [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy) öffnen und die kostenlosen Modelle erlauben. Die 50 Anfragen reichen für etwa 7–10 Analysen am Tag.",
       ios: "Meldet Ortfinder „Datenschutz-Einstellungen“: [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy) öffnen und die kostenlosen Modelle erlauben. Anmelden und analysieren im selben Browser (Safari) – eine Verknüpfung auf dem Home-Bildschirm hat eigene Einstellungen.",
     },
   },

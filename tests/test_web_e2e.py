@@ -211,7 +211,8 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     answers = page.locator(".answer").all_text_contents()
     assert answers == ["Bahnhofstraße, Freiburg", "Martinstor"]  # standpoint and motif
     assert "Blick nach N" in page.text_content("#result")
-    assert page.locator(".zooms figure").count() == 5  # photo zoom, aerial view, 3D reconstruction, top view, aerial 3D
+    # photo zoom, aerial view, 3D reconstruction, top view, top view from solve_camera, aerial 3D
+    assert page.locator(".zooms figure").count() == 6
     assert "Luftbild: Kreuzung vergleichen" in page.text_content(".zooms figure.mapview")
     assert "3D-Nachbau: Straßenflucht prüfen" in page.text_content(".zooms figure.render")
     assert "Draufsicht: Straße von oben" in page.text_content(".zooms")
@@ -248,8 +249,13 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     first, second = gemini_bodies
     assert first["store"] is False and first["model"] == "gemini-3.8-flash"
     content = first["input"][0]["content"]
-    assert [c["type"] for c in content] == ["text", "image", "image"]
+    # One picture: the photo with the 0–1 ruler in a margin (the separate grid image is gone).
+    assert [c["type"] for c in content] == ["text", "image"]
     assert base64.b64decode(content[1]["data"])[:2] == b"\xff\xd8"  # real JPEG from the canvas
+    ruler = Image.open(io.BytesIO(base64.b64decode(content[1]["data"])))
+    assert ruler.size == (1600 + 44, 1000 + 44)
+    # Later requests carry only the latest round's pictures; earlier ones become short notes.
+    assert sum(1 for c in second["input"][0]["content"] if c["type"] == "image") == 1
     zoom_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "zoom_image")
     zoom_image = Image.open(io.BytesIO(base64.b64decode(zoom_result["result"][1]["data"])))
     assert max(zoom_image.size) >= 1024  # the crop was upscaled for reading small details
@@ -271,7 +277,9 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     assert top_image.size[0] > top_image.size[1]  # two panels side by side
     solve_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "solve_camera")
     assert "is_error" not in solve_result, solve_result["result"]
-    solved = json.loads(solve_result["result"])
+    # solve_camera: the pose as JSON plus the top view for that pose (one round fewer).
+    assert [b["type"] for b in solve_result["result"]] == ["text", "image"], solve_result["result"]
+    solved = json.loads(solve_result["result"][0]["text"])
     assert set(solved) >= {"camera", "view", "rms_pct_of_width", "points", "note"} and len(solved["points"]) == 4
     draped = [s for s in second["input"] if s["type"] == "function_result" and s["name"] == "render_view"][1]
     assert "Luftbild-3D" in draped["result"][0]["text"], draped["result"][0]["text"]
@@ -633,7 +641,7 @@ def test_own_pc_ollama_provider_and_phone_link(browser, site_url, tmp_path):
     assert chats[0]["model"] == "gemma4:12b" and chats[0]["options"] == {"num_ctx": 32768} and chats[0]["stream"] is True
     # 1600 px photo: overview + grid (detail tiles only come with larger photos).
     assert [m["role"] for m in chats[0]["messages"]] == ["system", "user"]
-    assert len(chats[0]["messages"][1]["images"]) == 2
+    assert len(chats[0]["messages"][1]["images"]) == 1  # the photo with its ruler
     assert chats[1]["messages"][-1]["images"], "the zoom crop is sent back as an image"
     assert "Zwischenstand: Südbaden" in page.text_content("#log")
 
@@ -708,7 +716,7 @@ def test_openrouter_sign_in_on_the_phone_then_the_analysis_starts(browser, site_
     assert chats[0]["body"]["models"] == ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"], "fallback named in the request"
     assert "OpenRouter hat auf google/gemma-4-31b-it:free ausgewichen" in page.text_content("#log")
     first_user = chats[0]["body"]["messages"][1]["content"]
-    assert [p["type"] for p in first_user][:3] == ["text", "image_url", "image_url"], "the photo survived the sign-in redirect"
+    assert [p["type"] for p in first_user][:2] == ["text", "image_url"], "the photo survived the sign-in redirect"
     assert "kostenlos über OpenRouter" in page.text_content("#settings-toggle")
     stored = page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1'))")
     assert stored["openrouterKey"] == "sk-or-v1-phone" and stored["provider"] == "openrouter"
@@ -811,7 +819,7 @@ def test_claude_provider_with_own_api_key(browser, site_url, tmp_path):
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert len(body["tools"]) == 15 and all(t["eager_input_streaming"] for t in body["tools"])
     first_user = body["messages"][0]["content"]
-    assert [b["type"] for b in first_user][:3] == ["text", "image", "image"]
+    assert [b["type"] for b in first_user][:2] == ["text", "image"]
     assert first_user[1]["source"]["media_type"] == "image/jpeg"
     # Second request: the answer is sent back unchanged, both tool results in one message, the zoom as an image.
     second = requests[1]["body"]["messages"]
@@ -897,5 +905,43 @@ def test_guides_for_every_option_and_device(browser, site_url):
     guide.goto(site_url + "anleitung.html#ollama/windows")
     guide.wait_for_selector("#guide-body code.copy")
     assert guide.get_attribute("#guide-body a[download]", "href") == "ki/ortfinder-ki-windows.bat"
+    assert errors == []
+    context.close()
+
+
+def test_gemini_daily_limit_continues_with_the_next_free_model(browser, site_url, tmp_path):
+    """Free tier: 20 requests per day and model. Used up → the next free model continues, and is remembered."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context()
+    context.add_init_script(GEMINI_SETTINGS)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    models: list[str] = []
+    daily = {"error": {"message": "Rate limit exceeded for model gemini-3.8-flash (limit: 20 requests per day on Free Tier). Please retry in 58s.", "code": "too_many_requests"}}
+
+    def gemini(route):
+        body = json.loads(route.request.post_data)
+        models.append(body["model"])
+        if body["model"] == "gemini-3.8-flash":
+            route.fulfill(status=429, content_type="application/json", body=json.dumps(daily))
+        else:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(_interaction([{"type": "function_call", "id": "x", "name": "submit_result", "arguments": SUBMISSION}])))
+
+    page.route("https://generativelanguage.googleapis.com/**", gemini)
+    page.goto(site_url)
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector(".answer", timeout=30000)
+    assert models == ["gemini-3.8-flash", "gemini-3.7-flash"]
+    assert "Tageslimit von gemini-3.8-flash erreicht – Ortfinder macht mit gemini-3.7-flash weiter" in page.text_content("#log")
+    saved = page.evaluate("JSON.parse(localStorage.getItem('ortfinder.gemini.exhausted.v1'))")
+    assert saved["models"] == ["gemini-3.8-flash"] and len(saved["day"]) == 10
+    # The next photo today starts right away with the model that still has requests left.
+    models.clear()
+    page.set_input_files("#file", str(street))
+    page.wait_for_function("document.querySelectorAll('.answer').length > 0 && document.querySelector('#log').textContent.includes('Fertig')", timeout=30000)
+    assert models == ["gemini-3.7-flash"]
     assert errors == []
     context.close()

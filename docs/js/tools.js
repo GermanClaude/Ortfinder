@@ -14,162 +14,119 @@ const STRENGTHS = ["stark", "mittel", "schwach"];
 
 const obj = (properties, required = Object.keys(properties)) => ({ type: "object", properties, required });
 const LOCATION = {
-  name: { type: "string", description: "Ortsbezeichnung, so genau wie begründbar" },
+  name: { type: "string", description: "Ortsbezeichnung, so genau wie belegt" },
   lat: { type: "number" },
   lon: { type: "number" },
-  radius_km: { type: "number", description: "Unsicherheitsradius um den Punkt in km" },
-  confidence: { type: "number", description: "Wahrscheinlichkeit 0.0-1.0, dass der Ort im Radius liegt" },
+  radius_km: { type: "number", description: "Unsicherheitsradius km" },
+  confidence: { type: "number", description: "0-1: Wahrscheinlichkeit, dass der Ort im Radius liegt" },
 };
+const NUM = { type: "number" };
 
+// Declarations are resent with every request, so descriptions are terse; the system prompt explains the method.
 export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "zoom_image",
-    description:
-      "Schneidet einen Bereich aus dem Originalbild in voller Auflösung aus und vergrößert ihn. Nutze das für jedes " +
-      "kleine Detail: Schrift, Verkehrszeichen, Schilder, Kennzeichen, Logos, Hausnummern, Kleidung, Gegenstände, " +
-      "entfernte Gebäude oder Berge, Pflanzen, Steckdosen, Blick aus Fenstern. Koordinaten sind Anteile der " +
-      "Bildbreite/-höhe (0.0 = links/oben, 1.0 = rechts/unten), siehe Raster-Bild. Mehrere Zooms gleichzeitig sind erwünscht.",
+    description: "Ausschnitt des Originalfotos in voller Auflösung, vergrößert (Schrift, Schilder, Kennzeichen, Logos, Details, " +
+      "Fernes). Koordinaten 0-1 wie das Lineal am Fotorand (0 = links/oben). Mehrere parallel.",
     parameters: obj({
-      x_min: { type: "number" },
-      y_min: { type: "number" },
-      x_max: { type: "number" },
-      y_max: { type: "number" },
-      enhance: { type: "boolean", description: "Kontrast/Schärfe anheben (hilft bei dunkler oder verwaschener Schrift)" },
-      purpose: { type: "string", description: "Was du dort zu erkennen hoffst" },
+      x_min: NUM, y_min: NUM, x_max: NUM, y_max: NUM,
+      enhance: { type: "boolean", description: "Kontrast/Schärfe anheben" },
+      purpose: { type: "string", description: "was du erkennen willst" },
     }, ["x_min", "y_min", "x_max", "y_max", "purpose"]),
   },
   {
     type: "function",
     name: "geocode",
-    description:
-      "Sucht Orte, Straßen, Adressen, Geschäfte oder Wahrzeichen in OpenStreetMap (Nominatim) und liefert Koordinaten. " +
-      "Beispiele: 'Bäckerei Müller, Bahnhofstraße, Freiburg', 'Hauptstraße 12, 79098 Freiburg', 'Kirche St. Martin Landshut'.",
+    description: "OpenStreetMap-Suche (Orte, Straßen, Adressen, Geschäfte, Wahrzeichen) → Koordinaten. Z.B. 'Bäckerei Müller, Bahnhofstraße, Freiburg'.",
     parameters: obj({
       query: { type: "string" },
-      country_codes: { type: "string", description: "Kommagetrennte ISO-3166-1 alpha-2 Codes zum Eingrenzen, z.B. 'de,at' - oder leer" },
+      country_codes: { type: "string", description: "z.B. 'de,at' oder leer" },
       limit: { type: "integer", description: "1-10" },
     }, ["query"]),
   },
   {
     type: "function",
     name: "reverse_geocode",
-    description: "Liefert Adresse/Ortsname zu Koordinaten. Nutze es, um einen Kandidatenpunkt zu prüfen.",
-    parameters: obj({
-      lat: { type: "number" },
-      lon: { type: "number" },
-      zoom: { type: "integer", description: "3 (Land) bis 18 (Gebäude)" },
-    }, ["lat", "lon"]),
+    description: "Adresse/Ortsname zu Koordinaten.",
+    parameters: obj({ lat: NUM, lon: NUM, zoom: { type: "integer", description: "3 Land … 18 Gebäude" } }, ["lat", "lon"]),
   },
   {
     type: "function",
     name: "overpass_query",
-    description:
-      "Führt eine Overpass-QL-Abfrage auf OpenStreetMap aus, um Hypothesen zu verifizieren oder Orte mit " +
-      "Merkmals-Kombinationen zu finden (z.B. Apotheke mit Namen X in Stadt Y, Bushaltestelle namens Z, Straße X nahe " +
-      "Straße Y). Immer mit Gebiets- oder around-Filter und begrenzter Ausgabe, z.B.:\n" +
-      '[out:json][timeout:25];area["ISO3166-1"="DE"][admin_level=2]->.a;nwr["shop"="bakery"]["name"~"Müller",i](area.a);out center 30;\n' +
-      '[out:json][timeout:25];way["highway"]["name"="Lindenweg"](around:3000,48.13,11.57);out center 20;',
+    description: "Overpass-QL auf OpenStreetMap, um Merkmals-Kombinationen zu finden/prüfen. Immer mit Gebiets- oder around-Filter " +
+      "und begrenzter Ausgabe, z.B. [out:json][timeout:25];way[\"highway\"][\"name\"=\"Lindenweg\"](around:3000,48.13,11.57);out center 20;",
     parameters: obj({ query: { type: "string" }, purpose: { type: "string" } }, ["query"]),
   },
   {
     type: "function",
     name: "map_view",
-    description:
-      "Zeigt dir ein Luftbild (satellit) oder eine Detailkarte (karte) rund um einen Punkt – mit rotem Fadenkreuz in der " +
-      "Mitte, Maßstab und Nordpfeil (Norden ist oben). Zum FEINORTEN: Gebäudeanordnung, Dachformen/-farben, Bäume, " +
-      "Plätze, Kreuzungen und Straßenverlauf mit dem Foto vergleichen und so den genauen Standpunkt finden. " +
-      "zoom 17 ≈ 600 m Bildbreite, 18 ≈ 300 m, 19 ≈ 150 m. Mit view_bearing_deg/view_fov_deg wird das Sichtfeld " +
-      "der Kamera als Keil eingezeichnet – so prüfst du, welche Gebäude im Bild liegen müssten.",
+    description: "Luftbild (satellit) oder Detailkarte (karte) um einen Punkt: rotes Kreuz = Punkt, Meter-Gitter, Norden oben. " +
+      "Zoom 17 ≈ 600 m, 18 ≈ 300 m, 19 ≈ 150 m breit. Mit view_bearing_deg/view_fov_deg wird das Sichtfeld eingezeichnet.",
     parameters: obj({
-      lat: { type: "number" },
-      lon: { type: "number" },
+      lat: NUM, lon: NUM,
       zoom: { type: "integer", description: "15-19" },
       layer: { type: "string", enum: ["satellit", "karte"] },
-      view_bearing_deg: { type: "number", description: "Optional: Blickrichtung der Kamera (0 = Nord, 90 = Ost)" },
-      view_fov_deg: { type: "number", description: "Optional: horizontaler Bildwinkel in Grad" },
-      purpose: { type: "string", description: "Was du vergleichen willst" },
+      view_bearing_deg: { type: "number", description: "optional: Blickrichtung" },
+      view_fov_deg: { type: "number", description: "optional: Bildwinkel" },
+      purpose: { type: "string" },
     }, ["lat", "lon", "zoom", "layer"]),
   },
   {
     type: "function",
     name: "render_view",
-    description:
-      "3D-NACHBAU: Rendert, was eine Kamera an diesem Standpunkt sehen müsste – aus OpenStreetMap-Gebäuden " +
-      "(Blöcke mit echter bzw. geschätzter Höhe), Straßen, Bäumen und einem Geländemodell mit Bergsilhouette, im " +
-      "Seitenverhältnis des Fotos, mit Kompassskala oben. Vergleiche mit dem Foto: Gebäudekanten und -lücken, " +
-      "Dachlinien, Straßenflucht, Horizont/Bergkamm. Passt es nicht, Standpunkt (±10–30 m) oder Blick (±5–10°) " +
-      "ändern und erneut rendern – mehrere Varianten in EINER Runde parallel. Grenzen: keine Fenster/Fassaden-" +
-      "details, Dachformen flach, Gebäudehöhen teils geschätzt. texture \"satellit\" legt das LUFTBILD über das " +
-      "Gelände (wie Google Earth) und zeichnet Gebäude als gelbe Drahtgitter: ideal für Blicke über Felder, Dächer, " +
-      "Täler und Ortschaften – Feldgrenzen, Wege, Hofplätze und Dachfarben direkt mit dem Foto vergleichen.",
+    description: "3D-Nachbau der Sicht von einem Standpunkt (OSM-Gebäude, Straßen, Bäume, Gelände mit Bergkamm) im Seitenverhältnis " +
+      "des Fotos, Kompassskala oben. Mit Foto vergleichen und Standpunkt/Blick nachstellen. texture \"satellit\": Luftbild über dem " +
+      "Gelände (wie Google Earth), Gebäude als Drahtgitter.",
     parameters: obj({
-      lat: { type: "number", description: "Standpunkt der Kamera" },
-      lon: { type: "number" },
-      bearing_deg: { type: "number", description: "Blickrichtung (Bildmitte), 0 = Nord, 90 = Ost" },
-      fov_deg: { type: "number", description: "horizontaler Bildwinkel in Grad (EXIF-Wert nutzen, falls angegeben)" },
-      eye_height_m: { type: "number", description: "Kamerahöhe über Boden: 1.6 zu Fuß, 3–30 aus Fenster/Turm, 50–120 Drohne" },
-      pitch_deg: { type: "number", description: "Neigung: 0 = waagrecht, negativ = nach unten" },
-      roll_deg: { type: "number", description: "Schieflage: positiv = Horizont steigt nach rechts an (meist 0)" },
-      texture: { type: "string", enum: ["modell", "satellit"], description: "modell (Standard) oder satellit (Luftbild über dem Gelände)" },
-      purpose: { type: "string", description: "Was du prüfen willst" },
+      lat: NUM, lon: NUM,
+      bearing_deg: { type: "number", description: "Blickrichtung, 0 = Nord" },
+      fov_deg: { type: "number", description: "horizontaler Bildwinkel" },
+      eye_height_m: { type: "number", description: "1.6 zu Fuß, 3-30 Fenster/Turm, 50-120 Drohne" },
+      pitch_deg: { type: "number", description: "negativ = nach unten" },
+      roll_deg: { type: "number", description: "meist 0" },
+      texture: { type: "string", enum: ["modell", "satellit"] },
+      purpose: { type: "string" },
     }, ["lat", "lon", "bearing_deg", "fov_deg"]),
   },
   {
     type: "function",
     name: "top_view",
-    description:
-      "DRAUFSICHT: Klappt das Foto auf den Boden herunter – jeder Bildpunkt wird als Sichtstrahl bis zum Gelände " +
-      "verfolgt – und zeigt es NEBEN dem Luftbild desselben Ausschnitts: Norden oben, gleiches Raster (A, B, C … / 1, 2, 3 …) " +
-      "in beiden Hälften, roter Punkt = Standpunkt, gelbe Linien = linker und rechter Bildrand, Bögen = Entfernungen. " +
-      "Stimmt die Kamerapose, liegen Straßen, Wege, Feldgrenzen, Hofplätze, Bäume und Hausgrundrisse deckungsgleich – so " +
-      "prüfst du Standpunkt UND Blickrichtung auf wenige Meter. Alles über dem Boden (Dächer, Bäume, Masten) erscheint nach " +
-      "hinten verlängert; vergleiche deshalb vor allem Bodenlinien und Gebäudefüße. Verdreht gegenüber dem Luftbild → " +
-      "bearing_deg ändern; zu lang oder zu kurz gezogen → pitch_deg bzw. eye_height_m; seitlich versetzt → Standpunkt. " +
-      "Am schnellsten erst solve_camera, dann top_view mit dessen Werten. style \"ueberlagert\" legt beides übereinander.",
+    description: "Draufsicht: Foto per Sichtstrahlen auf das Gelände geklappt, neben dem Luftbild desselben Ausschnitts (gleiches " +
+      "Raster, Norden oben, gelb = Bildränder). Deckungsgleich = Pose stimmt. Verdreht → bearing; zu lang/kurz → pitch/eye_height; " +
+      "versetzt → Standpunkt. style \"ueberlagert\" legt beides übereinander.",
     parameters: obj({
-      camera_lat: { type: "number", description: "Standpunkt der Kamera" },
-      camera_lon: { type: "number" },
-      bearing_deg: { type: "number", description: "Blickrichtung (Bildmitte), 0 = Nord, 90 = Ost" },
-      fov_deg: { type: "number", description: "horizontaler Bildwinkel (EXIF-Wert oder aus solve_camera)" },
-      pitch_deg: { type: "number", description: "Neigung, negativ = nach unten (entscheidend bei Blicken ins Tal)" },
-      roll_deg: { type: "number", description: "Schieflage, meist 0" },
-      eye_height_m: { type: "number", description: "Kamerahöhe über Boden (Fenster im 3. Stock ≈ 10)" },
-      min_distance_m: { type: "number", description: "Boden erst ab dieser Entfernung zeigen (Vordergrund wie Fensterbank/Dach ausblenden)" },
-      max_distance_m: { type: "number", description: "bis zu dieser Entfernung (Standard 1500; kleiner = schärfer)" },
-      photo_region: { type: "array", items: { type: "number" }, description: "Optional: nur diesen Bildteil verwenden [x_min, y_min, x_max, y_max] in 0-1" },
+      camera_lat: NUM, camera_lon: NUM, bearing_deg: NUM, fov_deg: NUM,
+      pitch_deg: NUM, roll_deg: NUM,
+      eye_height_m: { type: "number", description: "Kamerahöhe über Boden" },
+      min_distance_m: { type: "number", description: "Vordergrund ausblenden (Fensterbank, eigenes Dach)" },
+      max_distance_m: { type: "number", description: "Standard 1500; kleiner = schärfer" },
+      photo_region: { type: "array", items: NUM, description: "optional: nur dieser Bildteil [x_min,y_min,x_max,y_max]" },
       style: { type: "string", enum: ["nebeneinander", "ueberlagert"] },
-      purpose: { type: "string", description: "Was du prüfen willst" },
+      purpose: { type: "string" },
     }, ["camera_lat", "camera_lon", "bearing_deg", "fov_deg"]),
   },
   {
     type: "function",
     name: "solve_camera",
-    description:
-      "RÜCKWÄRTSSCHNITT (Photogrammetrie): Berechnet aus 4–8 Punkten, die du im Foto UND auf Luftbild/Karte eindeutig " +
-      "wiedererkennst, die exakte Kamerapose – Blickrichtung, Neigung, Schieflage, Bildwinkel, Kamerahöhe und bei gut " +
-      "verteilten Punkten (über 25° breit, nah und fern gemischt) auch den Standpunkt selbst. Gute Punkte liegen am BODEN: " +
-      "Hausecken am Boden, Weg- und Straßenkreuzungen, Feldecken, Mast- und Baumfüße; oder mit bekannter Höhe über Boden " +
-      "(height_m, z.B. Dachtraufe ≈ 3 m je Stockwerk). Verteile sie über das Bild (links/rechts, nah/fern). Die Antwort " +
-      "nennt den Fehler je Punkt: Ein Punkt mit großem Fehler ist vermutlich falsch zugeordnet – korrigieren oder weglassen " +
-      "und erneut rechnen. Koordinaten: aus map_view (Umrechnung steht in dessen Antwort), geocode oder overpass_query.",
+    description: "Rückwärtsschnitt: exakte Kamerapose aus 4-8 Punkten, die im Foto UND auf Luftbild/Karte eindeutig sind (am Boden: " +
+      "Hausecken, Kreuzungen, Feldecken, Mastfüße; sonst height_m). Liefert Richtung, Neigung, Schieflage, Bildwinkel, Höhe, " +
+      "ggf. Standpunkt, Fehler je Punkt und gleich die Draufsicht dazu.",
     parameters: obj({
       camera_lat: { type: "number", description: "vermuteter Standpunkt" },
-      camera_lon: { type: "number" },
-      eye_height_m: { type: "number", description: "geschätzte Kamerahöhe über Boden" },
-      fov_deg: { type: "number", description: "Optional: bekannter Bildwinkel (EXIF); mit fov_fixed: true festhalten" },
-      fov_fixed: { type: "boolean" },
-      position_uncertainty_m: { type: "number", description: "wie weit der Standpunkt sich verschieben darf (Standard 25)" },
+      camera_lon: NUM,
+      eye_height_m: { type: "number", description: "Schätzung" },
+      fov_deg: { type: "number", description: "bekannter/typischer Bildwinkel" },
+      fov_fixed: { type: "boolean", description: "true bei EXIF-Wert" },
+      position_uncertainty_m: { type: "number", description: "Standard 25" },
       points: {
         type: "array",
-        description: "Punktpaare Foto ↔ Karte",
         items: obj({
-          x: { type: "number", description: "Position im Foto 0-1 (links → rechts)" },
-          y: { type: "number", description: "Position im Foto 0-1 (oben → unten)" },
-          lat: { type: "number" },
-          lon: { type: "number" },
-          height_m: { type: "number", description: "Höhe des Punktes über dem Boden (0 = am Boden)" },
-          label: { type: "string", description: "was der Punkt ist" },
+          x: { type: "number", description: "0-1 im Foto" },
+          y: { type: "number", description: "0-1 im Foto" },
+          lat: NUM, lon: NUM,
+          height_m: { type: "number", description: "über Boden, 0 = am Boden" },
+          label: { type: "string" },
         }, ["x", "y", "lat", "lon"]),
       },
     }, ["camera_lat", "camera_lon", "points"]),
@@ -177,113 +134,79 @@ export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "nearby_features",
-    description:
-      "Listet, was in OpenStreetMap im Umkreis eines Punktes verzeichnet ist (Geschäfte, Haltestellen, Ampeln, " +
-      "Zebrastreifen, Kirchen, Denkmäler, Straßennamen …) – jeweils mit Entfernung in Metern und Richtung ab dem Punkt. " +
-      "Ideal, um einen Kandidaten-Standpunkt zu prüfen: Passt die Anordnung zu dem, was im Foto zu sehen ist?",
-    parameters: obj({
-      lat: { type: "number" },
-      lon: { type: "number" },
-      radius_m: { type: "integer", description: "20-1000, meist 100-250" },
-    }, ["lat", "lon"]),
+    description: "Was OpenStreetMap im Umkreis eines Punktes kennt (Geschäfte, Haltestellen, Ampeln, Kirchen …) mit Entfernung und Richtung.",
+    parameters: obj({ lat: NUM, lon: NUM, radius_m: { type: "integer", description: "20-1000, meist 100-250" } }, ["lat", "lon"]),
   },
   {
     type: "function",
     name: "street_geometry",
-    description:
-      "Liefert den genauen Verlauf einer Straße (Punkte, Richtung jedes Abschnitts in Grad) nahe einem Punkt und den " +
-      "nächstgelegenen Straßenpunkt. Nutze es, um Blickrichtung und Standpunkt auf den tatsächlichen Straßenverlauf abzustimmen.",
+    description: "Verlauf einer Straße nahe einem Punkt: Punkte, Richtung je Abschnitt, nächster Straßenpunkt.",
     parameters: obj({
-      name: { type: "string", description: "Straßenname genau wie in OSM, z.B. 'Hauptstraße'" },
-      lat: { type: "number" },
-      lon: { type: "number" },
-      radius_m: { type: "integer", description: "Suchradius, Standard 1500" },
+      name: { type: "string", description: "Straßenname wie in OSM" },
+      lat: NUM, lon: NUM,
+      radius_m: { type: "integer", description: "Standard 1500" },
     }, ["name", "lat", "lon"]),
   },
   {
     type: "function",
     name: "sun_position",
-    description:
-      "Berechnet Sonnenstand (Azimut ab Norden im Uhrzeigersinn, Höhe) für Ort und UTC-Zeit, inkl. Schattenrichtung und " +
-      "Schattenlänge pro Meter Objekthöhe. Nützlich, um Schatten im Bild gegen Kandidatenorte zu prüfen.",
-    parameters: obj({
-      lat: { type: "number" },
-      lon: { type: "number" },
-      datetime_utc: { type: "string", description: "ISO 8601, z.B. 2024-06-21T14:30:00Z" },
-    }),
+    description: "Sonnenstand (Azimut, Höhe), Schattenrichtung und -länge für Ort und UTC-Zeit.",
+    parameters: obj({ lat: NUM, lon: NUM, datetime_utc: { type: "string", description: "ISO 8601" } }),
   },
   {
     type: "function",
     name: HYPOTHESIS_TOOL,
-    description:
-      "Zeigt deine aktuelle Vermutung sofort auf der Karte des Nutzers (Zwischenstand). Rufe es in Runde 1 und immer, " +
-      "wenn sich deine Vermutung deutlich ändert – parallel zu anderen Werkzeugen, damit keine Extra-Runde entsteht.",
+    description: "Zeigt deine aktuelle Vermutung auf der Karte des Nutzers. In Runde 1 und bei deutlicher Änderung, parallel zu anderem.",
     parameters: obj({
-      label: { type: "string", description: "Kurz, z.B. 'Vermutung: Süddeutschland, Kleinstadt'" },
-      camera_lat: { type: "number" },
-      camera_lon: { type: "number" },
-      radius_km: { type: "number", description: "Unsicherheit in km (Land ~300, Region ~50, Stadt ~5, Straße ~0.3)" },
-      subject_lat: { type: "number", description: "Motiv, falls schon bekannt" },
-      subject_lon: { type: "number" },
+      label: { type: "string", description: "kurz" },
+      camera_lat: NUM, camera_lon: NUM,
+      radius_km: { type: "number", description: "Land ~300, Region ~50, Stadt ~5, Straße ~0.3" },
+      subject_lat: NUM, subject_lon: NUM,
     }, ["label", "camera_lat", "camera_lon", "radius_km"]),
   },
   {
     type: "function",
     name: "bearing_distance",
-    description: "Berechnet Richtung (Grad ab Norden, im Uhrzeigersinn) und Entfernung in Metern von Punkt A nach Punkt B.",
-    parameters: obj({ from_lat: { type: "number" }, from_lon: { type: "number" }, to_lat: { type: "number" }, to_lon: { type: "number" } }),
+    description: "Richtung (Grad ab Nord) und Entfernung (m) von A nach B.",
+    parameters: obj({ from_lat: NUM, from_lon: NUM, to_lat: NUM, to_lon: NUM }),
   },
   {
     type: "function",
     name: "destination_point",
-    description:
-      "Berechnet den Punkt, der von (lat, lon) in Richtung bearing_deg nach distance_m Metern liegt. Beispiel: Kamera-Standpunkt " +
-      "bestimmen, wenn das Motiv bekannt ist und man es aus Richtung Süd-West aus ~200 m sieht → vom Motiv 225° und 200 m.",
-    parameters: obj({ lat: { type: "number" }, lon: { type: "number" }, bearing_deg: { type: "number" }, distance_m: { type: "number" } }),
+    description: "Punkt in Richtung bearing_deg und distance_m Metern von (lat, lon).",
+    parameters: obj({ lat: NUM, lon: NUM, bearing_deg: NUM, distance_m: NUM }),
   },
   {
     type: "function",
     name: SUBMIT_TOOL,
-    description: "Gibt das Endergebnis ab. Genau einmal am Ende aufrufen. Alle Texte auf Deutsch.",
+    description: "Endergebnis, genau einmal am Ende. Texte auf Deutsch.",
     parameters: obj({
-      summary: { type: "string", description: "2-5 Sätze: wo, und die entscheidenden Belege" },
+      summary: { type: "string", description: "2-5 Sätze: wo und warum" },
       precision: { type: "string", enum: PRECISION_LEVELS },
       country: { type: "string" },
       region: { type: "string" },
       city: { type: "string" },
-      camera: obj({ ...LOCATION, name: { type: "string", description: "Standpunkt des Fotografen, z.B. 'Gehweg Hauptstraße vor Nr. 12'" } }),
-      subject: obj({
-        name: { type: "string", description: "Was hauptsächlich zu sehen ist, z.B. 'Stadtkirche St. Fabian'" },
-        lat: { type: "number" },
-        lon: { type: "number" },
-        radius_km: { type: "number" },
-      }),
+      camera: obj({ ...LOCATION, name: { type: "string", description: "Standpunkt, z.B. 'Gehweg Hauptstraße vor Nr. 12'" } }),
+      subject: obj({ name: { type: "string", description: "Hauptmotiv" }, lat: NUM, lon: NUM, radius_km: NUM }),
       view: obj({
-        bearing_deg: { type: "number", description: "Blickrichtung der Kamera, Grad ab Norden im Uhrzeigersinn" },
-        fov_deg: { type: "number", description: "Horizontaler Bildwinkel (EXIF-Wert, sonst Schätzung: Handy ca. 65, Weitwinkel 90, Zoom 20)" },
-        distance_m: { type: "number", description: "Entfernung Kamera → Motiv in Metern" },
-        eye_height_m: { type: "number", description: "Kamerahöhe über Boden (1.6 zu Fuß, mehr aus Fenster/Turm/Drohne)" },
-        pitch_deg: { type: "number", description: "Neigung der Kamera, 0 = waagrecht, negativ = nach unten" },
-        roll_deg: { type: "number", description: "Schieflage (aus solve_camera), meist 0" },
+        bearing_deg: { type: "number", description: "Blickrichtung ab Nord" },
+        fov_deg: { type: "number", description: "horizontaler Bildwinkel" },
+        distance_m: { type: "number", description: "Kamera → Motiv" },
+        eye_height_m: NUM, pitch_deg: NUM, roll_deg: NUM,
       }, ["bearing_deg", "fov_deg", "distance_m"]),
-      candidates: {
-        type: "array",
-        description: "Alternative Standpunkte (ohne camera), absteigend nach Wahrscheinlichkeit, max. 5",
-        items: obj({ ...LOCATION, rationale: { type: "string" } }),
-      },
+      candidates: { type: "array", description: "Alternativen, max. 5", items: obj({ ...LOCATION, rationale: { type: "string" } }) },
       clues: {
         type: "array",
-        description: "Alle verwerteten Hinweise",
         items: obj({
           category: { type: "string", enum: CLUE_CATEGORIES },
-          description: { type: "string", description: "Was im Bild zu sehen ist" },
-          implication: { type: "string", description: "Was das über den Ort verrät" },
+          description: { type: "string", description: "was zu sehen ist" },
+          implication: { type: "string", description: "was es verrät" },
           strength: { type: "string", enum: STRENGTHS },
-          box: { type: "array", items: { type: "number" }, description: "[x_min, y_min, x_max, y_max] in 0-1 Bildkoordinaten, oder [] wenn nicht lokalisierbar" },
+          box: { type: "array", items: NUM, description: "[x_min,y_min,x_max,y_max] 0-1 oder []" },
         }),
       },
-      text_found: { type: "array", items: { type: "string" }, description: "Alle im Bild gelesenen Texte" },
-      verification: { type: "string", description: "Was mit Karten-/Websuche bestätigt oder widerlegt wurde" },
+      text_found: { type: "array", items: { type: "string" } },
+      verification: { type: "string", description: "was bestätigt/widerlegt wurde" },
     }, ["summary", "precision", "country", "region", "city", "camera", "subject", "view", "candidates", "clues", "text_found", "verification"]),
   },
 ];
@@ -632,10 +555,27 @@ export class ToolExecutor {
           : `Standpunkt festgehalten (Punkte ${Math.round(sol.geometry.spreadDeg)}° breit, Entfernungsverhältnis ${r1(sol.geometry.depthRatio)} – für den Standpunkt braucht es ≥5 Punkte, >25° breit, nah und fern gemischt).`,
         bad.length ? `Verdächtig: ${bad.map((p) => sol.points.indexOf(p) + 1).map((n) => points[n - 1].label || `Punkt ${n}`).join(", ")} – vermutlich falsch zugeordnet.` : "",
         sol.rms_pct < 1.5 ? "Gute Übereinstimmung." : sol.rms_pct < 4 ? "Mäßige Übereinstimmung – Punkte prüfen." : "Schlechte Übereinstimmung – Zuordnung oder Standpunkt falsch.",
-        "Nächster Schritt: top_view mit genau diesen Werten.",
       ].filter(Boolean).join(" "),
     };
     this.emit("solve", { lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, rms_pct: out.rms_pct_of_width, points: points.length });
+    // The check that normally follows comes right with it: the photo laid flat with the solved pose (saves a round).
+    if (this.topView && sol.rms_pct < 5 && this.topViewCount < this.maxTopViews) {
+      const far = Math.max(...points.map((p) => haversineKm(sol.camera.lat, sol.camera.lon, p.lat, p.lon) * 1000));
+      const eye = Math.max(0.3, sol.camera.eye_height_m);
+      const view = await this.topView({
+        lat: sol.camera.lat, lon: sol.camera.lon, bearingDeg: sol.view.bearing_deg, fovDeg: sol.view.fov_deg,
+        pitchDeg: sol.view.pitch_deg, rollDeg: sol.view.roll_deg, eyeHeight: eye,
+        minDistM: Math.max(8, eye * 2.5), maxDistM: Math.min(Math.max(far * 1.3, 150), 3000), region: null, style: "nebeneinander",
+      }).catch(() => null);
+      if (view && !view.empty) {
+        this.topViewCount += 1;
+        this.emit("topview", { lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, purpose: "Pose aus dem Rückwärtsschnitt", thumbnail: view.thumbnail });
+        out.note += ` Dazu die Draufsicht mit dieser Pose (links Foto auf den Boden geklappt, rechts Luftbild, Raster ${view.stats.grid_m} m): ` +
+          "liegen Wege, Feldgrenzen und Gebäudefüße deckungsgleich, stimmt die Pose; sonst mit top_view nachstellen.";
+        return [{ type: "text", text: JSON.stringify(out) }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
+      }
+    }
+    out.note += " Nächster Schritt: top_view mit genau diesen Werten.";
     return JSON.stringify(out);
   }
 

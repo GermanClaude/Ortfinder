@@ -6,7 +6,8 @@ import {
   OPENROUTER_DEFAULT_MODEL, OpenRouterHttpError, describeOpenRouterError, fallbackModels, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat,
   openRouterSignInUrl, pkceChallenge,
 } from "../../docs/js/openrouter.js";
-import { PuterAgent, pruneImageParts } from "../../docs/js/puter-agent.js";
+import { PuterAgent } from "../../docs/js/puter-agent.js";
+import { TILES_MARK, compactOpenAI } from "../../docs/js/compact.js";
 import { ToolExecutor } from "../../docs/js/tools.js";
 import { VALID_SUBMISSION } from "./fixtures.mjs";
 
@@ -144,20 +145,27 @@ test("sign-in with PKCE: S256 challenge, code exchanged with the stored verifier
   await assert.rejects(finishOpenRouterSignIn("bad", { storage, fetchImpl: async () => Response.json({ error: { message: "Invalid code" } }, { status: 400 }) }), /Invalid code/);
 });
 
-test("only the newest images are sent; the photo in the first message always stays", () => {
+test("only the latest round is sent in full; the photo in the first message always stays", () => {
   const img = { type: "image_url", image_url: { url: "data:image/jpeg;base64,AA" } };
   const messages = [
     { role: "system", content: "S" },
-    { role: "user", content: [{ type: "text", text: "Foto" }, img, img] },
-    { role: "user", content: [{ type: "text", text: "Zooms 1" }, img, img, img] },
-    { role: "tool", tool_call_id: "x", content: "ok" },
+    { role: "user", content: [{ type: "text", text: "Foto" }, img, { type: "text", text: TILES_MARK }, { type: "text", text: "Kachel 1" }, img, img] },
+    { role: "assistant", content: `Notiz: ${"n".repeat(1500)}`, tool_calls: [{}] },
+    { role: "tool", tool_call_id: "x", content: "y".repeat(3000) },
+    { role: "user", content: [{ type: "text", text: "Zoom: Schild" }, img, { type: "text", text: "Luftbild um 47.99" }, img] },
+    { role: "assistant", content: null, tool_calls: [{}] },
+    { role: "tool", tool_call_id: "z", content: "neu" },
     { role: "user", content: [{ type: "text", text: "Zooms 2" }, img, img] },
   ];
-  const sent = pruneImageParts(messages, 2);
+  const sent = compactOpenAI(messages);
   const count = (m) => (Array.isArray(m.content) ? m.content.filter((p) => p.type === "image_url").length : 0);
-  assert.deepEqual(sent.map(count), [0, 2, 0, 0, 2]);
-  assert.match(sent[2].content.at(-1).text, /3 Bild\(er\) aus einer früheren Runde entfernt/);
-  assert.equal(count(messages[2]), 3, "the stored conversation is unchanged");
+  assert.deepEqual(sent.map(count), [0, 1, 0, 0, 0, 0, 0, 2]);
+  assert.match(sent[1].content.at(-1).text, /nur in der ersten Runde/);
+  assert.ok(sent[3].content.length < 900);
+  assert.match(sent[4].content[1].text, /nicht erneut mitgeschickt \(Zoom\)/);
+  assert.match(sent[4].content[3].text, /\(Luftbild um 47\)/);
+  assert.equal(count(messages[4]), 2, "the stored conversation is unchanged");
+  assert.equal(sent[2].content, messages[2].content, "the model's own notes are never cut");
 });
 
 test("a full analysis runs over OpenRouter with the OpenAI-style agent", async () => {
@@ -175,7 +183,7 @@ test("a full analysis runs over OpenRouter with the OpenAI-style agent", async (
   const events = [];
   const executor = new ToolExecutor({ zoom: async () => ({}), osm: { geocode: async (q) => [{ name: `${q}, Freiburg`, lat: 47.99, lon: 7.85 }] }, emit: () => {} });
   const agent = new PuterAgent({
-    model: OPENROUTER_DEFAULT_MODEL, chat: openRouterChat({ key: "k", fetchImpl }), describeError: describeOpenRouterError, keepImages: 8,
+    model: OPENROUTER_DEFAULT_MODEL, chat: openRouterChat({ key: "k", fetchImpl }), describeError: describeOpenRouterError,
     emit: (t, d) => events.push([t, d]), maxSteps: 5,
   });
   const started = Date.now();

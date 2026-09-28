@@ -4,6 +4,7 @@
 import { preview } from "./agent.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
+import { compactOpenAI } from "./compact.js";
 
 export const PUTER_SCRIPT = "https://js.puter.com/v2/";
 export const PUTER_MODELS = [
@@ -75,29 +76,6 @@ const sleep = (ms, signal) =>
 /** Our tool declarations in the OpenAI "function" format Puter expects. */
 export const OPENAI_TOOLS = FUNCTION_TOOLS.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } }));
 
-/**
- * Copy of the conversation in which only the newest `keep` images remain; older ones become a short
- * note. The first user message (the photo itself) is always kept.
- */
-export function pruneImageParts(messages, keep) {
-  let budget = keep;
-  const out = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    const images = Array.isArray(m.content) ? m.content.filter((p) => p.type === "image_url").length : 0;
-    if (!images || i <= 1 || images <= budget) {
-      if (i > 1) budget -= images;
-      out.push(m);
-      continue;
-    }
-    budget = 0;
-    const content = m.content.filter((p) => p.type !== "image_url");
-    content.push({ type: "text", text: `[${images} Bild(er) aus einer früheren Runde entfernt, um Platz zu sparen]` });
-    out.push({ ...m, content });
-  }
-  return out.reverse();
-}
-
 /** Convert our content blocks (text / base64 image) to OpenAI message parts. */
 function toParts(blocks) {
   return blocks.map((b) =>
@@ -120,18 +98,14 @@ export class PuterAgent {
    * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
    * `whenActive()` resolves to true after waiting for a page that was in the background.
    */
-  /**
-   * Also drives other OpenAI-style services (OpenRouter): pass their `chat` function, an error
-   * translator and `keepImages` to send only the newest images (saves mobile data and context).
-   */
+  /** Also drives other OpenAI-style services (OpenRouter): pass their `chat` function and an error translator. */
   constructor({
     model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
-    describeError = describePuterError, keepImages = 0,
+    describeError = describePuterError,
   } = {}) {
     this.model = model;
     this.maxSteps = maxSteps;
     this.describeError = describeError;
-    this.keepImages = keepImages;
     this.chat = chat ?? ((messages, options) => globalThis.puter.ai.chat(messages, options));
     this.emit = emit;
     this.signal = signal;
@@ -154,7 +128,8 @@ export class PuterAgent {
       this.signal?.throwIfAborted();
       try {
         // puter.ai.chat has no abort option, so a cancelled analysis just stops waiting for it.
-        const call = this.chat(this.keepImages ? pruneImageParts(messages, this.keepImages) : messages, { model: this.model, tools: OPENAI_TOOLS, normalize: true });
+        // Earlier rounds' images and long results go as short notes (see compact.js).
+        const call = this.chat(compactOpenAI(messages), { model: this.model, tools: OPENAI_TOOLS, normalize: true });
         const response = await (this.signal
           ? Promise.race([call, new Promise((_, reject) => this.signal.addEventListener("abort", () => reject(this.signal.reason ?? new DOMException("Abgebrochen", "AbortError")), { once: true }))])
           : call);

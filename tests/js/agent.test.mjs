@@ -148,6 +148,23 @@ test("daily free-tier limit stops immediately with a clear message", async () =>
   assert.equal(requests.length, 1, "no retries, and search is not blamed");
 });
 
+test("daily limit with a fallback model: continues with its own quota, starting over with the photo", async () => {
+  const daily = "Rate limit exceeded for model gemini-3.8-flash (limit: 20 requests per day on Free Tier). Please retry in 58s.";
+  const exhausted = [];
+  const { run, requests, events } = setup([
+    interaction([call("c1", "geocode", { query: "Bahnhofstraße" })]),
+    () => json(429, { error: { message: daily, code: "too_many_requests" } }),
+    interaction([call("c2", "geocode", { query: "Bahnhofstraße" })]),
+    interaction([call("c3", "submit_result", VALID_SUBMISSION)]),
+  ], { fallbackModels: ["gemini-3.7-flash"], onModelExhausted: (m) => exhausted.push(m) });
+  const { analysis } = await run();
+  assert.equal(analysis.city, "Freiburg");
+  assert.deepEqual(requests.map((r) => r.body.model), ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.7-flash"]);
+  assert.equal(requests[2].body.input.length, 1, "the new model starts with the photo only");
+  assert.deepEqual(exhausted, ["gemini-3.8-flash"]);
+  assert.ok(events.some(([t, d]) => t === "status" && /Tageslimit von gemini-3.8-flash erreicht – Ortfinder macht mit gemini-3.7-flash weiter/.test(d.message)));
+});
+
 test("the model is told its round budget", async () => {
   const { run, requests } = setup([interaction([call("c1", "submit_result", VALID_SUBMISSION)])], { maxSteps: 7 });
   await run();

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { OllamaAgent, OllamaError, listOllamaModels, normalizeOllamaUrl, pruneImages } from "../../docs/js/ollama-agent.js";
+import { OllamaAgent, OllamaError, listOllamaModels, normalizeOllamaUrl } from "../../docs/js/ollama-agent.js";
+import { TILES_MARK, compactOllama } from "../../docs/js/compact.js";
 import { ToolExecutor } from "../../docs/js/tools.js";
 import { VALID_SUBMISSION } from "./fixtures.mjs";
 
@@ -35,7 +36,7 @@ function setup(responses, options = {}) {
   const agent = new OllamaAgent({ baseUrl: "localhost:11434", model: "gemma4:12b", numCtx: 32768, maxSteps: 6, fetchImpl, emit, ...options });
   const images = [
     { type: "image", mime_type: "image/jpeg", data: "T1ZFUg==" },
-    { type: "image", mime_type: "image/jpeg", data: "R1JJRA==" },
+    { type: "text", text: TILES_MARK },
     { type: "text", text: "Detail-Kachel oben links" },
     { type: "image", mime_type: "image/jpeg", data: "VElMRQ==" },
   ];
@@ -71,20 +72,27 @@ test("installed models: capabilities from /api/tags, else from /api/show", async
   await assert.rejects(listOllamaModels("http://localhost:1", async () => { throw new TypeError("Failed to fetch"); }), (err) => err instanceof OllamaError && err.code === "UNREACHABLE" && /OLLAMA_ORIGINS/.test(err.message));
 });
 
-test("older images are dropped from what is sent, the photo itself never", () => {
+test("earlier rounds' images and the tiles are not resent, the photo itself always", () => {
   const img = (n) => Array.from({ length: n }, (_, i) => `img${i}`);
   const messages = [
     { role: "system", content: "S" },
-    { role: "user", content: "Foto", images: img(2) },
-    { role: "user", content: "Kacheln", images: img(4) },
-    { role: "tool", content: "zoom" },
+    { role: "user", content: "Foto", images: img(1) },
+    { role: "user", content: `${TILES_MARK}\nKachel oben links`, images: img(4) },
+    { role: "assistant", content: `Notiz: Schild „Bahnhofstraße“, Café Müller bei 47.99, 7.85. ${"n".repeat(1500)}`, tool_calls: [{}] },
+    { role: "tool", content: "Ausschnitt x 0.1-0.2 …" + "x".repeat(2000) },
     { role: "user", content: "Zooms 1", images: img(3) },
-    { role: "user", content: "Zooms 2", images: img(3) },
+    { role: "assistant", content: "", tool_calls: [{}] },
+    { role: "tool", content: "neu" },
+    { role: "user", content: "Zooms 2", images: img(2) },
   ];
-  const sent = pruneImages(messages, 6);
-  assert.deepEqual(sent.map((m) => m.images?.length ?? 0), [0, 2, 0, 0, 3, 3]);
-  assert.match(sent[2].content, /4 Bild\(er\) aus einer früheren Runde entfernt/);
-  assert.deepEqual(messages[2].images.length, 4, "the stored conversation is not changed");
+  const sent = compactOllama(messages);
+  assert.deepEqual(sent.map((m) => m.images?.length ?? 0), [0, 1, 0, 0, 0, 0, 0, 0, 2]);
+  assert.match(sent[2].content, /nur in der ersten Runde/);
+  assert.ok(sent[4].content.length < 900 && /gekürzt/.test(sent[4].content));
+  assert.match(sent[5].content, /nicht erneut mitgeschickt/);
+  assert.equal(messages[5].images.length, 3, "the stored conversation is not changed");
+  assert.equal(sent[3].content, messages[3].content, "the model's own notes are never cut");
+  assert.deepEqual(compactOllama(messages.slice(0, 3)).map((m) => m.images?.length ?? 0), [0, 1, 4], "before the first answer the tiles go along");
 });
 
 test("full loop over Ollama's native chat API: tools, images, streaming", async () => {
@@ -105,11 +113,12 @@ test("full loop over Ollama's native chat API: tools, images, streaming", async 
   assert.equal(first.body.stream, true);
   assert.deepEqual(first.body.options, { num_ctx: 32768 });
   assert.ok(first.body.tools.length >= 12 && first.body.tools.every((t) => t.type === "function" && t.function.name));
-  assert.deepEqual(first.body.messages.map((m) => [m.role, m.images?.length ?? 0]), [["system", 0], ["user", 2], ["user", 1]]);
+  assert.deepEqual(first.body.messages.map((m) => [m.role, m.images?.length ?? 0]), [["system", 0], ["user", 1], ["user", 1]]);
   assert.match(first.body.messages[2].content, /Detail-Kachel oben links/);
 
   const roles = second.body.messages.map((m) => m.role);
   assert.deepEqual(roles, ["system", "user", "user", "assistant", "tool", "tool", "user"]);
+  assert.deepEqual(second.body.messages.map((m) => m.images?.length ?? 0), [0, 1, 0, 0, 0, 0, 1], "tiles only with the first request");
   const assistant = second.body.messages[3];
   assert.equal(assistant.content, "Ich zoome auf das Schild.");
   assert.equal(assistant.thinking, undefined, "earlier thinking is not sent back");
@@ -165,7 +174,9 @@ test("checkpoint after every round, resume from the saved messages", async () =>
   assert.equal(state.step, 1);
   const second = setup([stream({ tool_calls: [call("submit_result", VALID_SUBMISSION)] })]);
   const { usage } = await second.agent.run({ intro: "egal", images: [], executor: second.executor, resume: state });
-  assert.deepEqual(second.requests[0].body.messages, state.conversation);
+  // The saved conversation is complete; what is sent drops the tiles after the first answer.
+  assert.deepEqual(second.requests[0].body.messages, compactOllama(state.conversation));
+  assert.ok(state.conversation[2].images?.length, "tiles stay in the saved state");
   assert.equal(usage.requests, 2);
 });
 

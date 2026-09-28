@@ -146,6 +146,27 @@ und zum erkannten Gerät).
    Ortfinder, wie weit die reine Bildanalyse vom echten Ort entfernt lag. Das eignet sich gut zum
    Vorführen.
 
+## Sparsam mit Tokens
+
+Die KI-Dienste merken sich nichts zwischen zwei Anfragen, deshalb schickt jede Runde den bisherigen
+Verlauf erneut mit. Ortfinder hält diese Anfragen klein, ohne der KI etwas zu nehmen, das sie für die
+Entscheidung braucht:
+
+- Das Foto geht immer mit, mit einem 0–1-Lineal im Rand (statt einer zweiten Kopie mit Raster).
+  Hochaufgelöste Detail-Kacheln großer Fotos gehen nur in der ersten Runde mit.
+- Bilder und lange Ergebnisse aus früheren Runden werden durch kurze Hinweise ersetzt. Die KI hat sie
+  schon gesehen, notiert sich Wichtiges (Texte, Namen, Koordinaten) und kann jederzeit erneut anfragen.
+  Gespeichert wird der vollständige Verlauf.
+- Anweisungen und Werkzeug-Beschreibungen sind knapp formuliert, mit denselben Regeln.
+- Der Rückwärtsschnitt liefert die Draufsicht gleich mit, das spart eine Runde.
+- Claude behält seinen Verlauf unverändert, weil nachträgliche Änderungen seine Denk-Blöcke ungültig
+  machen würden. Dort sorgt Prompt-Caching dafür, dass Wiederholungen nur ein Zehntel kosten.
+
+Gemessen an einer typischen Analyse (Test `tests/js/token-budget.test.mjs`, derselbe Ablauf mit echten
+Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **61–66 % weniger Tokens**
+(z.B. Gemini 225 000 → 77 000) und eine Anfrage weniger; bei Claude sinken die abgerechneten Tokens um
+14 %, gegenüber den Rohdaten spart der Cache dort rund 75 %.
+
 ## Was realistisch ist
 
 Eine Trefferquote von „nahezu 100 %“ schafft kein System der Welt, weil manche Fotos schlicht keine
@@ -215,7 +236,7 @@ lokale Tests `http://localhost:8000/*`), *API restrictions* auf die „Generativ
 | Gemini 3.8 Flash (Standard) | ✔ | ✔ |
 | Gemini 3.1 Pro (stärker) | – | ✔ |
 | Google-Suche | – (Ortfinder schaltet sie dann automatisch ab) | ✔ |
-| Anfragen (Gemini 3.8 Flash) | **20 pro Tag**, 5 pro Minute: reicht für etwa 1–2 Analysen am Tag, jede dauert einige Minuten | deutlich mehr; eine Analyse kostet meist nur wenige Cent |
+| Anfragen | **20 pro Tag und Modell** (3.8 Flash und 3.7 Flash), 5 pro Minute: zusammen etwa 6–7 Analysen am Tag | deutlich mehr; eine Analyse kostet meist nur wenige Cent |
 | Google darf Eingaben zur Produktverbesserung nutzen | **ja** | nein |
 
 Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen.
@@ -224,8 +245,10 @@ Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen.
 Key im selben Projekt teilt sich dieselben 20 Anfragen am Tag. Das Tageslimit wird um Mitternacht
 pazifischer Zeit zurückgesetzt, also um 9 Uhr deutscher Zeit. Meldet Google ein
 Anfrage-Limit, wartet Ortfinder automatisch die angegebene Zeit ab und verteilt die weiteren
-Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit erreicht, bricht Ortfinder mit einem
-klaren Hinweis ab.
+Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit eines Modells erreicht, macht Ortfinder
+automatisch mit dem nächsten kostenlosen Modell weiter, das ein eigenes Tageskontingent hat (3.8 Flash →
+3.7 Flash). Es merkt sich das bis 9 Uhr, damit die nächsten Fotos gleich dort starten. Sind beide
+aufgebraucht, bricht Ortfinder mit einem klaren Hinweis ab.
 
 **Tempo:** Große Fotos gehen gleich mit vier hochaufgelösten Detail-Kacheln an die KI, die Werkzeuge einer
 Runde laufen parallel, und die KI soll nach 3–7 Runden abgeben (höchstens 10, einstellbar unter ⚙).
@@ -250,7 +273,7 @@ Schlüssel für dein Konto (nur in deinem Browser gespeichert, bei OpenRouter je
   sind deshalb oft kurz überlastet. Ortfinder nennt bei jeder Anfrage bis zu zwei weitere Gratis-Modelle als
   Ersatz; OpenRouter weicht dann selbst aus (im Protokoll sichtbar). Sind alle belegt, wartet Ortfinder
   15, 30, 60 und 60 Sekunden und versucht es erneut.
-- **Limit:** zusammen 50 Anfragen am Tag (20 pro Minute), also etwa 5–8 Analysen. Danach meldet Ortfinder
+- **Limit:** zusammen 50 Anfragen am Tag (20 pro Minute), also etwa 7–10 Analysen. Danach meldet Ortfinder
   das Tageslimit; am nächsten Tag geht es weiter.
 - Um mobile Daten zu sparen, gehen nur die jeweils neuesten 8 Bilder mit (das Foto selbst immer).
 - **Datenschutz:** Die kostenlosen Modelle laufen bei wechselnden Anbietern, die Eingaben unter Umständen
@@ -359,6 +382,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/scene3d.js       3D-Nachbau aus OSM-Gebäuden + Gelände, exakter Sichtbereich (Sichtstrahlen)
   js/groundview.js    Sichtstrahlen je Bildpunkt: Foto als Draufsicht, Luftbild über dem Gelände (Luftbild-3D)
   js/resection.js     Rückwärtsschnitt: Kamerapose aus Punktpaaren Foto ↔ Karte (Levenberg–Marquardt)
+  js/compact.js       kleine Anfragen: frühere Bilder/Ergebnisse als kurze Hinweise, Kacheln nur in Runde 1
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
   js/ollama-agent.js  Agent für Ollama auf dem eigenen PC (native Chat-API, Streaming)
