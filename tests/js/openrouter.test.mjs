@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 
 import {
-  OPENROUTER_DEFAULT_MODEL, OpenRouterHttpError, describeOpenRouterError, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat,
+  OPENROUTER_DEFAULT_MODEL, OpenRouterHttpError, describeOpenRouterError, fallbackModels, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat,
   openRouterSignInUrl, pkceChallenge,
 } from "../../docs/js/openrouter.js";
 import { PuterAgent, pruneImageParts } from "../../docs/js/puter-agent.js";
@@ -23,7 +23,7 @@ test("only free models with image input and tool use are offered, the default fi
       architecture: { input_modalities: image ? ["text", "image"] : ["text"] }, supported_parameters: tools ? ["tools", "max_tokens"] : ["max_tokens"],
     });
     return Response.json({ data: [
-      model("qwen/qwen3.8-27b:free", true, true),
+      model("google/gemma-4-31b-it:free", true, true),
       model("text-only/model:free", false, true),
       model("no-tools/vision:free", true, false),
       model("openai/gpt-5:paid", true, true, "0.000001"),
@@ -33,7 +33,30 @@ test("only free models with image input and tool use are offered, the default fi
     ] });
   };
   const models = await listFreeVisionModels(fetchImpl);
-  assert.deepEqual(models.map((m) => m.id), [OPENROUTER_DEFAULT_MODEL, "qwen/qwen3.8-27b:free"]);
+  assert.deepEqual(models.map((m) => m.id), [OPENROUTER_DEFAULT_MODEL, "google/gemma-4-31b-it:free"]);
+});
+
+test("fallback models: preferred order, never the chosen one, only models OpenRouter lists", () => {
+  assert.deepEqual(fallbackModels("qwen/qwen3.8-27b:free"), ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"]);
+  assert.deepEqual(fallbackModels("google/gemma-4-31b-it:free", ["google/gemma-4-31b-it:free", "qwen/qwen3.8-27b:free", "new/vision:free"]), ["qwen/qwen3.8-27b:free", "new/vision:free"]);
+  assert.deepEqual(fallbackModels("a:free", []), []);
+});
+
+test("chat requests name fallback models, report the model used and keep Retry-After", async () => {
+  const seen = [];
+  const used = [];
+  const chat = openRouterChat({
+    key: "k", fallbacks: ["b:free", "c:free"], onModel: (m) => used.push(m),
+    fetchImpl: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      return Response.json({ model: "b:free", choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }] });
+    },
+  });
+  await chat([], { model: "a:free", tools: [] });
+  assert.deepEqual([seen[0].model, seen[0].models], ["a:free", ["a:free", "b:free", "c:free"]]);
+  assert.deepEqual(used, ["b:free"]);
+  const busy = openRouterChat({ key: "k", fetchImpl: async () => Response.json({ error: { code: 429, message: "Provider returned error" } }, { status: 429, headers: { "retry-after": "7" } }) });
+  await assert.rejects(busy([], { model: "a:free" }), (err) => err.retryAfterMs === 7000);
 });
 
 test("chat requests carry the key and tools; errors keep status and message", async () => {
@@ -66,6 +89,13 @@ test("OpenRouter errors become clear German messages", () => {
   assert.match(daily.message, /Tageslimit.*50 Anfragen/);
   const perMinute = d(429, "Rate limit exceeded: free-models-per-min");
   assert.equal(perMinute.retryable, true);
+  assert.match(perMinute.message, /20 Anfragen pro Minute/);
+  assert.equal(perMinute.retryAfterMs, 30000);
+  // A free model's provider is overloaded (shared by all OpenRouter users): patient retries, honest message.
+  const upstream = d(429, "Provider returned error", { raw: "google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly" });
+  assert.equal(upstream.retryable, true);
+  assert.match(upstream.message, /überlastet.*teilen sich/);
+  assert.deepEqual([upstream.backoffMs, upstream.maxRetries], [15000, 4]);
   assert.equal(d(404, "No endpoints found matching your data policy").code, "POLICY");
   assert.equal(d(404, "No endpoints found that support image input").code, "MODEL");
   assert.equal(d(402, "Insufficient credits").code, "ALLOWANCE");
@@ -123,13 +153,13 @@ test("a full analysis runs over OpenRouter with the OpenAI-style agent", async (
   const bodies = [];
   const replies = [
     { choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "geocode", arguments: JSON.stringify({ query: "Bahnhofstraße" }) } }] }, finish_reason: "tool_calls" }] },
-    { error: { code: 429, message: "Rate limit exceeded: free-models-per-min" } },
+    { error: { code: 429, message: "Rate limit exceeded: free-models-per-min" }, retryAfter: "2" },
     { choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "submit_result", arguments: JSON.stringify(VALID_SUBMISSION) } }] }, finish_reason: "tool_calls" }] },
   ];
   const fetchImpl = async (url, init) => {
     bodies.push(JSON.parse(init.body));
     const next = replies.shift();
-    return Response.json(next, { status: next.error ? next.error.code : 200 });
+    return Response.json(next, { status: next.error ? next.error.code : 200, headers: next.retryAfter ? { "retry-after": next.retryAfter } : {} });
   };
   const events = [];
   const executor = new ToolExecutor({ zoom: async () => ({}), osm: { geocode: async (q) => [{ name: `${q}, Freiburg`, lat: 47.99, lon: 7.85 }] }, emit: () => {} });
@@ -142,6 +172,6 @@ test("a full analysis runs over OpenRouter with the OpenAI-style agent", async (
   assert.equal(analysis.city, "Freiburg");
   assert.equal(bodies.length, 3, "the per-minute limit was retried");
   assert.ok(Date.now() - started >= 1900, "with a short wait");
-  assert.ok(events.some(([t, d]) => t === "status" && /zu viele Anfragen/.test(d.message)));
+  assert.ok(events.some(([t, d]) => t === "status" && /20 Anfragen pro Minute.*Neuer Versuch in 2 s/.test(d.message)));
   assert.equal(bodies[0].messages[1].content[1].image_url.url, "data:image/jpeg;base64,QQ==");
 });

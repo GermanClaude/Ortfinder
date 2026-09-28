@@ -7,7 +7,7 @@ import { renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
 import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
 import {
-  OPENROUTER_DEFAULT_MODEL, describeOpenRouterError, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat, openRouterSignInUrl,
+  OPENROUTER_DEFAULT_MODEL, describeOpenRouterError, fallbackModels, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat, openRouterSignInUrl,
 } from "./openrouter.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
@@ -186,6 +186,8 @@ const settings = {
 };
 // 8 was the stored default before the fine-location step existed, which needs about two more rounds.
 if (settings.maxSteps === 8) settings.maxSteps = 10;
+// The first OpenRouter default (Gemma 4 31B, free) is almost always overloaded; it stays a fallback.
+if (settings.openrouterModel === "google/gemma-4-31b-it:free") settings.openrouterModel = OPENROUTER_DEFAULT_MODEL;
 
 function fillSettingsForm() {
   $("#provider").value = settings.provider;
@@ -273,10 +275,14 @@ function fillOpenRouterModels(models) {
 async function loadOpenRouterModels() {
   try {
     const models = await listFreeVisionModels();
-    if (models.length) fillOpenRouterModels(models);
+    if (models.length) {
+      state.orModelIds = models.map((m) => m.id);
+      fillOpenRouterModels(models);
+    }
   } catch {
     // keep the saved choice; the list is only a convenience
   }
+  return state.orModelIds || null;
 }
 
 function showOpenRouterStatus(message = "", kind = "") {
@@ -647,12 +653,20 @@ function createAgent(cfg, common) {
   switch (cfg.provider) {
     case "puter":
       return new PuterAgent({ model: cfg.puterModel, ...common });
-    case "openrouter":
+    case "openrouter": {
       // Same OpenAI-style loop as Puter; only the newest 8 images are sent (mobile data, free providers).
+      const announced = new Set([cfg.openrouterModel]);
+      const onModel = (used) => {
+        if (announced.has(used)) return;
+        announced.add(used);
+        common.emit("status", { message: `${cfg.openrouterModel} ist gerade überlastet – OpenRouter hat auf ${used} ausgewichen.` });
+      };
       return new PuterAgent({
-        model: cfg.openrouterModel, chat: openRouterChat({ key: settings.openrouterKey, signal: common.signal }),
+        model: cfg.openrouterModel,
+        chat: openRouterChat({ key: settings.openrouterKey, signal: common.signal, fallbacks: common.fallbacks, onModel }),
         describeError: describeOpenRouterError, keepImages: 8, ...common,
       });
+    }
     case "ollama":
       return new OllamaAgent({ baseUrl: cfg.ollamaUrl, model: cfg.ollamaModel, numCtx: cfg.ollamaCtx, ...common });
     default:
@@ -749,7 +763,10 @@ async function analyze(file, resumed = null) {
       const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : "";
       if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName(cfg)}${where} …` });
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
+      let fallbacks = [];
       if (openrouter) {
+        // Fallback models must exist right now, so ask OpenRouter which free ones it offers.
+        fallbacks = fallbackModels(cfg.openrouterModel, state.orModelIds || (await loadOpenRouterModels()));
         await ensureOpenRouterKey(emit, controller.signal, () => ({
           version: 1, startedAt: state.startedAt, file, config: cfg, metadata: plain(metadata), exifLocation, aspect: state.aspect,
           agentState: null, counts: {}, events: plain(run.events),
@@ -770,7 +787,7 @@ async function analyze(file, resumed = null) {
       };
       if (!resumed?.agentState) await checkpoint(null);
       const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden() };
-      const agent = createAgent(cfg, common);
+      const agent = createAgent(cfg, { ...common, fallbacks });
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
         images: resumed?.agentState ? [] : firstImages(bitmap, ov),

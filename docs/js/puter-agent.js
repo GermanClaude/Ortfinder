@@ -33,10 +33,14 @@ export function loadPuter(doc = globalThis.document) {
 }
 
 export class PuterError extends Error {
-  constructor(message, { code = "", retryable = false } = {}) {
+  /** retryAfterMs: wait asked for by the service; backoffMs/maxRetries: retry schedule (default 2 s, 4 s, 8 s). */
+  constructor(message, { code = "", retryable = false, retryAfterMs = 0, backoffMs = 2000, maxRetries = MAX_RETRIES } = {}) {
     super(message);
     this.code = code;
     this.retryable = retryable;
+    this.retryAfterMs = retryAfterMs;
+    this.backoffMs = backoffMs;
+    this.maxRetries = maxRetries;
   }
 }
 
@@ -164,9 +168,10 @@ export class PuterAgent {
           attempt = -1;
           continue;
         }
-        if (err.retryable && attempt < MAX_RETRIES) {
-          this.emit("status", { message: `${err.message} Neuer Versuch in ${2 * 2 ** attempt} s …` });
-          await sleep(2000 * 2 ** attempt, this.signal);
+        if (err.retryable && attempt < err.maxRetries) {
+          const wait = err.retryAfterMs || Math.min(err.backoffMs * 2 ** attempt, 60000);
+          this.emit("status", { message: `${err.message} Neuer Versuch in ${Math.round(wait / 1000)} s …` });
+          await sleep(wait, this.signal);
           continue;
         }
         throw err;

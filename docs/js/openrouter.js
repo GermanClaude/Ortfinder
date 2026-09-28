@@ -5,7 +5,24 @@
 import { PuterError } from "./puter-agent.js";
 
 export const OPENROUTER_API = "https://openrouter.ai/api/v1";
-export const OPENROUTER_DEFAULT_MODEL = "google/gemma-4-31b-it:free";
+export const OPENROUTER_DEFAULT_MODEL = "qwen/qwen3.8-27b:free";
+/**
+ * Free models with image understanding and tool use, in the order they are tried. Free capacity is
+ * shared by all OpenRouter users and often exhausted for one model (Gemma 4 31B in particular), so
+ * every request names fallbacks and OpenRouter switches by itself.
+ */
+export const OPENROUTER_PREFERRED = [
+  "qwen/qwen3.8-27b:free",
+  "google/gemma-4-31b-it:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+];
+
+/** Up to `max` other free models to fall back on; only models OpenRouter currently lists, if known. */
+export function fallbackModels(chosen, available = null, max = 3) {
+  const pool = [...OPENROUTER_PREFERRED, ...(available || [])];
+  return [...new Set(pool)].filter((id) => id !== chosen && (!available || available.includes(id))).slice(0, max);
+}
 const VERIFIER_KEY = "ortfinder.openrouter.verifier";
 
 /** Free models that understand images and can call tools (read live from OpenRouter's model list). */
@@ -25,28 +42,44 @@ export async function listFreeVisionModels(fetchImpl = globalThis.fetch.bind(glo
 }
 
 export class OpenRouterHttpError extends Error {
-  constructor(status, message, metadata = null) {
+  constructor(status, message, metadata = null, retryAfterMs = 0) {
     super(message);
     this.status = status;
     this.metadata = metadata;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
-/** A chat function in the shape the OpenAI-style agent expects: → { message, finish_reason, usage }. */
-export function openRouterChat({ key, fetchImpl = globalThis.fetch.bind(globalThis), signal } = {}) {
+/** Wait time the service asked for: Retry-After header or OpenRouter's X-RateLimit-Reset (epoch ms). */
+function retryAfter(resp, metadata) {
+  const header = Number(resp.headers?.get?.("retry-after"));
+  if (header > 0) return Math.min(header * 1000, 120000);
+  const reset = Number(metadata?.headers?.["X-RateLimit-Reset"]);
+  if (reset > Date.now()) return Math.min(reset - Date.now() + 500, 120000);
+  return 0;
+}
+
+/**
+ * A chat function in the shape the OpenAI-style agent expects: → { message, finish_reason, usage }.
+ * `fallbacks` are tried by OpenRouter itself when the model is overloaded; `onModel` reports which
+ * model actually answered.
+ */
+export function openRouterChat({ key, fetchImpl = globalThis.fetch.bind(globalThis), signal, fallbacks = [], onModel = () => {} } = {}) {
   return async (messages, { model, tools }) => {
     const resp = await fetchImpl(`${OPENROUTER_API}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "X-Title": "Ortfinder" },
-      body: JSON.stringify({ model, messages, tools, tool_choice: "auto" }),
+      body: JSON.stringify({ model, ...(fallbacks.length ? { models: [model, ...fallbacks] } : {}), messages, tools, tool_choice: "auto" }),
       signal,
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.error) {
-      throw new OpenRouterHttpError(data.error?.code || resp.status, data.error?.message || `HTTP ${resp.status}`, data.error?.metadata);
+      const metadata = data.error?.metadata;
+      throw new OpenRouterHttpError(data.error?.code || resp.status, data.error?.message || `HTTP ${resp.status}`, metadata, retryAfter(resp, metadata));
     }
     const choice = data.choices?.[0];
     if (choice?.error) throw new OpenRouterHttpError(choice.error.code || 502, choice.error.message || "Fehler beim Modellanbieter");
+    if (data.model) onModel(data.model);
     return { message: choice?.message, finish_reason: choice?.finish_reason, usage: data.usage };
   };
 }
@@ -67,7 +100,18 @@ export function describeOpenRouterError(err) {
       { code: "ALLOWANCE" },
     );
   }
-  if (status === 429) return new PuterError("OpenRouter: kurz zu viele Anfragen (kostenlos max. 20 pro Minute).", { code: "BUSY", retryable: true });
+  if (status === 429 && /free-models-per-min|per-min|per minute/i.test(raw)) {
+    return new PuterError("OpenRouter: dein Limit von 20 Anfragen pro Minute ist kurz erreicht.", {
+      code: "BUSY", retryable: true, retryAfterMs: err.retryAfterMs || 30000, maxRetries: 3,
+    });
+  }
+  if (status === 429) {
+    // Almost always the provider behind a free model: its free capacity is shared by all OpenRouter users.
+    return new PuterError(
+      "Die kostenlosen Modelle sind gerade überlastet (alle OpenRouter-Nutzer teilen sich ihre Gratis-Kapazität) – Ortfinder wartet und versucht es erneut.",
+      { code: "BUSY", retryable: true, retryAfterMs: err.retryAfterMs, backoffMs: 15000, maxRetries: 4 },
+    );
+  }
   if (status === 402) return new PuterError("Für dieses Modell braucht OpenRouter Guthaben. Unter ⚙ ein kostenloses Modell (Endung „:free“) wählen.", { code: "ALLOWANCE" });
   if (status === 404 && /data policy|privacy|training/i.test(raw)) {
     return new PuterError(
@@ -80,7 +124,9 @@ export function describeOpenRouterError(err) {
     return new PuterError(`Dieses Modell ist gerade nicht verfügbar oder kann keine Bilder/Werkzeuge (${message.slice(0, 160)}). Unter ⚙ ein anderes wählen.`, { code: "MODEL" });
   }
   if (status === 403) return new PuterError(`OpenRouter hat die Anfrage abgelehnt: ${message.slice(0, 200)}`, { code: "DENIED" });
-  if (status >= 500 || status === 408) return new PuterError(`Der Modellanbieter ist gerade ausgelastet (${message.slice(0, 120)}).`, { code: "BUSY", retryable: true });
+  if (status >= 500 || status === 408) {
+    return new PuterError(`Der Modellanbieter ist gerade ausgelastet (${message.slice(0, 120)}).`, { code: "BUSY", retryable: true, backoffMs: 5000, maxRetries: 4 });
+  }
   return new PuterError(`Fehler bei OpenRouter: ${message.slice(0, 300)}`);
 }
 

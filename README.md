@@ -189,7 +189,11 @@ lokale Tests `http://localhost:8000/*`), *API restrictions* auf die „Generativ
 | Anfragen (Gemini 3.8 Flash) | **20 pro Tag**, 5 pro Minute: reicht für etwa 1–2 Analysen am Tag, jede dauert einige Minuten | deutlich mehr; eine Analyse kostet meist nur wenige Cent |
 | Google darf Eingaben zur Produktverbesserung nutzen | **ja** | nein |
 
-Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen. Meldet Google ein
+Im kostenlosen Tarif also keine privaten Fotos anderer Menschen hochladen.
+
+**Neuer Key = neues Limit?** Nein. Google zählt die Limits pro Google-Cloud-Projekt, nicht pro Key: Ein neuer
+Key im selben Projekt teilt sich dieselben 20 Anfragen am Tag. Das Tageslimit wird um Mitternacht
+pazifischer Zeit zurückgesetzt, also um 9 Uhr deutscher Zeit. Meldet Google ein
 Anfrage-Limit, wartet Ortfinder automatisch die angegebene Zeit ab und verteilt die weiteren
 Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit erreicht, bricht Ortfinder mit einem
 klaren Hinweis ab.
@@ -211,8 +215,12 @@ Kreditkarte), fertig. Man landet wieder in Ortfinder, und die Analyse des gewäh
 Ortfinder erhält dabei per [OAuth mit PKCE](https://openrouter.ai/docs/use-cases/oauth-pkce) einen eigenen
 Schlüssel für dein Konto (nur in deinem Browser gespeichert, bei OpenRouter jederzeit löschbar).
 
-- **Kostenlose Modelle** mit Bildverständnis und Werkzeugen, z.B. Gemma 4 31B (Standard) oder Qwen 3.8 27B.
-  Die Liste unter ⚙ kommt live von OpenRouter.
+- **Kostenlose Modelle** mit Bildverständnis und Werkzeugen, z.B. Qwen 3.8 27B (Standard), Gemma 4 31B oder
+  Gemma 4 26B. Die Liste unter ⚙ kommt live von OpenRouter.
+- **Überlastung:** Die Gratis-Kapazität eines Modells teilen sich alle OpenRouter-Nutzer, beliebte Modelle
+  sind deshalb oft kurz überlastet. Ortfinder nennt bei jeder Anfrage bis zu drei weitere Gratis-Modelle als
+  Ersatz; OpenRouter weicht dann selbst aus (im Protokoll sichtbar). Sind alle belegt, wartet Ortfinder
+  15, 30, 60 und 60 Sekunden und versucht es erneut.
 - **Limit:** zusammen 50 Anfragen am Tag (20 pro Minute), also etwa 5–8 Analysen. Danach meldet Ortfinder
   das Tageslimit; am nächsten Tag geht es weiter.
 - Um mobile Daten zu sparen, gehen nur die jeweils neuesten 8 Bilder mit (das Foto selbst immer).
