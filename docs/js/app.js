@@ -6,6 +6,7 @@ import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imagi
 import { renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
+import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
 import { Terrain } from "./terrain.js";
 import { ToolExecutor } from "./tools.js";
@@ -38,10 +39,108 @@ const STORAGE_KEY = "ortfinder.settings.v1";
 
 const state = {
   controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null,
-  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0,
+  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0, running: false, wakeLock: null,
 };
 const osm = new OSMClient();
 const terrain = new Terrain();
+const BASE_TITLE = document.title;
+
+// ---------- while Ortfinder is off screen ----------
+
+/** Keep the screen on during an analysis, so the phone doesn't lock (which would pause the page). */
+async function keepAwake(on) {
+  if (!on) {
+    const lock = state.wakeLock;
+    state.wakeLock = null;
+    lock?.release?.().catch(() => {});
+    return;
+  }
+  if (state.wakeLock || !navigator.wakeLock || document.visibilityState !== "visible") return;
+  try {
+    state.wakeLock = await navigator.wakeLock.request("screen");
+    state.wakeLock.addEventListener?.("release", () => { state.wakeLock = null; });
+  } catch {
+    state.wakeLock = null; // e.g. battery saver
+  }
+}
+
+function setTitle(prefix = "") {
+  document.title = prefix ? `${prefix} ${BASE_TITLE}` : BASE_TITLE;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (state.running) keepAwake(true); // the browser releases the wake lock whenever the page is hidden
+  else setTitle();
+});
+
+async function registerWorker() {
+  try {
+    return (await navigator.serviceWorker?.register("sw.js")) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function enableNotifications() {
+  $("#notify").hidden = true;
+  let permission = "denied";
+  try {
+    permission = await Notification.requestPermission();
+    if (permission === "granted") await registerWorker(); // Android shows notifications only via a service worker
+  } catch {
+    // not supported
+  }
+  log("status", permission === "granted"
+    ? "Du bekommst eine Benachrichtigung, sobald das Ergebnis da ist."
+    : "Benachrichtigungen sind in diesem Browser nicht erlaubt.");
+}
+
+/** Tell the user when a run ends while Ortfinder is in the background. */
+async function announceEnd(ok, body) {
+  if (document.visibilityState === "visible") {
+    setTitle();
+    return;
+  }
+  setTitle(ok ? "✔" : "⚠");
+  navigator.vibrate?.(ok ? [120, 80, 120] : 300);
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const reg = (await navigator.serviceWorker?.getRegistration()) ?? (await registerWorker());
+    if (reg?.showNotification) await reg.showNotification("Ortfinder", { body, tag: "ortfinder-result" });
+    else new Notification("Ortfinder", { body, tag: "ortfinder-result" });
+  } catch {
+    // notifications unavailable
+  }
+}
+
+// One analysis at a time across tabs: a tab holds this lock while it analyses, so a second tab
+// doesn't resume the same interrupted run.
+const LOCK = "ortfinder-analysis";
+
+function holdLock(onLost) {
+  if (!navigator.locks) return () => {};
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  navigator.locks.request(LOCK, { steal: true }, () => held).catch(onLost); // rejects when another tab takes over
+  return release;
+}
+
+async function lockedElsewhere() {
+  try {
+    const { held = [] } = await navigator.locks.query();
+    return held.some((l) => l.name === LOCK);
+  } catch {
+    return false;
+  }
+}
+
+/** Continue an analysis the browser interrupted (page discarded or reloaded while off screen). */
+async function resumeInterrupted() {
+  const rec = await loadRun();
+  if (!rec?.file || (await lockedElsewhere())) return;
+  analyze(rec.file, rec);
+}
 
 // ---------- settings (kept in this browser only) ----------
 
@@ -218,6 +317,7 @@ function setupDropzone() {
     if (item) analyze(item.getAsFile());
   });
   $("#cancel").addEventListener("click", () => state.controller?.abort());
+  $("#notify").addEventListener("click", enableNotifications);
 }
 
 // ---------- pipeline ----------
@@ -241,6 +341,12 @@ function initMap() {
 
 function resetWorkspace() {
   state.controller?.abort();
+  if (state.running) {
+    // A new analysis (or the example) replaces the running one: it must not be resumed later.
+    state.running = false;
+    keepAwake(false);
+    clearRun();
+  }
   clearInterval(state.timer);
   state.zoomCount = 0;
   state.replayT = null;
@@ -255,7 +361,7 @@ function resetWorkspace() {
   $("#log").replaceChildren();
   $("#progress").textContent = "";
   $("#osm-link").hidden = true;
-  $("#result").replaceChildren(el("div", { class: "pending" }, el("span", { class: "spinner" }), " Analyse läuft …"));
+  $("#result").replaceChildren(pendingBox());
   $("#clues-card").hidden = true;
   $("#clue-gallery").replaceChildren();
   state.imageSource = null;
@@ -271,6 +377,14 @@ function resetWorkspace() {
   }
 }
 
+function pendingBox() {
+  return el("div", { class: "pending-wrap" },
+    el("div", { class: "pending" }, el("span", { class: "spinner" }), " Analyse läuft …"),
+    el("p", { class: "small muted" },
+      "Du kannst zwischendurch die App oder den Tab wechseln: Ortfinder speichert nach jeder Runde und macht " +
+      "dort weiter, sobald die Seite wieder offen ist – auch wenn der Browser sie neu geladen hat."));
+}
+
 function buildIntro(image, metadata) {
   const hints = hintsForModel(metadata);
   const parts = [
@@ -283,16 +397,46 @@ function buildIntro(image, metadata) {
   return parts.join("\n\n");
 }
 
-async function analyze(file) {
+/** Settings a run depends on; saved with it, so a resumed run continues with the same AI. */
+const runConfig = () => ({
+  provider: settings.provider, puterModel: settings.puterModel, model: settings.model, thinking: settings.thinking,
+  webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
+});
+
+// Plain JSON copy: what AI services return may carry helper functions that IndexedDB cannot store.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+function firstImages(bitmap, ov) {
+  return [
+    { type: "image", mime_type: "image/jpeg", data: ov.data, resolution: "high" },
+    { type: "image", mime_type: "image/jpeg", data: gridImage(bitmap).data, resolution: "medium" },
+    ...detailTiles(bitmap).flatMap((t) => [
+      { type: "text", text: `Detail-Kachel ${t.name} (x ${t.box[0].toFixed(2)}–${t.box[2].toFixed(2)}, y ${t.box[1].toFixed(2)}–${t.box[3].toFixed(2)}):` },
+      { type: "image", mime_type: "image/jpeg", data: t.data, resolution: "high" },
+    ]),
+  ];
+}
+
+/**
+ * Analyse a photo. `resumed` is the saved state of an interrupted run (see resume.js): log, zooms and
+ * map are restored from its events, and the AI continues after the last completed round.
+ */
+async function analyze(file, resumed = null) {
   if (!file) return;
   resetWorkspace();
   const controller = new AbortController();
   state.controller = controller;
-  state.startedAt = Date.now();
+  state.running = true;
+  state.startedAt = resumed?.startedAt ?? Date.now();
   state.timer = setInterval(() => { $("#elapsed").textContent = `${Math.round((Date.now() - state.startedAt) / 1000)} s`; }, 1000);
   $("#cancel").hidden = false;
-  // Every event of a run is kept, so a run can be inspected or replayed (see runDemo).
-  const run = { started: new Date().toISOString(), model: settings.model, events: [] };
+  $("#notify").hidden = !("Notification" in window) || Notification.permission !== "default";
+  keepAwake(true);
+  let ownsSavedRun = true;
+  const releaseLock = holdLock(() => { ownsSavedRun = false; });
+  const cfg = resumed?.config ?? runConfig();
+  // Every event of a run is kept, so a run can be inspected, replayed (see runDemo) or resumed.
+  const run = { started: new Date(state.startedAt).toISOString(), model: cfg.provider === "puter" ? cfg.puterModel : cfg.model, events: [] };
   state.run = run;
   window.ortfinderLastRun = run;
   const emit = (type, data) => {
@@ -300,22 +444,35 @@ async function analyze(file) {
     run.events.push({ t: Math.round((Date.now() - state.startedAt) / 100) / 10, type, data });
     handle(type, data);
   };
+  if (resumed) {
+    for (const ev of resumed.events || []) {
+      run.events.push(ev);
+      state.replayT = ev.t;
+      handle(ev.type, ev.data);
+    }
+    state.replayT = null;
+    const round = resumed.agentState?.step ?? 0;
+    emit("status", { message: round ? `Unterbrochene Analyse wird nach Runde ${round} fortgesetzt …` : "Unterbrochene Analyse wird neu gestartet …" });
+  }
 
   try {
-    emit("status", { message: "Lese Metadaten (EXIF) …" });
-    const buffer = await file.arrayBuffer();
-    const metadata = await extractMetadata(buffer);
-    emit("metadata", metadata);
-
+    let metadata;
     let exifLocation = null;
-    if (metadata.gps) {
-      exifLocation = { lat: metadata.gps.lat, lon: metadata.gps.lon };
-      try {
-        exifLocation.address = (await osm.reverse(exifLocation.lat, exifLocation.lon)).name;
-      } catch (err) {
-        exifLocation.address_error = err.message;
+    if (resumed) {
+      ({ metadata, exifLocation = null } = resumed);
+    } else {
+      emit("status", { message: "Lese Metadaten (EXIF) …" });
+      metadata = await extractMetadata(await file.arrayBuffer());
+      emit("metadata", metadata);
+      if (metadata.gps) {
+        exifLocation = { lat: metadata.gps.lat, lon: metadata.gps.lon };
+        try {
+          exifLocation.address = (await osm.reverse(exifLocation.lat, exifLocation.lon)).name;
+        } catch (err) {
+          exifLocation.address_error = err.message;
+        }
+        emit("exif_location", exifLocation);
       }
-      emit("exif_location", exifLocation);
     }
 
     const bitmap = await decodeImage(file);
@@ -328,39 +485,37 @@ async function analyze(file) {
 
     let analysis = null;
     let usage = null;
-    const useAI = $("#use-ai").checked;
-    const puter = settings.provider === "puter";
-    if (useAI && !puter && !settings.apiKey) {
+    const puter = cfg.provider === "puter";
+    if (cfg.useAI && !puter && !settings.apiKey) {
       emit("warning", { message: "Für die KI-Bildanalyse mit Gemini fehlt noch der API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet. Tipp: Unter ⚙ „Puter“ wählen – kostenlos und ohne Key." });
       showKeyBar(true, true);
-    } else if (useAI) {
-      const modelName = puter ? settings.puterModel : settings.model;
-      emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName}${puter ? " über Puter" : ""} …` });
+    } else if (cfg.useAI) {
+      const modelName = puter ? cfg.puterModel : cfg.model;
+      if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName}${puter ? " über Puter" : ""} …` });
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
-      const grid = gridImage(bitmap);
-      const agent = puter
-        ? new PuterAgent({ model: settings.puterModel, maxSteps: settings.maxSteps, emit, signal: controller.signal })
-        : new GeminiAgent({
-          apiKey: settings.apiKey, model: settings.model, thinkingLevel: settings.thinking,
-          webSearch: settings.webSearch, maxSteps: settings.maxSteps, emit, signal: controller.signal,
-        });
       const executor = new ToolExecutor({
         zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance),
         mapView: (opts) => renderMapView(opts),
         renderView: (opts) => renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height }),
         osm, emit,
       });
+      executor.restoreCounts(resumed?.counts);
+      // Saved after every round, so the analysis survives the browser pausing or reloading the page.
+      const base = { version: 1, startedAt: state.startedAt, file, config: cfg, metadata: plain(metadata), exifLocation, aspect: state.aspect };
+      const checkpoint = async (agentState) => {
+        if (state.controller !== controller || !ownsSavedRun) return;
+        await saveRun({ ...base, agentState: agentState && plain(agentState), counts: executor.counts, events: plain(run.events) });
+      };
+      if (!resumed?.agentState) await checkpoint(null);
+      const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden() };
+      const agent = puter
+        ? new PuterAgent({ model: cfg.puterModel, ...common })
+        : new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
-        images: [
-          { type: "image", mime_type: "image/jpeg", data: ov.data, resolution: "high" },
-          { type: "image", mime_type: "image/jpeg", data: grid.data, resolution: "medium" },
-          ...detailTiles(bitmap).flatMap((t) => [
-            { type: "text", text: `Detail-Kachel ${t.name} (x ${t.box[0].toFixed(2)}–${t.box[2].toFixed(2)}, y ${t.box[1].toFixed(2)}–${t.box[3].toFixed(2)}):` },
-            { type: "image", mime_type: "image/jpeg", data: t.data, resolution: "high" },
-          ]),
-        ],
+        images: resumed?.agentState ? [] : firstImages(bitmap, ov),
         executor,
+        resume: resumed?.agentState ?? null,
       }));
     }
 
@@ -369,19 +524,26 @@ async function analyze(file) {
     if (exifFov) metadata.fov_deg = exifFov;
     if (exifFov && analysis?.view) analysis.view = { ...analysis.view, fov_deg: exifFov, fov_source: "exif" };
     const result = assembleResult({
-      metadata, exifLocation, analysis, usage, model: settings.provider === "puter" ? `${settings.puterModel} (Puter)` : settings.model,
+      metadata, exifLocation, analysis, usage, model: puter ? `${cfg.puterModel} (Puter)` : cfg.model,
       seconds: Math.round((Date.now() - state.startedAt) / 100) / 10,
     });
     result.aspect = state.aspect;
     emit("result", result);
+    if (state.controller === controller) announceEnd(true, `Ergebnis: ${analysis?.camera?.name || exifLocation?.address || "fertig"}`);
   } catch (err) {
     if (err.name === "AbortError") emit("error", { message: "Analyse abgebrochen." });
     else emit("error", { message: err.message || String(err) });
+    if (state.controller === controller && err.name !== "AbortError") announceEnd(false, `Analyse fehlgeschlagen: ${err.message || err}`);
   } finally {
+    releaseLock();
     if (state.controller === controller) {
+      state.running = false;
       clearInterval(state.timer);
       $("#cancel").hidden = true;
+      $("#notify").hidden = true;
       $("#progress").textContent = "";
+      keepAwake(false);
+      if (ownsSavedRun) clearRun();
     }
   }
 }
@@ -420,7 +582,7 @@ async function ensurePuterSignedIn(emit, signal) {
     button.scrollIntoView({ behavior: "smooth", block: "center" });
     button.focus({ preventScroll: true });
   });
-  box.replaceChildren(el("div", { class: "pending" }, el("span", { class: "spinner" }), " Analyse läuft …"));
+  box.replaceChildren(pendingBox());
   emit("status", { message: "Bei Puter angemeldet." });
 }
 
@@ -496,6 +658,7 @@ function handle(type, data) {
       break;
     case "step":
       $("#progress").textContent = `Runde ${data.step} / ${data.max_steps}`;
+      if (state.running) setTitle(`(${data.step}/${data.max_steps})`); // progress visible in the tab bar
       log("step", `Runde ${data.step}`);
       break;
     case "metadata":
@@ -938,5 +1101,6 @@ async function detectDemo() {
 setupSettings();
 setupDropzone();
 detectDemo();
+resumeInterrupted();
 // Load Puter.js in the background, so the sign-in button can open its popup straight from the click.
 if (settings.provider === "puter") (globalThis.requestIdleCallback ?? setTimeout)(() => loadPuter().catch(() => {}));

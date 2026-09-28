@@ -93,7 +93,14 @@ export function preview(result) {
 }
 
 export class GeminiAgent {
-  constructor({ apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis), emit = () => {}, signal } = {}) {
+  /**
+   * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
+   * `whenActive()` resolves to true after waiting for a page that was in the background.
+   */
+  constructor({
+    apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
+    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
+  } = {}) {
     this.apiKey = apiKey;
     this.model = model;
     this.thinkingLevel = thinkingLevel;
@@ -102,6 +109,8 @@ export class GeminiAgent {
     this.fetch = fetchImpl;
     this.emit = emit;
     this.signal = signal;
+    this.checkpoint = checkpoint;
+    this.whenActive = whenActive;
     this.usage = { requests: 0, input_tokens: 0, output_tokens: 0, thought_tokens: 0, cached_tokens: 0 };
     this.minIntervalMs = 0; // raised when Google reports a requests-per-minute limit (free tier: 5/min)
     this.lastRequestAt = 0;
@@ -134,6 +143,11 @@ export class GeminiAgent {
         });
       } catch (err) {
         if (err.name === "AbortError") throw err;
+        // Browsers cut connections of pages in the background: wait until Ortfinder is visible again.
+        if (await this.waitIfBackground()) {
+          attempt = -1;
+          continue;
+        }
         // Dropped connections (mobile networks, long thinking turns) are usually transient.
         if (attempt < MAX_RETRIES) {
           this.emit("status", { message: `Verbindung zu Gemini unterbrochen – neuer Versuch in ${2 * 2 ** attempt} s …` });
@@ -156,6 +170,10 @@ export class GeminiAgent {
         continue;
       }
       if (err.requestsPerMinute) this.minIntervalMs = Math.ceil(60000 / err.requestsPerMinute) + 500;
+      if (err.status >= 500 && (await this.waitIfBackground())) {
+        attempt = -1;
+        continue;
+      }
       const maxRetries = err.status === 429 ? MAX_RATE_LIMIT_RETRIES : MAX_RETRIES;
       if (err.retryable && attempt < maxRetries) {
         const wait = Math.min(err.retryAfterMs ? err.retryAfterMs + 1000 : 2000 * 2 ** attempt, 90000);
@@ -167,6 +185,15 @@ export class GeminiAgent {
       }
       throw err;
     }
+  }
+
+  async waitIfBackground() {
+    const pending = this.whenActive();
+    // Only announce the wait when there is one (whenActive resolves at once for a visible page).
+    const waited = await Promise.race([pending, new Promise((r) => setTimeout(() => r("waiting"), 50))]);
+    if (waited !== "waiting") return waited;
+    this.emit("status", { message: "Ortfinder ist im Hintergrund – die Anfrage wird wiederholt, sobald die Seite wieder sichtbar ist." });
+    return pending;
   }
 
   addUsage(usage = {}) {
@@ -198,15 +225,21 @@ export class GeminiAgent {
    * @param {string} opts.intro - text for the first user turn
    * @param {Array} opts.images - image content blocks for the first user turn
    * @param {import('./tools.js').ToolExecutor} opts.executor
+   * @param {object} [opts.resume] - a state from `checkpoint`: continue after that round
    */
-  async run({ intro, images, executor }) {
+  async run({ intro, images, executor, resume = null }) {
     const budget =
       `Budget: höchstens ${this.maxSteps} Runden (jede Antwort von dir ist eine Runde und kostet eine API-Anfrage). ` +
       "Bündle deshalb alle Zooms und Kartenabfragen, die du gerade brauchst, parallel in EINER Antwort.";
-    const history = [{ type: "user_input", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...images] }];
-    let nudges = 0;
+    const history = resume ? [...resume.conversation] : [{ type: "user_input", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...images] }];
+    let nudges = resume?.nudges ?? 0;
+    if (resume) {
+      this.usage = { ...this.usage, ...resume.usage };
+      if (resume.webSearch === false) this.webSearch = false;
+    }
+    const save = (step) => this.checkpoint({ conversation: history, step, nudges, usage: this.usage, webSearch: this.webSearch });
 
-    for (let step = 1; step <= this.maxSteps; step++) {
+    for (let step = (resume?.step ?? 0) + 1; step <= this.maxSteps; step++) {
       this.signal?.throwIfAborted();
       this.emit("step", { step, max_steps: this.maxSteps });
       const interaction = await this.request(history);
@@ -226,6 +259,7 @@ export class GeminiAgent {
         nudges += 1;
         if (nudges > MAX_NUDGES) break;
         history.push({ type: "user_input", content: [{ type: "text", text: `Bitte gib dein Ergebnis jetzt mit \`${SUBMIT_TOOL}\` ab.` }] });
+        await save(step);
         continue;
       }
 
@@ -257,6 +291,7 @@ export class GeminiAgent {
         last.result = typeof last.result === "string" ? `${last.result}\n\n${note}` : [...last.result, { type: "text", text: note }];
       }
       history.push(...results);
+      await save(step);
     }
     throw new GeminiError("Der Agent hat innerhalb des Schrittlimits kein Ergebnis abgegeben (in den Einstellungen mehr Runden erlauben).");
   }

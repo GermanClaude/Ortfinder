@@ -24,9 +24,25 @@ Google-Gemini-Key nutzen.
 4. Am Ende zeigt die Karte zwei Punkte:
    - **📷 Standpunkt**: von hier wurde fotografiert (mit Unsicherheits-Areal),
    - **🎯 Motiv**: das ist auf dem Foto zu sehen,
-   dazwischen das **Sichtfeld** (Blickrichtung und Bildwinkel). Darunter zeigt „Woran Ortfinder den Ort
+   dazwischen den berechneten **Sichtbereich**. Darunter zeigt „Woran Ortfinder den Ort
    erkennt“ jeden Hinweis als Bildausschnitt: Verkehrszeichen, Schrift und Sprache, Symbole, Pflanzen,
    Architektur, Kleidung usw.
+
+### Weiterrechnen, wenn Ortfinder nicht auf dem Bildschirm ist
+
+- **Computer:** Die Analyse läuft in einem Hintergrund-Tab einfach weiter. Der Fortschritt steht im
+  Tab-Titel, z.B. „(3/10) Ortfinder“, am Ende „✔ Ortfinder“.
+- **Handy:** Sobald man die App wechselt oder der Bildschirm ausgeht, halten Browser eine Seite an und
+  laden sie manchmal später neu. Eine Website kann das nicht verhindern, dafür bräuchte es einen Server.
+  Ortfinder sorgt deshalb dafür, dass nichts verloren geht:
+  - Nach jeder Runde wird der Stand im Browser gespeichert (IndexedDB). Wird die Seite neu geladen, geht
+    die Analyse genau dort weiter, mit Protokoll, Zooms und Karte.
+  - Bricht eine Anfrage ab, während die Seite im Hintergrund ist, wartet Ortfinder und wiederholt sie,
+    sobald die Seite wieder sichtbar ist, statt mit Fehler abzubrechen.
+  - Während der Analyse bleibt der Bildschirm an (Wake Lock), damit das Handy nicht sperrt.
+- **Benachrichtigung:** Mit „🔔 Bescheid geben“ meldet sich Ortfinder, sobald das Ergebnis da ist,
+  solange der Browser die Seite im Hintergrund laufen lässt (Computer, oft auch Android). Auf dem iPhone
+  gehen Benachrichtigungen nur, wenn Ortfinder zum Home-Bildschirm hinzugefügt wurde.
 
 ## Wie es funktioniert
 
@@ -212,6 +228,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/mapview.js       Luftbild-/Kartenausschnitte für die KI (Esri World Imagery, OSM-Kacheln)
   js/scene3d.js       3D-Nachbau aus OSM-Gebäuden + Gelände, exakter Sichtbereich (Sichtstrahlen)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
+  js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
+  sw.js               Service Worker nur für die Fertig-Benachrichtigung (speichert nichts)
   vendor/             Leaflet, exifr, heic2any (mit Lizenzen), kein CDN nötig
 tests/js/             Unit-Tests der Website (Node)
 tests/test_web_e2e.py Browser-Test der Website (Playwright, Gemini/OSM simuliert)
