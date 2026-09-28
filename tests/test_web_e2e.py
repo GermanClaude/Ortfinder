@@ -123,10 +123,16 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     _mock_network(page, gemini_bodies)
 
     page.goto(site_url)
-    # First visit: the tool (upload area) is up front, with a compact key field; settings stay closed.
+    # First visit: the tool (upload area) is up front; the default provider (Puter) needs no key.
     assert page.is_visible("#drop") and page.is_visible("#pick")
-    assert page.is_visible("#key-bar")
+    assert page.is_visible("#puter-note") and not page.is_visible("#key-bar")
     assert not page.is_visible("#settings")
+    assert "Puter" in page.text_content("#settings-toggle")
+    # Switch to the own-Gemini-key provider: the key field appears.
+    page.click("#settings-toggle")
+    page.select_option("#provider", "gemini")
+    assert page.is_visible("#key-bar") and not page.is_visible("#puter-note")
+    page.click("#save-settings")
     page.fill("#api-key", "123456789012")
     assert "Projektnummer" in page.text_content("#key-hint")
     page.fill("#api-key", "AIza" + "x" * 35)  # older standard key format
@@ -248,4 +254,62 @@ def test_example_replays_a_recording_without_api_key(browser, site_url, tmp_path
     assert "42.0s" in page.text_content("#log")  # original timestamps are kept in the replay
     assert page.evaluate("document.querySelector('#photo').naturalWidth") == 1600
     assert gemini_calls == [] and errors == []
+    context.close()
+
+
+FAKE_PUTER = """
+window.__signedIn = window.__signedIn ?? true;
+window.puter = {
+  auth: { isSignedIn: () => window.__signedIn, signIn: async () => { window.__signInCalls = (window.__signInCalls || 0) + 1; window.__signedIn = true; } },
+  ai: {
+    chat: async (messages, options) => {
+      window.__puterCalls = window.__puterCalls || [];
+      window.__puterCalls.push({ messages: JSON.parse(JSON.stringify(messages)), options: { model: options.model, normalize: options.normalize, tools: options.tools.length } });
+      return window.__puterScript.shift();
+    },
+  },
+};
+"""
+
+
+def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
+    """Default mode: Puter.js (no API key). Puter itself is simulated; the page's loop and rendering are real."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    script = [
+        {"message": {"role": "assistant", "content": "Schild prüfen.", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "zoom_image", "arguments": json.dumps({"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "purpose": "Schild"})}},
+            {"id": "c2", "type": "function", "function": {"name": "mark_hypothesis", "arguments": json.dumps({"label": "Südbaden", "camera_lat": 47.99, "camera_lon": 7.85, "radius_km": 30})}},
+        ]}, "finish_reason": "tool_calls", "usage": {"prompt_tokens": 3000, "completion_tokens": 200}},
+        {"message": {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c3", "type": "function", "function": {"name": "submit_result", "arguments": json.dumps(SUBMISSION)}},
+        ]}, "finish_reason": "tool_calls", "usage": {"prompt_tokens": 4000, "completion_tokens": 300}},
+    ]
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(f"window.__puterScript = {json.dumps(script)}; window.__signedIn = false;")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.route("https://js.puter.com/v2/", lambda r: r.fulfill(status=200, content_type="application/javascript", body=FAKE_PUTER))
+    page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
+    page.route("https://generativelanguage.googleapis.com/**", lambda r: r.abort())
+    page.goto(site_url)
+    page.set_input_files("#file", str(street))
+    # Not signed in yet: the analysis pauses on a sign-in button (popups need a real click).
+    page.wait_for_selector("#puter-signin", timeout=30000)
+    assert page.evaluate("window.__puterCalls") is None
+    page.click("#puter-signin")
+    page.wait_for_selector(".clue-card", timeout=60000)
+    assert page.evaluate("window.__signInCalls") == 1
+    assert page.locator(".answer").all_text_contents() == ["Bahnhofstraße, Freiburg", "Martinstor"]
+    assert "Puter" in page.text_content("#result")
+    assert "Zwischenstand: Südbaden" in page.text_content("#log")
+    calls = page.evaluate("window.__puterCalls")
+    assert len(calls) == 2
+    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 9}
+    first_user = calls[0]["messages"][1]["content"]
+    assert first_user[1]["type"] == "image_url" and first_user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    roles = [m["role"] for m in calls[1]["messages"]]
+    assert roles == ["system", "user", "assistant", "tool", "tool", "user"]  # zoom crop follows as a user image
+    assert errors == []
     context.close()

@@ -4,6 +4,7 @@ import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
 import { OSMClient, haversineKm, viewCone } from "./geo.js";
 import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
 import { extractMetadata, hintsForModel } from "./metadata.js";
+import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
 import { ToolExecutor } from "./tools.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -54,6 +55,8 @@ function storageSet(value) {
 }
 
 const settings = {
+  provider: "puter", // "puter": free, no key (user signs in at Puter) · "gemini": own Gemini API key
+  puterModel: PUTER_MODELS[0].id,
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -64,6 +67,12 @@ const settings = {
 };
 
 function fillSettingsForm() {
+  $("#provider").value = settings.provider;
+  const puterSelect = $("#puter-model");
+  puterSelect.replaceChildren(...PUTER_MODELS.map((m) => el("option", { value: m.id }, m.label)));
+  if (!PUTER_MODELS.some((m) => m.id === settings.puterModel)) puterSelect.append(el("option", { value: settings.puterModel }, settings.puterModel));
+  puterSelect.value = settings.puterModel;
+  applyProvider(settings.provider);
   const select = $("#model");
   select.replaceChildren(...MODELS.map((m) => el("option", { value: m.id }, m.label)));
   if (!MODELS.some((m) => m.id === settings.model)) select.append(el("option", { value: settings.model }, settings.model));
@@ -105,7 +114,16 @@ function saveKey() {
   showKeyBar(!settings.apiKey);
 }
 
+/** Show the settings and hints that belong to the chosen provider. */
+function applyProvider(provider) {
+  $("#settings").dataset.provider = provider;
+  $("#puter-note").hidden = provider !== "puter";
+  showKeyBar(provider === "gemini" && !settings.apiKey);
+}
+
 function saveSettings() {
+  settings.provider = $("#provider").value;
+  settings.puterModel = $("#puter-model").value;
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
@@ -133,7 +151,10 @@ function showKeyBar(open, attention = false) {
 
 function updateStatusChip() {
   const chip = $("#settings-toggle");
-  if (settings.apiKey) {
+  if (settings.provider === "puter") {
+    chip.textContent = `⚙ ${settings.puterModel} · kostenlos über Puter`;
+    chip.className = "chip ok";
+  } else if (settings.apiKey) {
     chip.textContent = `⚙ ${settings.model} · ${settings.webSearch ? "mit Google-Suche" : "ohne Websuche"}`;
     chip.className = "chip ok";
   } else {
@@ -145,7 +166,7 @@ function updateStatusChip() {
 function setupSettings() {
   fillSettingsForm();
   updateStatusChip();
-  showKeyBar(!settings.apiKey);
+  $("#provider").addEventListener("change", () => applyProvider($("#provider").value));
   $("#settings-toggle").addEventListener("click", () => showSettings($("#settings").hidden));
   $("#save-settings").addEventListener("click", saveSettings);
   $("#save-key").addEventListener("click", saveKey);
@@ -289,16 +310,21 @@ async function analyze(file) {
     let analysis = null;
     let usage = null;
     const useAI = $("#use-ai").checked;
-    if (useAI && !settings.apiKey) {
-      emit("warning", { message: "Für die KI-Bildanalyse fehlt noch der Gemini-API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet." });
+    const puter = settings.provider === "puter";
+    if (useAI && !puter && !settings.apiKey) {
+      emit("warning", { message: "Für die KI-Bildanalyse mit Gemini fehlt noch der API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet. Tipp: Unter ⚙ „Puter“ wählen – kostenlos und ohne Key." });
       showKeyBar(true, true);
     } else if (useAI) {
-      emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${settings.model} …` });
+      const modelName = puter ? settings.puterModel : settings.model;
+      emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName}${puter ? " über Puter" : ""} …` });
+      if (puter) await ensurePuterSignedIn(emit, controller.signal);
       const grid = gridImage(bitmap);
-      const agent = new GeminiAgent({
-        apiKey: settings.apiKey, model: settings.model, thinkingLevel: settings.thinking,
-        webSearch: settings.webSearch, maxSteps: settings.maxSteps, emit, signal: controller.signal,
-      });
+      const agent = puter
+        ? new PuterAgent({ model: settings.puterModel, maxSteps: settings.maxSteps, emit, signal: controller.signal })
+        : new GeminiAgent({
+          apiKey: settings.apiKey, model: settings.model, thinkingLevel: settings.thinking,
+          webSearch: settings.webSearch, maxSteps: settings.maxSteps, emit, signal: controller.signal,
+        });
       const executor = new ToolExecutor({ zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance), osm, emit });
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
@@ -315,7 +341,7 @@ async function analyze(file) {
     }
 
     const result = assembleResult({
-      metadata, exifLocation, analysis, usage, model: settings.model,
+      metadata, exifLocation, analysis, usage, model: settings.provider === "puter" ? `${settings.puterModel} (Puter)` : settings.model,
       seconds: Math.round((Date.now() - state.startedAt) / 100) / 10,
     });
     emit("result", result);
@@ -329,6 +355,44 @@ async function analyze(file) {
       $("#progress").textContent = "";
     }
   }
+}
+
+// ---------- Puter sign-in ----------
+
+const puterSignedIn = async (p) => Promise.resolve().then(() => p.auth.isSignedIn()).catch(() => false);
+
+/**
+ * Puter signs users in through a popup. Browsers only allow popups right after a click, so the
+ * analysis pauses on a button instead of opening the popup from inside the async pipeline.
+ */
+async function ensurePuterSignedIn(emit, signal) {
+  const p = await loadPuter();
+  if (await puterSignedIn(p)) return;
+  emit("status", { message: "Einmalige kostenlose Anmeldung bei Puter nötig – bitte auf „Bei Puter anmelden“ klicken." });
+  const box = $("#result");
+  await new Promise((resolve, reject) => {
+    const button = el("button", { type: "button", class: "primary", id: "puter-signin" }, "Bei Puter anmelden (kostenlos)");
+    const hint = el("p", { class: "small muted" });
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      hint.textContent = "Anmeldefenster ist offen …";
+      try {
+        await p.auth.signIn();
+        resolve();
+      } catch (err) {
+        button.disabled = false;
+        hint.textContent = describePuterError(err).message;
+      }
+    });
+    signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("Abgebrochen", "AbortError")), { once: true });
+    box.replaceChildren(el("div", { class: "signin-box" },
+      el("p", {}, el("strong", {}, "Ein Schritt noch: "), "Für die KI-Analyse meldest du dich einmalig kostenlos bei Puter an – mit Google, Microsoft, Apple oder E-Mail. Danach geht es automatisch weiter."),
+      button, hint));
+    button.scrollIntoView({ behavior: "smooth", block: "center" });
+    button.focus({ preventScroll: true });
+  });
+  box.replaceChildren(el("div", { class: "pending" }, el("span", { class: "spinner" }), " Analyse läuft …"));
+  emit("status", { message: "Bei Puter angemeldet." });
 }
 
 // ---------- recorded example (works without an API key) ----------
@@ -637,7 +701,7 @@ function renderResult(r) {
     }
   }
   if (!a) {
-    if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei. Für die KI-Bildanalyse oben den Gemini-API-Key eintragen."));
+    if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei, und die KI-Bildanalyse lief nicht (siehe Protokoll)."));
     return;
   }
 
@@ -709,3 +773,5 @@ async function detectDemo() {
 setupSettings();
 setupDropzone();
 detectDemo();
+// Load Puter.js in the background, so the sign-in button can open its popup straight from the click.
+if (settings.provider === "puter") (globalThis.requestIdleCallback ?? setTimeout)(() => loadPuter().catch(() => {}));
