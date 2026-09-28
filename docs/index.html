@@ -22,20 +22,32 @@
   </header>
 
   <main>
-    <section id="settings" class="card settings" hidden>
-      <div class="card-head"><h2>Einstellungen</h2></div>
-      <div class="form">
-        <label for="api-key">Gemini-API-Key</label>
-        <div class="row">
-          <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="AQ.…">
-          <button id="key-visibility" type="button" class="ghost">Zeigen</button>
+    <section id="hero" class="hero">
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="Foto auswählen">
+        <input id="file" type="file" accept="image/*,.heic,.heif" hidden>
+        <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3 7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg>
+        <strong class="drop-title">Foto hier ablegen – Ortfinder findet heraus, wo es aufgenommen wurde</strong>
+        <span class="drop-sub">oder klicken zum Auswählen · Strg+V zum Einfügen · JPEG, PNG, WebP, HEIC</span>
+        <div class="hero-actions">
+          <button id="pick" type="button" class="primary">Foto auswählen</button>
+          <button id="demo" type="button" class="ghost" hidden>Beispiel ansehen</button>
         </div>
-        <p id="key-hint" class="small muted">
-          Kostenlos erstellen unter <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
-          Der Key bleibt in deinem Browser und wird nur direkt an Google gesendet.
-        </p>
-        <label class="check"><input id="remember-key" type="checkbox" checked> Key in diesem Browser merken</label>
+      </div>
 
+      <div id="key-bar" class="key-bar" hidden>
+        <p class="key-title"><strong>Für eigene Fotos einmalig einen Gemini-API-Key eintragen</strong></p>
+        <div class="row">
+          <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="AQ.…" aria-label="Gemini-API-Key">
+          <button id="key-visibility" type="button" class="ghost">Zeigen</button>
+          <button id="save-key" type="button" class="primary">Speichern</button>
+        </div>
+        <p id="key-hint" class="small muted"></p>
+      </div>
+    </section>
+
+    <section id="settings" class="card settings" hidden>
+      <div class="card-head"><h2>Einstellungen</h2><button id="change-key" type="button" class="ghost small-btn">API-Key ändern</button></div>
+      <div class="form">
         <div class="grid2">
           <div>
             <label for="model">Modell</label>
@@ -55,12 +67,13 @@
           </div>
           <div class="check-cell">
             <label class="check"><input id="web-search" type="checkbox" checked> Google-Suche (nur bezahlter Tarif)</label>
+            <label class="check"><input id="use-ai" type="checkbox" checked> KI-Bildanalyse (sonst nur GPS/EXIF)</label>
+            <label class="check"><input id="remember-key" type="checkbox" checked> Key in diesem Browser merken</label>
           </div>
         </div>
         <p class="small muted">
-          3.8 Flash läuft auch im kostenlosen Tarif; 3.1 Pro und die Google-Suche brauchen den bezahlten Tarif.
-          Hinweis: Im kostenlosen Gemini-Tarif darf Google die Eingaben zur Verbesserung seiner Produkte verwenden.
-          Lade dort keine privaten Fotos anderer Menschen hoch.
+          3.8 Flash läuft auch im kostenlosen Tarif (20 Anfragen pro Tag); 3.1 Pro und die Google-Suche brauchen den bezahlten Tarif.
+          Im kostenlosen Tarif darf Google die Eingaben zur Verbesserung seiner Produkte verwenden – dort keine privaten Fotos anderer hochladen.
         </p>
         <div class="row end">
           <button id="save-settings" type="button" class="primary">Speichern</button>
@@ -68,16 +81,7 @@
       </div>
     </section>
 
-    <section id="drop" class="drop" tabindex="0" aria-label="Bild auswählen">
-      <input id="file" type="file" accept="image/*,.heic,.heif" hidden>
-      <div class="drop-inner">
-        <strong>Bild hierher ziehen, mit Strg+V einfügen oder klicken</strong>
-        <span>JPEG, PNG, WebP, HEIC · Originaldateien enthalten oft GPS-Daten, Messenger entfernen sie meist</span>
-      </div>
-      <label class="toggle" onclick="event.stopPropagation()">
-        <input id="use-ai" type="checkbox" checked> KI-Bildanalyse
-      </label>
-    </section>
+    <div id="demo-banner" class="banner" hidden></div>
 
     <section id="workspace" hidden>
       <div class="grid">

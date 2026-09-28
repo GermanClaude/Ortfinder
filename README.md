@@ -9,6 +9,15 @@ Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs))
 
 ![Oberfläche (Demo-Lauf)](docs/screenshot.png)
 
+## Benutzung
+
+**Direkt im Browser:** <https://germanclaude.github.io/Ortfinder/>
+
+1. Einmalig den Gemini-API-Key in das Feld unter dem Upload-Bereich eintragen (siehe unten).
+2. Ein Foto in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
+3. Live verfolgen, wohin die KI zoomt und was sie sucht. Am Ende stehen Ort, Karte, Konfidenz und die im
+   Bild markierten Hinweise.
+
 ## Wie es funktioniert
 
 1. **Metadaten (EXIF).** Viele Originalfotos von Handys (auch iPhone-HEIC) enthalten GPS-Koordinaten.
@@ -61,7 +70,8 @@ Originaldateien direkt vom Handy verwenden.
 
 1. Im Repository auf GitHub: **Settings → Pages**.
 2. Bei **Build and deployment → Source** „**Deploy from a branch**“ wählen.
-3. Branch `main` (bzw. den Branch mit diesem Code) und Ordner **`/docs`** auswählen → **Save**.
+3. Den Branch mit diesem Code auswählen, Ordner **`/ (root)`** oder **`/docs`** (beides funktioniert:
+   die Startseite im Hauptordner leitet direkt zur App weiter) → **Save**.
 4. Nach ca. einer Minute ist die Seite erreichbar unter
    **https://germanclaude.github.io/Ortfinder/**.
 
@@ -138,6 +148,13 @@ pip install -r requirements-dev.txt
 python -m playwright install chromium      # einmalig, für den Browser-Test
 python -m pytest                           # Python-Version + Browser-Test der Website
 ```
+
+### Beispiel-Analyse hinterlegen (optional)
+
+Der Knopf „Beispiel ansehen“ erscheint, sobald unter `docs/demo/` eine aufgezeichnete echte Analyse liegt
+(`beispiel.json` + das Foto). Nach einer Analyse steht der Lauf in der Browser-Konsole unter
+`window.ortfinderLastRun`; das Format der Datei zeigt `test_example_runs_without_api_key` in
+`tests/test_web_e2e.py`.
 
 ### Lokale Python-Version (optional)
 
