@@ -9,6 +9,16 @@ Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs))
 
 ![Oberfläche (Demo-Lauf)](docs/screenshot.png)
 
+## Benutzung
+
+**Direkt im Browser:** <https://germanclaude.github.io/Ortfinder/>
+
+1. **Beispiel ansehen:** zeigt sofort, auch ohne API-Key, eine aufgezeichnete echte Analyse.
+2. **Eigenes Foto:** einmalig den Gemini-API-Key in das Feld oben eintragen (siehe unten), dann ein Foto
+   in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
+3. Live verfolgen, wohin die KI zoomt und was sie sucht. Am Ende stehen Ort, Karte, Konfidenz und die im
+   Bild markierten Hinweise.
+
 ## Wie es funktioniert
 
 1. **Metadaten (EXIF).** Viele Originalfotos von Handys (auch iPhone-HEIC) enthalten GPS-Koordinaten.
@@ -61,7 +71,8 @@ Originaldateien direkt vom Handy verwenden.
 
 1. Im Repository auf GitHub: **Settings → Pages**.
 2. Bei **Build and deployment → Source** „**Deploy from a branch**“ wählen.
-3. Branch `main` (bzw. den Branch mit diesem Code) und Ordner **`/docs`** auswählen → **Save**.
+3. Den Branch mit diesem Code auswählen, Ordner **`/ (root)`** oder **`/docs`** (beides funktioniert:
+   die Startseite im Hauptordner leitet direkt zur App weiter) → **Save**.
 4. Nach ca. einer Minute ist die Seite erreichbar unter
    **https://germanclaude.github.io/Ortfinder/**.
 
@@ -102,6 +113,10 @@ bündelt Zooms und Suchen pro Runde, um mit wenigen Anfragen auszukommen.
 Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
 **zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;
 dafür wird der Verlauf bei jeder Runde vollständig mitgeschickt.
+
+Beispielfoto der aufgezeichneten Analyse: „01 Hauptstraße, Großsachsenheim, Ortsbild, Blick gegen Westen“
+von R.kaelcke, [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:01_Hauptstra%C3%9Fe,_Gro%C3%9Fsachsenheim,_Ortsbild,_Blick_gegen_Westen.jpg),
+Lizenz [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), verkleinert und ohne Metadaten.
 
 ## Verantwortungsvoller Umgang
 

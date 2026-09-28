@@ -1,7 +1,7 @@
 // Ortfinder web app: runs entirely in the browser (GitHub Pages friendly).
 
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
-import { OSMClient } from "./geo.js";
+import { OSMClient, haversineKm } from "./geo.js";
 import { decodeImage, gridImage, overview, zoomCrop } from "./imaging.js";
 import { extractMetadata, hintsForModel } from "./metadata.js";
 import { ToolExecutor } from "./tools.js";
@@ -32,7 +32,7 @@ const PRECISION = {
 const KEY_PATTERN = /^(AQ\.[0-9A-Za-z_.-]{20,}|AIza[0-9A-Za-z_-]{35})$/;
 const STORAGE_KEY = "ortfinder.settings.v1";
 
-const state = { controller: null, map: null, layer: null, startedAt: 0, timer: null, zoomCount: 0, running: false };
+const state = { controller: null, map: null, layer: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null };
 const osm = new OSMClient();
 
 // ---------- settings (kept in this browser only) ----------
@@ -89,20 +89,29 @@ function checkKeyFormat() {
     hint.replaceChildren(
       "Kostenlos erstellen unter ",
       el("a", { href: "https://aistudio.google.com/apikey", target: "_blank", rel: "noopener" }, "aistudio.google.com/apikey"),
-      ". Der Key bleibt in deinem Browser und wird nur direkt an Google gesendet.",
+      ". Der Key bleibt in deinem Browser und wird nur direkt an Google gesendet. Ohne Key: „Beispiel ansehen“ zeigt eine echte Analyse.",
     );
   }
 }
 
-function saveSettings() {
+function persist() {
+  storageSet({ ...settings, apiKey: settings.remember ? settings.apiKey : "" });
+  updateStatusChip();
+}
+
+function saveKey() {
   settings.apiKey = $("#api-key").value.trim();
+  persist();
+  showKeyBar(!settings.apiKey);
+}
+
+function saveSettings() {
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
   settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 12));
   settings.remember = $("#remember-key").checked;
-  storageSet({ ...settings, apiKey: settings.remember ? settings.apiKey : "" });
-  updateStatusChip();
+  persist();
   showSettings(false);
 }
 
@@ -111,26 +120,38 @@ function showSettings(open) {
   $("#settings-toggle").setAttribute("aria-expanded", String(open));
 }
 
+function showKeyBar(open, attention = false) {
+  const bar = $("#key-bar");
+  bar.hidden = !open;
+  if (open && attention) {
+    bar.classList.remove("attention");
+    void bar.offsetWidth; // restart the animation
+    bar.classList.add("attention");
+    $("#api-key").focus();
+  }
+}
+
 function updateStatusChip() {
   const chip = $("#settings-toggle");
-  const model = MODELS.find((m) => m.id === settings.model);
   if (settings.apiKey) {
-    chip.textContent = `⚙ ${model ? model.id : settings.model} · ${settings.webSearch ? "mit Google-Suche" : "ohne Websuche"}`;
+    chip.textContent = `⚙ ${settings.model} · ${settings.webSearch ? "mit Google-Suche" : "ohne Websuche"}`;
     chip.className = "chip ok";
   } else {
-    chip.textContent = "⚙ Gemini-API-Key eintragen";
-    chip.className = "chip warn";
+    chip.textContent = "⚙ Einstellungen";
+    chip.className = "chip";
   }
 }
 
 function setupSettings() {
   fillSettingsForm();
   updateStatusChip();
-  if (!settings.apiKey) showSettings(true);
+  showKeyBar(!settings.apiKey);
   $("#settings-toggle").addEventListener("click", () => showSettings($("#settings").hidden));
   $("#save-settings").addEventListener("click", saveSettings);
+  $("#save-key").addEventListener("click", saveKey);
+  $("#change-key").addEventListener("click", () => showKeyBar(true, true));
   $("#api-key").addEventListener("input", checkKeyFormat);
-  $("#api-key").addEventListener("keydown", (e) => e.key === "Enter" && saveSettings());
+  $("#api-key").addEventListener("keydown", (e) => e.key === "Enter" && saveKey());
   $("#key-visibility").addEventListener("click", () => {
     const input = $("#api-key");
     input.type = input.type === "password" ? "text" : "password";
@@ -144,6 +165,10 @@ function setupDropzone() {
   const drop = $("#drop");
   const input = $("#file");
   drop.addEventListener("click", () => input.click());
+  $("#demo").addEventListener("click", (e) => {
+    e.stopPropagation();
+    runDemo();
+  });
   drop.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
   });
@@ -181,6 +206,9 @@ function resetWorkspace() {
   state.controller?.abort();
   clearInterval(state.timer);
   state.zoomCount = 0;
+  state.replayT = null;
+  $("#demo-banner").hidden = true;
+  showSettings(false);
   $("#workspace").hidden = false;
   $("#drop").classList.add("compact");
   $("#photo").removeAttribute("src");
@@ -216,8 +244,14 @@ async function analyze(file) {
   state.startedAt = Date.now();
   state.timer = setInterval(() => { $("#elapsed").textContent = `${Math.round((Date.now() - state.startedAt) / 1000)} s`; }, 1000);
   $("#cancel").hidden = false;
+  // Every event of a run is kept, so a run can be inspected or replayed (see runDemo).
+  const run = { started: new Date().toISOString(), model: settings.model, events: [] };
+  state.run = run;
+  window.ortfinderLastRun = run;
   const emit = (type, data) => {
-    if (state.controller === controller) handle(type, data);
+    if (state.controller !== controller) return;
+    run.events.push({ t: Math.round((Date.now() - state.startedAt) / 100) / 10, type, data });
+    handle(type, data);
   };
 
   try {
@@ -247,7 +281,8 @@ async function analyze(file) {
     let usage = null;
     const useAI = $("#use-ai").checked;
     if (useAI && !settings.apiKey) {
-      emit("warning", { message: "Kein Gemini-API-Key eingetragen – es werden nur die Metadaten ausgewertet (⚙ oben rechts)." });
+      emit("warning", { message: "Für die KI-Bildanalyse fehlt noch der Gemini-API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet." });
+      showKeyBar(true, true);
     } else if (useAI) {
       emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${settings.model} …` });
       const grid = gridImage(bitmap);
@@ -283,6 +318,44 @@ async function analyze(file) {
   }
 }
 
+// ---------- recorded example (works without an API key) ----------
+
+async function runDemo() {
+  resetWorkspace();
+  const controller = new AbortController();
+  state.controller = controller;
+  let demo;
+  try {
+    const resp = await fetch("demo/beispiel.json");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    demo = await resp.json();
+  } catch (err) {
+    fail(`Das Beispiel konnte nicht geladen werden (${err.message}).`);
+    return;
+  }
+  const banner = $("#demo-banner");
+  banner.hidden = false;
+  banner.replaceChildren(
+    el("strong", {}, "Aufgezeichnete Beispiel-Analyse: "),
+    `So arbeitet Ortfinder – echter Lauf mit ${demo.model} vom ${demo.date}, im Zeitraffer abgespielt. `,
+    "Foto: ", el("a", { href: demo.credit.url, target: "_blank", rel: "noopener" }, demo.credit.text), ". ",
+    settings.apiKey ? "Lade jetzt dein eigenes Foto hoch." : "Für eigene Fotos oben den Gemini-API-Key eintragen.",
+  );
+  $("#photo").src = `demo/${demo.image}`;
+  state.startedAt = Date.now();
+  // Replay in about 20 seconds, keeping the order and the original timestamps in the log.
+  const total = demo.events.at(-1)?.t || 1;
+  const scale = Math.min(1, 20 / total);
+  for (const ev of demo.events) {
+    const wait = state.startedAt + ev.t * scale * 1000 - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (state.controller !== controller || controller.signal.aborted) return;
+    state.replayT = ev.t;
+    handle(ev.type, ev.type === "result" ? { ...ev.data, truth: demo.truth } : ev.data);
+  }
+  state.replayT = null;
+}
+
 // ---------- rendering ----------
 
 const ICONS = {
@@ -291,7 +364,7 @@ const ICONS = {
 };
 
 function log(type, text) {
-  const t = `${((Date.now() - state.startedAt) / 1000).toFixed(1)}s`;
+  const t = `${(state.replayT ?? (Date.now() - state.startedAt) / 1000).toFixed(1)}s`;
   const list = $("#log");
   const stick = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
   list.append(el("li", { class: type }, el("span", { class: "t" }, t), el("span", {}, ICONS[type] || "•"), el("span", { class: "body" }, text)));
@@ -440,7 +513,7 @@ function renderResult(r) {
     }
   }
   if (!a) {
-    if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei. Für die Bildanalyse wird ein Gemini-API-Key benötigt (⚙ oben rechts)."));
+    if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei. Für die KI-Bildanalyse oben den Gemini-API-Key eintragen – oder „Beispiel ansehen“ klicken."));
     return;
   }
 
@@ -492,7 +565,17 @@ function renderResult(r) {
       `${r.model} · ${u.requests} Anfragen · ${u.input_tokens.toLocaleString("de-DE")} Input- / ${(u.output_tokens + u.thought_tokens).toLocaleString("de-DE")} Output-Tokens · ${r.seconds} s`));
   }
 
+  if (r.truth) {
+    const km = haversineKm(r.truth.lat, r.truth.lon, best.lat, best.lon);
+    box.append(el("p", { class: "truth" }, `Tatsächlicher Aufnahmeort: ${r.truth.label} – die Analyse lag ${formatKm(km)} daneben.`));
+  }
+
   if (state.layer) {
+    if (r.truth) {
+      L.circleMarker([r.truth.lat, r.truth.lon], { radius: 8, color: "#fff", weight: 2, fillColor: "#12805c", fillOpacity: 1 })
+        .bindPopup(`<b>Tatsächlicher Ort</b><br>${escapeHtml(r.truth.label)}`)
+        .addTo(state.layer);
+    }
     a.candidates.slice().reverse().forEach((c) => drawLocation(c, false));
     drawLocation(best, true);
     if (!exif) setOsmLink(best.lat, best.lon);
