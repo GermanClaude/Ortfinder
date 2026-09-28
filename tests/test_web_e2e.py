@@ -270,6 +270,7 @@ def test_root_redirects_to_the_app(site_url):
     """GitHub Pages serving the repository root must land on the app, not on a rendered README."""
     root = DOCS.parent / "index.html"
     assert 'url=docs/' in root.read_text()
+    assert 'location.replace("docs/anleitung.html" + location.search + location.hash)' in (DOCS.parent / "anleitung.html").read_text()
     assert (DOCS.parent / ".nojekyll").exists() and (DOCS / ".nojekyll").exists()
 
 
