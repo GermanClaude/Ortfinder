@@ -121,7 +121,7 @@ def test_website_end_to_end(browser, site_url, tmp_path):
 
     page.goto(site_url)
     # First visit: the tool (upload area) is up front, with a compact key field; settings stay closed.
-    assert page.is_visible("#drop") and page.is_visible("#demo")
+    assert page.is_visible("#drop") and page.is_visible("#pick")
     assert page.is_visible("#key-bar")
     assert not page.is_visible("#settings")
     page.fill("#api-key", "123456789012")
@@ -180,22 +180,60 @@ def test_root_redirects_to_the_app(site_url):
     assert (DOCS.parent / ".nojekyll").exists() and (DOCS / ".nojekyll").exists()
 
 
-def test_example_runs_without_api_key(browser, site_url):
-    """'Beispiel ansehen' replays a recorded real analysis, so visitors see the tool working without a key."""
+def _synthetic_recording() -> dict:
+    """Test data in the format of docs/demo/beispiel.json (a real one comes from window.ortfinderLastRun)."""
+    thumb = "data:image/png;base64," + base64.b64encode(PNG_1X1).decode()
+    result = {"metadata": {"has_exif": False}, "model": "gemini-3.8-flash", "seconds": 42.0, "analysis": SUBMISSION,
+              "usage": {"requests": 2, "input_tokens": 6000, "output_tokens": 400, "thought_tokens": 200, "cached_tokens": 0},
+              "final": {"source": "visual_analysis", **SUBMISSION["best_guess"], "precision": "strasse"}}
+    return {
+        "model": "gemini-3.8-flash", "date": "01.01.2026", "image": "beispiel.jpg",
+        "credit": {"text": "Testbild", "url": "https://example.org/"},
+        "truth": {"lat": 47.9959, "lon": 7.8522, "label": "Testort"},
+        "events": [
+            {"t": 0.0, "type": "status", "data": {"message": "Lese Metadaten (EXIF) …"}},
+            {"t": 0.2, "type": "step", "data": {"step": 1, "max_steps": 12}},
+            {"t": 5.0, "type": "thinking", "data": {"text": "Schild unten rechts prüfen."}},
+            {"t": 5.1, "type": "zoom", "data": {"index": 1, "box": [0.66, 0.6, 0.95, 0.76], "purpose": "Straßenschild lesen", "thumbnail": thumb}},
+            {"t": 9.0, "type": "tool_call", "data": {"tool": "geocode", "input": {"query": "Bahnhofstraße Freiburg"}}},
+            {"t": 9.5, "type": "tool_result", "data": {"tool": "geocode", "is_error": False, "preview": "1 Treffer: Bahnhofstraße"}},
+            {"t": 42.0, "type": "result", "data": result},
+        ],
+    }
+
+
+def test_example_button_hidden_without_recording(browser, site_url):
+    page = browser.new_page()
+    page.route("**/demo/beispiel.json", lambda r: r.fulfill(status=404, body="not found"))
+    page.goto(site_url)
+    page.wait_for_timeout(300)
+    assert not page.is_visible("#demo")
+    page.close()
+
+
+def test_example_replays_a_recording_without_api_key(browser, site_url, tmp_path):
+    """'Beispiel ansehen' replays a recorded analysis, so visitors see the tool working without a key."""
+    photo = tmp_path / "beispiel.jpg"
+    _street_jpeg(photo)
+    recording = _synthetic_recording()
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
+    gemini_calls: list[str] = []
+    page.route("**/demo/beispiel.json", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(recording)))
+    page.route("**/demo/beispiel.jpg", lambda r: r.fulfill(status=200, content_type="image/jpeg", body=photo.read_bytes()))
     page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
-    page.route("https://generativelanguage.googleapis.com/**", lambda r: (_ for _ in ()).throw(AssertionError("demo must not call Gemini")))
+    page.route("https://generativelanguage.googleapis.com/**", lambda r: (gemini_calls.append(r.request.url), r.abort()))
     page.goto(site_url)
+    page.wait_for_selector("#demo", state="visible")
     page.click("#demo")
     assert page.is_visible("#demo-banner")
     page.wait_for_selector(".answer", timeout=60000)
-    demo = json.loads((DOCS / "demo" / "beispiel.json").read_text())
-    assert page.text_content(".answer") == next(e for e in demo["events"] if e["type"] == "result")["data"]["analysis"]["best_guess"]["name"]
-    assert "Tatsächlicher Aufnahmeort" in page.text_content("#result")
-    assert page.locator(".zooms figure").count() >= 1
-    assert page.evaluate("document.querySelector('#photo').naturalWidth") > 0
-    assert errors == []
+    assert page.text_content(".answer") == "Bahnhofstraße, Freiburg"
+    assert "Tatsächlicher Aufnahmeort: Testort" in page.text_content("#result")
+    assert page.locator(".zooms figure").count() == 1
+    assert "42.0s" in page.text_content("#log")  # original timestamps are kept in the replay
+    assert page.evaluate("document.querySelector('#photo').naturalWidth") == 1600
+    assert gemini_calls == [] and errors == []
     context.close()

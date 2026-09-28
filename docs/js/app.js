@@ -89,7 +89,7 @@ function checkKeyFormat() {
     hint.replaceChildren(
       "Kostenlos erstellen unter ",
       el("a", { href: "https://aistudio.google.com/apikey", target: "_blank", rel: "noopener" }, "aistudio.google.com/apikey"),
-      ". Der Key bleibt in deinem Browser und wird nur direkt an Google gesendet. Ohne Key: „Beispiel ansehen“ zeigt eine echte Analyse.",
+      ". Der Key bleibt in deinem Browser und wird nur direkt an Google gesendet.",
     );
   }
 }
@@ -513,7 +513,7 @@ function renderResult(r) {
     }
   }
   if (!a) {
-    if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei. Für die KI-Bildanalyse oben den Gemini-API-Key eintragen – oder „Beispiel ansehen“ klicken."));
+    if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei. Für die KI-Bildanalyse oben den Gemini-API-Key eintragen."));
     return;
   }
 
@@ -584,5 +584,16 @@ function renderResult(r) {
   }
 }
 
+// The example button only appears when a recorded run is published in docs/demo/.
+async function detectDemo() {
+  try {
+    const resp = await fetch("demo/beispiel.json", { method: "HEAD" });
+    $("#demo").hidden = !resp.ok;
+  } catch {
+    $("#demo").hidden = true;
+  }
+}
+
 setupSettings();
 setupDropzone();
+detectDemo();

@@ -13,9 +13,8 @@ Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs))
 
 **Direkt im Browser:** <https://germanclaude.github.io/Ortfinder/>
 
-1. **Beispiel ansehen:** zeigt sofort, auch ohne API-Key, eine aufgezeichnete echte Analyse.
-2. **Eigenes Foto:** einmalig den Gemini-API-Key in das Feld oben eintragen (siehe unten), dann ein Foto
-   in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
+1. Einmalig den Gemini-API-Key in das Feld unter dem Upload-Bereich eintragen (siehe unten).
+2. Ein Foto in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
 3. Live verfolgen, wohin die KI zoomt und was sie sucht. Am Ende stehen Ort, Karte, Konfidenz und die im
    Bild markierten Hinweise.
 
@@ -114,10 +113,6 @@ Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/inte
 **zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;
 dafür wird der Verlauf bei jeder Runde vollständig mitgeschickt.
 
-Beispielfoto der aufgezeichneten Analyse: „01 Hauptstraße, Großsachsenheim, Ortsbild, Blick gegen Westen“
-von R.kaelcke, [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:01_Hauptstra%C3%9Fe,_Gro%C3%9Fsachsenheim,_Ortsbild,_Blick_gegen_Westen.jpg),
-Lizenz [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), verkleinert und ohne Metadaten.
-
 ## Verantwortungsvoller Umgang
 
 Ortfinder soll zeigen, wie viel ein einzelnes Foto verrät, auch um bewusster mit eigenen Bildern
@@ -153,6 +148,13 @@ pip install -r requirements-dev.txt
 python -m playwright install chromium      # einmalig, für den Browser-Test
 python -m pytest                           # Python-Version + Browser-Test der Website
 ```
+
+### Beispiel-Analyse hinterlegen (optional)
+
+Der Knopf „Beispiel ansehen“ erscheint, sobald unter `docs/demo/` eine aufgezeichnete echte Analyse liegt
+(`beispiel.json` + das Foto). Nach einer Analyse steht der Lauf in der Browser-Konsole unter
+`window.ortfinderLastRun`; das Format der Datei zeigt `test_example_runs_without_api_key` in
+`tests/test_web_e2e.py`.
 
 ### Lokale Python-Version (optional)
 
