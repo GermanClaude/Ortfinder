@@ -275,7 +275,8 @@ button.chip:hover { border-color: var(--accent); }
 /* ---- provider-specific settings ---- */
 #settings:not([data-provider="gemini"]) .gemini-only,
 #settings:not([data-provider="puter"]) .puter-only,
-#settings:not([data-provider="ollama"]) .ollama-only { display: none !important; }
+#settings:not([data-provider="ollama"]) .ollama-only,
+#settings:not([data-provider="openrouter"]) .openrouter-only { display: none !important; }
 .ollama-box { margin-top: 4px; }
 .ollama-box details { margin: 8px 0; }
 .ollama-box summary { cursor: pointer; font-weight: 600; }

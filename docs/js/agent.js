@@ -52,7 +52,7 @@ function describeHttpError(status, body) {
   if (status === 429 && perDay) {
     // Waiting doesn't help here; the quota resets daily (free tier: 20 requests per day).
     return new GeminiError(
-      `Tageslimit des Gemini-Tarifs erreicht (${perDay[1]} Anfragen pro Tag). Morgen erneut versuchen oder in Google AI Studio den bezahlten Tarif aktivieren.`,
+      `Tageslimit des Gemini-Tarifs erreicht (${perDay[1]} Anfragen pro Tag). Morgen erneut versuchen – oder heute kostenlos unter ⚙ mit „OpenRouter“ weitermachen.`,
       { status, code: "DAILY_LIMIT" },
     );
   }

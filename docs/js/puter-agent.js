@@ -48,7 +48,7 @@ export function describePuterError(err) {
   const message = String(inner?.message ?? err?.message ?? (typeof err === "string" ? err : JSON.stringify(err)));
   const text = `${code} ${message}`.toLowerCase();
   if (/insufficient|funds|allowance|usage.?limit|credits|quota|upgrade/.test(text)) {
-    return new PuterError("Das kostenlose Puter-Guthaben für diesen Monat ist aufgebraucht. Puter bietet an, es aufzustocken – oder unter ⚙ einen eigenen Gemini-API-Key verwenden.", { code: "ALLOWANCE" });
+    return new PuterError("Das kostenlose Puter-Guthaben für diesen Monat ist aufgebraucht. Weiter geht es kostenlos unter ⚙ mit „OpenRouter“ (50 Anfragen am Tag, Anmeldung z.B. mit Google).", { code: "ALLOWANCE" });
   }
   if (/cancel|denied|abort|closed|not.?signed|unauthori[sz]ed|auth/.test(text)) {
     return new PuterError("Die Anmeldung bei Puter wurde abgebrochen. Für die KI-Analyse ist einmalig eine kostenlose Anmeldung nötig (Google, Microsoft, Apple oder E-Mail).", { code: "AUTH" });
@@ -70,6 +70,29 @@ const sleep = (ms, signal) =>
 
 /** Our tool declarations in the OpenAI "function" format Puter expects. */
 export const OPENAI_TOOLS = FUNCTION_TOOLS.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } }));
+
+/**
+ * Copy of the conversation in which only the newest `keep` images remain; older ones become a short
+ * note. The first user message (the photo itself) is always kept.
+ */
+export function pruneImageParts(messages, keep) {
+  let budget = keep;
+  const out = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const images = Array.isArray(m.content) ? m.content.filter((p) => p.type === "image_url").length : 0;
+    if (!images || i <= 1 || images <= budget) {
+      if (i > 1) budget -= images;
+      out.push(m);
+      continue;
+    }
+    budget = 0;
+    const content = m.content.filter((p) => p.type !== "image_url");
+    content.push({ type: "text", text: `[${images} Bild(er) aus einer früheren Runde entfernt, um Platz zu sparen]` });
+    out.push({ ...m, content });
+  }
+  return out.reverse();
+}
 
 /** Convert our content blocks (text / base64 image) to OpenAI message parts. */
 function toParts(blocks) {
@@ -93,9 +116,18 @@ export class PuterAgent {
    * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
    * `whenActive()` resolves to true after waiting for a page that was in the background.
    */
-  constructor({ model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false } = {}) {
+  /**
+   * Also drives other OpenAI-style services (OpenRouter): pass their `chat` function, an error
+   * translator and `keepImages` to send only the newest images (saves mobile data and context).
+   */
+  constructor({
+    model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
+    describeError = describePuterError, keepImages = 0,
+  } = {}) {
     this.model = model;
     this.maxSteps = maxSteps;
+    this.describeError = describeError;
+    this.keepImages = keepImages;
     this.chat = chat ?? ((messages, options) => globalThis.puter.ai.chat(messages, options));
     this.emit = emit;
     this.signal = signal;
@@ -118,7 +150,7 @@ export class PuterAgent {
       this.signal?.throwIfAborted();
       try {
         // puter.ai.chat has no abort option, so a cancelled analysis just stops waiting for it.
-        const call = this.chat(messages, { model: this.model, tools: OPENAI_TOOLS, normalize: true });
+        const call = this.chat(this.keepImages ? pruneImageParts(messages, this.keepImages) : messages, { model: this.model, tools: OPENAI_TOOLS, normalize: true });
         const response = await (this.signal
           ? Promise.race([call, new Promise((_, reject) => this.signal.addEventListener("abort", () => reject(this.signal.reason ?? new DOMException("Abgebrochen", "AbortError")), { once: true }))])
           : call);
@@ -126,7 +158,7 @@ export class PuterAgent {
         return response;
       } catch (raw) {
         if (raw?.name === "AbortError") throw raw;
-        const err = describePuterError(raw);
+        const err = this.describeError(raw);
         // Browsers cut connections of pages in the background: wait until Ortfinder is visible again.
         if (err.retryable && (await this.waitIfBackground())) {
           attempt = -1;

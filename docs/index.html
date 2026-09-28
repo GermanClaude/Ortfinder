@@ -40,6 +40,7 @@
         Die KI läuft dann über dein eigenes, kostenloses Puter-Kontingent.
       </p>
       <p id="ollama-note" class="puter-note small" hidden></p>
+      <p id="openrouter-note" class="puter-note small" hidden></p>
 
       <div id="key-bar" class="key-bar" hidden>
         <p class="key-title"><strong>Für eigene Fotos einmalig einen Gemini-API-Key eintragen</strong></p>
@@ -61,8 +62,17 @@
             <select id="provider">
               <option value="puter">Puter – kostenlos, ohne API-Key (empfohlen)</option>
               <option value="gemini">Google Gemini – eigener API-Key</option>
+              <option value="openrouter">OpenRouter – kostenlos, 50 Anfragen am Tag, Anmeldung z.B. mit Google</option>
               <option value="ollama">Eigener PC (Ollama) – unbegrenzt &amp; kostenlos, auch fürs Handy</option>
             </select>
+          </div>
+          <div class="openrouter-only">
+            <label for="or-model">Modell (kostenlos)</label>
+            <select id="or-model"></select>
+          </div>
+          <div class="openrouter-only">
+            <label>&nbsp;</label>
+            <button id="or-signin" type="button" class="primary">Bei OpenRouter anmelden (kostenlos)</button>
           </div>
           <div class="ollama-only">
             <label for="ollama-url">Adresse der KI auf dem PC</label>
@@ -121,6 +131,27 @@
           Gemini: 3.8 Flash läuft auch im kostenlosen Tarif (20 Anfragen pro Tag); 3.1 Pro und die Google-Suche brauchen den bezahlten Tarif.
           Im kostenlosen Tarif darf Google die Eingaben zur Verbesserung seiner Produkte verwenden – dort keine privaten Fotos anderer hochladen.
         </p>
+        <div class="openrouter-only ollama-box">
+          <p id="or-status" class="small muted" role="status"></p>
+          <p class="small">
+            OpenRouter bündelt viele KI-Modelle; mehrere gute mit Bildverständnis sind <strong>kostenlos</strong>
+            (zusammen 50 Anfragen pro Tag, das reicht für etwa 5–8 Analysen). Anmelden geht mit Google, GitHub oder E-Mail,
+            ohne Kreditkarte. Ortfinder erhält dabei einen eigenen Schlüssel, den du bei OpenRouter jederzeit löschen kannst.
+          </p>
+          <p class="small muted">
+            Die kostenlosen Modelle laufen bei wechselnden Anbietern, die Eingaben unter Umständen speichern dürfen – dort keine
+            privaten Fotos anderer hochladen. Meldet Ortfinder „Datenschutz-Einstellungen“: unter
+            <a href="https://openrouter.ai/settings/privacy" target="_blank" rel="noopener">openrouter.ai/settings/privacy</a>
+            die kostenlosen Modelle erlauben.
+          </p>
+          <details>
+            <summary>Schlüssel selbst eintragen</summary>
+            <div class="row">
+              <input id="or-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-v1-…" aria-label="OpenRouter-Schlüssel">
+              <button id="or-signout" type="button" class="ghost">Abmelden</button>
+            </div>
+          </details>
+        </div>
         <div class="ollama-only ollama-box">
           <p class="small">
             Die KI läuft als offenes Modell auf deinem eigenen PC: <strong>ohne Limit, ohne Konto, für immer kostenlos</strong>,

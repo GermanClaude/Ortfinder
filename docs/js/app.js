@@ -6,6 +6,9 @@ import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imagi
 import { renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
 import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
+import {
+  OPENROUTER_DEFAULT_MODEL, describeOpenRouterError, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat, openRouterSignInUrl,
+} from "./openrouter.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
@@ -171,6 +174,8 @@ const settings = {
   ollamaModel: OLLAMA_DEFAULT_MODEL,
   ollamaCtx: 32768,
   tunnelUrl: "",
+  openrouterKey: "",
+  openrouterModel: OPENROUTER_DEFAULT_MODEL,
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -203,6 +208,9 @@ function fillSettingsForm() {
   $("#ollama-ctx").value = String(settings.ollamaCtx);
   $("#tunnel-url").value = settings.tunnelUrl;
   renderPhoneQr();
+  fillOpenRouterModels([{ id: settings.openrouterModel, name: settings.openrouterModel }]);
+  $("#or-key").value = settings.openrouterKey;
+  showOpenRouterStatus();
   checkKeyFormat();
 }
 
@@ -239,11 +247,98 @@ function saveKey() {
 function applyProvider(provider) {
   $("#settings").dataset.provider = provider;
   $("#puter-note").hidden = provider !== "puter";
+  const orNote = $("#openrouter-note");
+  orNote.hidden = provider !== "openrouter";
+  orNote.textContent = settings.openrouterKey
+    ? `Kostenlos über OpenRouter (${settings.openrouterModel}, bis zu 50 Anfragen am Tag).`
+    : "Kostenlos über OpenRouter: Beim ersten Foto meldest du dich einmalig an (Google, GitHub oder E-Mail, ohne Kreditkarte).";
   const note = $("#ollama-note");
   note.hidden = provider !== "ollama";
   note.textContent = `Die KI läuft auf deinem PC (${settings.ollamaModel} über ${settings.ollamaUrl}) – unbegrenzt und kostenlos. ` +
     "Der PC muss eingeschaltet sein und das Ortfinder-Startskript laufen.";
   showKeyBar(provider === "gemini" && !settings.apiKey);
+}
+
+// ---------- OpenRouter ----------
+
+function fillOpenRouterModels(models) {
+  const select = $("#or-model");
+  const ids = models.map((m) => m.id);
+  const options = models.map((m) => el("option", { value: m.id }, m.name));
+  if (!ids.includes(settings.openrouterModel)) options.unshift(el("option", { value: settings.openrouterModel }, settings.openrouterModel));
+  select.replaceChildren(...options);
+  select.value = settings.openrouterModel;
+}
+
+async function loadOpenRouterModels() {
+  try {
+    const models = await listFreeVisionModels();
+    if (models.length) fillOpenRouterModels(models);
+  } catch {
+    // keep the saved choice; the list is only a convenience
+  }
+}
+
+function showOpenRouterStatus(message = "", kind = "") {
+  const status = $("#or-status");
+  const signedIn = Boolean(settings.openrouterKey);
+  status.className = `small ${kind === "bad" ? "status-bad" : signedIn ? "status-ok" : "muted"}`;
+  status.textContent = message || (signedIn ? "✔ Bei OpenRouter angemeldet." : "Noch nicht angemeldet.");
+  $("#or-signin").textContent = signedIn ? "Neu anmelden" : "Bei OpenRouter anmelden (kostenlos)";
+}
+
+/** Send the user to OpenRouter; they come back with ?code=… (see finishSignInFromUrl). */
+async function startOpenRouterSignIn() {
+  // Keep a model chosen in the (unsaved) settings form across the trip to OpenRouter.
+  if ($("#or-model").value) settings.openrouterModel = $("#or-model").value;
+  persist();
+  try {
+    location.href = await openRouterSignInUrl(location.origin + location.pathname);
+  } catch (err) {
+    showOpenRouterStatus(`Anmeldung nicht möglich: ${err.message}`, "bad");
+  }
+}
+
+/** Back from OpenRouter: exchange the code for this user's key and switch to OpenRouter. */
+async function finishSignInFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  if (!code) return;
+  history.replaceState(null, "", location.pathname + location.hash);
+  try {
+    settings.openrouterKey = await finishOpenRouterSignIn(code);
+    settings.provider = "openrouter";
+    persist();
+    fillSettingsForm();
+    showOpenRouterStatus("✔ Bei OpenRouter angemeldet – kostenlos, bis zu 50 Anfragen am Tag.", "ok");
+  } catch (err) {
+    showSettings(true);
+    showOpenRouterStatus(err.message, "bad");
+  }
+}
+
+/**
+ * Before an analysis without OpenRouter key: save the photo (like an interrupted run), then sign in.
+ * After returning, the saved run starts automatically (resumeInterrupted).
+ */
+async function ensureOpenRouterKey(emit, signal, record) {
+  if (settings.openrouterKey) return;
+  emit("status", { message: "Einmalige kostenlose Anmeldung bei OpenRouter nötig – danach geht die Analyse automatisch weiter." });
+  const box = $("#result");
+  await new Promise((resolve, reject) => {
+    const button = el("button", { type: "button", class: "primary", id: "or-signin-run" }, "Bei OpenRouter anmelden (kostenlos)");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      await saveRun(record());
+      startOpenRouterSignIn();
+    });
+    signal.addEventListener("abort", () => reject(signal.reason ?? new DOMException("Abgebrochen", "AbortError")), { once: true });
+    box.replaceChildren(el("div", { class: "signin-box" },
+      el("p", {}, el("strong", {}, "Ein Schritt noch: "),
+        "Melde dich einmalig kostenlos bei OpenRouter an (Google, GitHub oder E-Mail, ohne Kreditkarte). Danach kommst du hierher zurück, und die Analyse startet von selbst."),
+      button));
+    button.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
 }
 
 // ---------- own PC (Ollama) ----------
@@ -337,6 +432,8 @@ function saveSettings() {
   settings.ollamaModel = $("#ollama-model").value || settings.ollamaModel;
   settings.ollamaCtx = Number($("#ollama-ctx").value) || 32768;
   settings.tunnelUrl = $("#tunnel-url").value.trim() ? normalizeOllamaUrl($("#tunnel-url").value) : "";
+  settings.openrouterModel = $("#or-model").value || settings.openrouterModel;
+  settings.openrouterKey = $("#or-key").value.trim();
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
@@ -368,6 +465,9 @@ function updateStatusChip() {
   if (settings.provider === "puter") {
     chip.textContent = `⚙ ${settings.puterModel} · kostenlos über Puter`;
     chip.className = "chip ok";
+  } else if (settings.provider === "openrouter") {
+    chip.textContent = `⚙ ${settings.openrouterModel.replace(/^[^/]+\//, "")} · kostenlos über OpenRouter`;
+    chip.className = settings.openrouterKey ? "chip ok" : "chip";
   } else if (settings.provider === "ollama") {
     chip.textContent = `⚙ ${settings.ollamaModel} · auf deinem PC, unbegrenzt`;
     chip.className = "chip ok";
@@ -386,7 +486,16 @@ function setupSettings() {
   $("#provider").addEventListener("change", () => {
     applyProvider($("#provider").value);
     if ($("#provider").value === "ollama") checkOllama();
+    if ($("#provider").value === "openrouter") loadOpenRouterModels();
   });
+  $("#or-signin").addEventListener("click", startOpenRouterSignIn);
+  $("#or-signout").addEventListener("click", () => {
+    settings.openrouterKey = "";
+    $("#or-key").value = "";
+    persist();
+    showOpenRouterStatus();
+  });
+  if (settings.provider === "openrouter") loadOpenRouterModels();
   $("#ollama-check").addEventListener("click", checkOllama);
   $("#tunnel-url").addEventListener("input", renderPhoneQr);
   $("#ollama-model").addEventListener("change", renderPhoneQr);
@@ -519,18 +628,37 @@ function buildIntro(image, metadata) {
   return parts.join("\n\n");
 }
 
-const modelName = (cfg) => (cfg.provider === "puter" ? cfg.puterModel : cfg.provider === "ollama" ? cfg.ollamaModel : cfg.model);
-const modelLabel = (cfg) => `${modelName(cfg)}${cfg.provider === "puter" ? " (Puter)" : cfg.provider === "ollama" ? " (eigener PC)" : ""}`;
+const PROVIDER_MODEL = { puter: "puterModel", ollama: "ollamaModel", openrouter: "openrouterModel", gemini: "model" };
+const PROVIDER_SUFFIX = { puter: " (Puter)", ollama: " (eigener PC)", openrouter: " (OpenRouter)", gemini: "" };
+const modelName = (cfg) => cfg[PROVIDER_MODEL[cfg.provider] || "model"];
+const modelLabel = (cfg) => `${modelName(cfg)}${PROVIDER_SUFFIX[cfg.provider] ?? ""}`;
 
 /** Settings a run depends on; saved with it, so a resumed run continues with the same AI. */
 const runConfig = () => ({
   provider: settings.provider, puterModel: settings.puterModel, model: settings.model, thinking: settings.thinking,
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
-  ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx,
+  ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx, openrouterModel: settings.openrouterModel,
 });
 
 // Plain JSON copy: what AI services return may carry helper functions that IndexedDB cannot store.
 const plain = (value) => JSON.parse(JSON.stringify(value));
+
+function createAgent(cfg, common) {
+  switch (cfg.provider) {
+    case "puter":
+      return new PuterAgent({ model: cfg.puterModel, ...common });
+    case "openrouter":
+      // Same OpenAI-style loop as Puter; only the newest 8 images are sent (mobile data, free providers).
+      return new PuterAgent({
+        model: cfg.openrouterModel, chat: openRouterChat({ key: settings.openrouterKey, signal: common.signal }),
+        describeError: describeOpenRouterError, keepImages: 8, ...common,
+      });
+    case "ollama":
+      return new OllamaAgent({ baseUrl: cfg.ollamaUrl, model: cfg.ollamaModel, numCtx: cfg.ollamaCtx, ...common });
+    default:
+      return new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
+  }
+}
 
 function firstImages(bitmap, ov) {
   return [
@@ -617,9 +745,16 @@ async function analyze(file, resumed = null) {
       emit("warning", { message: "Für die KI-Bildanalyse mit Gemini fehlt noch der API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet. Tipp: Unter ⚙ „Puter“ wählen – kostenlos und ohne Key." });
       showKeyBar(true, true);
     } else if (cfg.useAI) {
-      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : "";
+      const openrouter = cfg.provider === "openrouter";
+      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : "";
       if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName(cfg)}${where} …` });
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
+      if (openrouter) {
+        await ensureOpenRouterKey(emit, controller.signal, () => ({
+          version: 1, startedAt: state.startedAt, file, config: cfg, metadata: plain(metadata), exifLocation, aspect: state.aspect,
+          agentState: null, counts: {}, events: plain(run.events),
+        }));
+      }
       const executor = new ToolExecutor({
         zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance),
         mapView: (opts) => renderMapView(opts),
@@ -635,11 +770,7 @@ async function analyze(file, resumed = null) {
       };
       if (!resumed?.agentState) await checkpoint(null);
       const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden() };
-      const agent = puter
-        ? new PuterAgent({ model: cfg.puterModel, ...common })
-        : ollama
-          ? new OllamaAgent({ baseUrl: cfg.ollamaUrl, model: cfg.ollamaModel, numCtx: cfg.ollamaCtx, ...common })
-          : new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
+      const agent = createAgent(cfg, common);
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
         images: resumed?.agentState ? [] : firstImages(bitmap, ov),
@@ -1231,6 +1362,7 @@ applyLinkSettings();
 setupSettings();
 setupDropzone();
 detectDemo();
-resumeInterrupted();
+// Back from the OpenRouter sign-in first, so an analysis waiting for it can continue right away.
+finishSignInFromUrl().then(resumeInterrupted);
 // Load Puter.js in the background, so the sign-in button can open its popup straight from the click.
 if (settings.provider === "puter") (globalThis.requestIdleCallback ?? setTimeout)(() => loadPuter().catch(() => {}));
