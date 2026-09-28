@@ -112,6 +112,14 @@ a { color: var(--accent); }
 .zooms figure { margin: 0; }
 .zooms img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
 .zooms figcaption { font-size: 0.72rem; color: var(--muted); line-height: 1.3; margin-top: 3px; }
+.zooms figure.mapview img { border: 2px solid #7a4cc2; }
+.zooms figure.render img { border-color: #0b7285; object-fit: contain; background: #dde7f0; }
+
+#compare-slot { margin-top: 14px; }
+.compare { position: relative; width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: #000; }
+.compare img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
+.compare-slider { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
+.compare-slider input { flex: 1; }
 
 .map-card { padding-bottom: 12px; }
 #map { height: 380px; border-radius: 10px; z-index: 0; }
@@ -236,7 +244,8 @@ button.chip:hover { border-color: var(--accent); }
 .legend { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
 .legend span { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: middle; }
 .lg-cone { background: rgba(255, 146, 43, 0.5); border: 1px solid #e8590c; }
-.lg-area { background: rgba(11, 107, 203, 0.2); border: 1px solid #0b6bcb; }
+.lg-area { border: 1.5px dashed #0b6bcb; }
+.lg-facade { height: 4px !important; background: #c92a2a; }
 .lg-hypo { border: 2px dashed #7a4cc2; }
 .lg-alt { background: #8a94a3; border-radius: 50% !important; width: 10px !important; }
 

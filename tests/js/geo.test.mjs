@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { OSMClient, OSMError, bearingDeg, destinationPoint, haversineKm, summarizeOverpass, sunPosition, viewCone } from "../../docs/js/geo.js";
+import {
+  OSMClient, OSMError, bearingDeg, closestPointOnLine, describeFeature, destinationPoint, haversineKm, summarizeOverpass, sunPosition, viewCone,
+} from "../../docs/js/geo.js";
+import { metersPerPixel, scaleBar, tilesFor, worldPixel } from "../../docs/js/mapview.js";
 
 const near = (actual, expected, tol) => assert.ok(Math.abs(actual - expected) <= tol, `${actual} not within ${tol} of ${expected}`);
 
@@ -79,6 +82,85 @@ test("network failures become OSMError", async () => {
   const osm = new OSMClient({ minIntervalMs: 0, fetchImpl: async () => { throw new TypeError("Failed to fetch"); } });
   await assert.rejects(osm.geocode("x"), /nicht erreichbar/);
   await assert.rejects(osm.overpass("node(1);out;"), /nicht verfügbar/);
+});
+
+test("describeFeature keeps the identifying tags", () => {
+  assert.deepEqual(describeFeature({ shop: "bakery", name: "Bäckerei Pfeifer", brand: "Pfeifer", "addr:street": "Bertoldstraße", "addr:housenumber": "5", opening_hours: "Mo-Fr" }), {
+    type: "shop=bakery", name: "Bäckerei Pfeifer", brand: "Pfeifer", "addr:street": "Bertoldstraße", "addr:housenumber": "5",
+  });
+  assert.deepEqual(describeFeature({ highway: "bus_stop", name: "Stadttheater", route_ref: "1;3" }), { type: "highway=bus_stop", name: "Stadttheater", route_ref: "1;3" });
+  assert.deepEqual(describeFeature({ foo: "bar" }), { type: "sonstiges" });
+});
+
+test("closestPointOnLine projects onto the nearest segment", () => {
+  const street = [[48.0, 7.84], [48.0, 7.85], [48.0, 7.86]]; // west → east
+  const p = closestPointOnLine(street, 48.001, 7.855);
+  near(p.distance_m, 111, 1);
+  near(p.lat, 48.0, 1e-6);
+  near(p.lon, 7.855, 1e-6);
+  assert.equal(p.street_bearing_deg, 90);
+  // Beyond the end of the line the end point is the closest point.
+  const end = closestPointOnLine(street, 48.0, 7.87);
+  near(end.lon, 7.86, 1e-6);
+  near(end.distance_m, 745, 3);
+});
+
+function overpassClient(elements, queries = []) {
+  return new OSMClient({
+    overpassUrls: ["https://ok.test/api"],
+    fetchImpl: async (url, init) => {
+      queries.push(new URLSearchParams(init.body).get("data"));
+      return json(200, { elements });
+    },
+  });
+}
+
+test("nearbyFeatures lists named things sorted by distance with direction", async () => {
+  const queries = [];
+  const osm = overpassClient([
+    { type: "way", id: 2, center: { lat: 48.0, lon: 7.851 }, tags: { amenity: "pharmacy", name: "Löwen-Apotheke" } },
+    { type: "node", id: 1, lat: 48.0005, lon: 7.85, tags: { shop: "bakery", name: "Bäckerei" } },
+    { type: "node", id: 3, lat: 48.0001, lon: 7.85 }, // geometry only
+  ], queries);
+  const r = await osm.nearbyFeatures(48.0, 7.85, 5);
+  assert.equal(r.radius_m, 20, "radius is clamped to at least 20 m");
+  assert.match(queries[0], /around:20,48\.000000,7\.850000/);
+  assert.deepEqual(r.features.map((f) => [f.name, f.type, f.bearing_deg]), [["Bäckerei", "shop=bakery", 0], ["Löwen-Apotheke", "amenity=pharmacy", 90]]);
+  near(r.features[0].distance_m, 56, 1);
+  near(r.features[1].distance_m, 74, 1);
+  assert.equal(r.total, 2);
+});
+
+test("streetGeometry finds the closest point and segment directions", async () => {
+  const queries = [];
+  const osm = overpassClient([
+    { type: "way", id: 7, tags: { highway: "residential", name: 'Am "Tor"', oneway: "yes" }, geometry: [{ lat: 48.0, lon: 7.84 }, { lat: 48.0, lon: 7.85 }, { lat: 48.01, lon: 7.85 }] },
+    { type: "way", id: 8, tags: { highway: "residential" }, geometry: [{ lat: 48.0, lon: 7.84 }] }, // no line
+  ], queries);
+  const r = await osm.streetGeometry('Am "Tor"', 48.0005, 7.845);
+  assert.match(queries[0], /\["name"="Am \\"Tor\\""\]\(around:1500,48\.000500,7\.845000\)/);
+  assert.equal(r.found, true);
+  assert.equal(r.ways.length, 1);
+  assert.equal(r.ways[0].oneway, true);
+  assert.deepEqual(r.ways[0].segment_bearings_deg, [90, 0]);
+  near(r.ways[0].length_m, 745 + 1112, 5);
+  assert.equal(r.closest_point.way_id, 7);
+  near(r.closest_point.distance_m, 55, 1);
+  assert.equal(r.closest_point.street_bearing_deg, 90);
+  const none = await overpassClient([]).streetGeometry("Nirgendwo", 48, 7.8);
+  assert.equal(none.found, false);
+});
+
+test("map tiles: scale, pixel coordinates, tile cover and scale bar", () => {
+  near(metersPerPixel(0, 0), 156543.03, 0.01);
+  near(metersPerPixel(60, 18), 0.2986, 0.0005);
+  assert.deepEqual(worldPixel(0, 0, 0), { x: 128, y: 128 });
+  const tiles = tilesFor(0, 0, 1, 256);
+  assert.deepEqual(tiles.map((t) => [t.x, t.y, t.dx, t.dy]), [[0, 0, -128, -128], [1, 0, 128, -128], [0, 1, -128, 128], [1, 1, 128, 128]]);
+  // Tiles wrap around the date line.
+  assert.ok(tilesFor(0, 179.99, 3, 512).some((t) => t.x === 0));
+  assert.deepEqual(scaleBar(0.5, 768), { meters: 50, pixels: 100 });
+  assert.deepEqual(scaleBar(0.3, 768), { meters: 50, pixels: 50 / 0.3 });
 });
 
 test("bearings, destination points and view cones", () => {

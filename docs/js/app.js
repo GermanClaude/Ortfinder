@@ -3,8 +3,11 @@
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
 import { OSMClient, haversineKm, viewCone } from "./geo.js";
 import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
-import { extractMetadata, hintsForModel } from "./metadata.js";
+import { renderMapView } from "./mapview.js";
+import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
+import { renderViewImage, visibleAreaFor } from "./scene3d.js";
+import { Terrain } from "./terrain.js";
 import { ToolExecutor } from "./tools.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -33,8 +36,12 @@ const PRECISION = {
 const KEY_PATTERN = /^(AQ\.[0-9A-Za-z_.-]{20,}|AIza[0-9A-Za-z_-]{35})$/;
 const STORAGE_KEY = "ortfinder.settings.v1";
 
-const state = { controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null };
+const state = {
+  controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null,
+  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0,
+};
 const osm = new OSMClient();
+const terrain = new Terrain();
 
 // ---------- settings (kept in this browser only) ----------
 
@@ -61,10 +68,12 @@ const settings = {
   model: MODELS[0].id,
   thinking: "medium",
   webSearch: true,
-  maxSteps: 8,
+  maxSteps: 10,
   remember: true,
   ...storageGet(),
 };
+// 8 was the stored default before the fine-location step existed, which needs about two more rounds.
+if (settings.maxSteps === 8) settings.maxSteps = 10;
 
 function fillSettingsForm() {
   $("#provider").value = settings.provider;
@@ -127,7 +136,7 @@ function saveSettings() {
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
-  settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 8));
+  settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#max-steps").value, 10) || 10));
   settings.remember = $("#remember-key").checked;
   persist();
   showSettings(false);
@@ -216,10 +225,16 @@ function setupDropzone() {
 function initMap() {
   if (state.map || typeof L === "undefined") return;
   state.map = L.map("map", { worldCopyJump: true }).setView([30, 10], 2);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(state.map);
+  const aerial = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19,
+    attribution: "Luftbild: Esri, Maxar, Earthstar Geographics",
+  });
+  L.control.layers({ Karte: street, Luftbild: aerial }, null, { position: "topright" }).addTo(state.map);
+  state.bases = { street, aerial };
   state.layer = L.featureGroup().addTo(state.map);
   state.hypoLayer = L.featureGroup().addTo(state.map);
 }
@@ -244,9 +259,12 @@ function resetWorkspace() {
   $("#clues-card").hidden = true;
   $("#clue-gallery").replaceChildren();
   state.imageSource = null;
+  state.resultToken += 1;
+  state.coneLayer = null;
   initMap();
   state.layer?.clearLayers();
   state.hypoLayer?.clearLayers();
+  setBaseLayer("street");
   if (state.map) {
     state.map.setView([25, 10], 2); // every analysis starts on the world map and zooms in from there
     setTimeout(() => state.map.invalidateSize(), 50);
@@ -302,6 +320,7 @@ async function analyze(file) {
 
     const bitmap = await decodeImage(file);
     state.imageSource = bitmap;
+    state.aspect = bitmap.width / bitmap.height;
     const ov = overview(bitmap);
     $("#photo").src = ov.dataUrl;
     metadata.width ??= bitmap.width;
@@ -325,7 +344,12 @@ async function analyze(file) {
           apiKey: settings.apiKey, model: settings.model, thinkingLevel: settings.thinking,
           webSearch: settings.webSearch, maxSteps: settings.maxSteps, emit, signal: controller.signal,
         });
-      const executor = new ToolExecutor({ zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance), osm, emit });
+      const executor = new ToolExecutor({
+        zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance),
+        mapView: (opts) => renderMapView(opts),
+        renderView: (opts) => renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height }),
+        osm, emit,
+      });
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata),
         images: [
@@ -340,10 +364,15 @@ async function analyze(file) {
       }));
     }
 
+    // The focal length in the file fixes the field of view exactly (unless the photo was cropped).
+    const exifFov = horizontalFov(metadata.focal_35mm, bitmap.width, bitmap.height);
+    if (exifFov) metadata.fov_deg = exifFov;
+    if (exifFov && analysis?.view) analysis.view = { ...analysis.view, fov_deg: exifFov, fov_source: "exif" };
     const result = assembleResult({
       metadata, exifLocation, analysis, usage, model: settings.provider === "puter" ? `${settings.puterModel} (Puter)` : settings.model,
       seconds: Math.round((Date.now() - state.startedAt) / 100) / 10,
     });
+    result.aspect = state.aspect;
     emit("result", result);
   } catch (err) {
     if (err.name === "AbortError") emit("error", { message: "Analyse abgebrochen." });
@@ -420,7 +449,11 @@ async function runDemo() {
   );
   const photo = $("#photo");
   photo.src = `demo/${demo.image}`;
-  photo.decode().then(() => { if (state.controller === controller) state.imageSource = photo; }).catch(() => {});
+  photo.decode().then(() => {
+    if (state.controller !== controller) return;
+    state.imageSource = photo;
+    state.aspect = photo.naturalWidth / photo.naturalHeight;
+  }).catch(() => {});
   state.startedAt = Date.now();
   // Replay in about 20 seconds, keeping the order and the original timestamps in the log.
   const total = demo.events.at(-1)?.t || 1;
@@ -438,7 +471,7 @@ async function runDemo() {
 // ---------- rendering ----------
 
 const ICONS = {
-  status: "•", warning: "⚠", error: "✖", step: "▸", thinking: "💭", note: "📝", zoom: "🔍",
+  status: "•", warning: "⚠", error: "✖", step: "▸", thinking: "💭", note: "📝", zoom: "🔍", mapview: "🛰", render: "🧊", viewshed: "👁",
   tool_call: "🗺", tool_result: "↳", web_search: "🌐", web_results: "↳", metadata: "🏷", exif_location: "📍", result: "✔", hypothesis: "📌",
 };
 
@@ -480,6 +513,14 @@ function handle(type, data) {
       addZoom(data);
       log("zoom", `Zoom #${data.index}: ${data.purpose || "Detail"}`);
       break;
+    case "mapview":
+      addSnapshot(data, data.layer === "karte" ? "🗺 Karte" : "🛰 Luftbild");
+      log("mapview", `${data.layer === "karte" ? "Kartenausschnitt" : "Luftbild"} bei ${data.lat.toFixed(5)}, ${data.lon.toFixed(5)} (Zoom ${data.zoom})${data.purpose ? `: ${data.purpose}` : ""}`);
+      break;
+    case "render":
+      addSnapshot(data, "🧊 3D-Nachbau");
+      log("render", `3D-Nachbau bei ${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)})${data.purpose ? `: ${data.purpose}` : ""}`);
+      break;
     case "tool_call":
       if (!QUIET_TOOLS.has(data.tool)) log("tool_call", `${toolLabel(data.tool)}: ${toolInput(data)}`);
       break;
@@ -507,12 +548,13 @@ function handle(type, data) {
 }
 
 // Tools whose effect is shown elsewhere (zoom gallery, map) instead of as log lines.
-const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis"]);
+const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view"]);
 
 function toolLabel(name) {
   return {
     geocode: "Ortssuche", reverse_geocode: "Adresse zu Koordinaten", overpass_query: "OSM-Abfrage", sun_position: "Sonnenstand",
     bearing_distance: "Richtung/Entfernung", destination_point: "Punkt berechnen",
+    nearby_features: "Umgebung prüfen", street_geometry: "Straßenverlauf",
   }[name] || name;
 }
 
@@ -521,6 +563,8 @@ function toolInput({ tool, input }) {
   if (tool === "reverse_geocode") return `${input.lat}, ${input.lon}`;
   if (tool === "overpass_query") return `${input.purpose || ""}\n${input.query}`;
   if (tool === "sun_position") return `${input.lat}, ${input.lon} @ ${input.datetime_utc}`;
+  if (tool === "nearby_features") return `${input.lat}, ${input.lon} (±${input.radius_m ?? 150} m)`;
+  if (tool === "street_geometry") return `„${input.name}“ bei ${input.lat}, ${input.lon}`;
   return JSON.stringify(input);
 }
 
@@ -550,6 +594,20 @@ function addZoom(z) {
   $("#zoom-count").textContent = `(${state.zoomCount})`;
   addBox(z.box, "zoom", null);
   $("#zooms").append(el("figure", {}, el("img", { src: z.thumbnail, alt: z.purpose || "Ausschnitt", title: z.purpose }), el("figcaption", {}, z.purpose)));
+}
+
+/** Aerial view or 3D reconstruction the AI compared with the photo: shown next to the zooms, marked on the map. */
+function addSnapshot(v, kind) {
+  state.zoomCount += 1;
+  if (state.zoomCount === 1) $("#zooms").replaceChildren();
+  $("#zoom-count").textContent = `(${state.zoomCount})`;
+  $("#zooms").append(el("figure", { class: v.bearing_deg != null ? "mapview render" : "mapview" },
+    el("img", { src: v.thumbnail, alt: `${kind}: ${v.purpose || ""}`, title: v.purpose }),
+    el("figcaption", {}, `${kind}${v.purpose ? `: ${v.purpose}` : ""}`)));
+  if (state.hypoLayer) {
+    L.circleMarker([v.lat, v.lon], { radius: 4, color: "#7a4cc2", weight: 1, fillColor: "#fff", fillOpacity: 1 })
+      .bindTooltip(`${kind} geprüft`).addTo(state.hypoLayer);
+  }
 }
 
 function escapeHtml(s) {
@@ -590,7 +648,7 @@ function drawHypothesis(h) {
     L.marker([h.subject.lat, h.subject.lon], { icon: pin("🎯", "pin-hypo", "Motiv (Zwischenstand)") }).addTo(state.hypoLayer);
     L.polyline([[h.camera.lat, h.camera.lon], [h.subject.lat, h.subject.lon]], { color: "#7a4cc2", weight: 2, dashArray: "4 6" }).addTo(state.hypoLayer);
   }
-  state.map.flyToBounds(area.getBounds().pad(0.3), { duration: 1.4, maxZoom: 15 });
+  state.map.flyToBounds(area.getBounds().pad(0.3), { duration: 1.4, maxZoom: 17 });
 }
 
 /** Final answer: standpoint, motif, view cone, uncertainty area and alternatives. */
@@ -603,12 +661,14 @@ function drawResultMap(a) {
     L.circleMarker([c.lat, c.lon], { radius: 5, color: "#fff", weight: 2, fillColor: "#8a94a3", fillOpacity: 1 })
       .bindPopup(`<b>Alternative:</b> ${escapeHtml(c.name)}<br>${Math.round(c.confidence * 100)} %`).addTo(state.layer);
   }
-  L.circle([cam.lat, cam.lon], { radius: Math.max(cam.radius_km, 0.02) * 1000, color: "#0b6bcb", weight: 1.5, fillOpacity: 0.12 })
-    .bindTooltip(`Aufnahme-Areal ±${formatKm(cam.radius_km)}`).addTo(focus);
+  // Uncertainty of the standpoint only; what the camera sees is drawn exactly (see showVisibleArea).
+  L.circle([cam.lat, cam.lon], { radius: Math.max(cam.radius_km, 0.005) * 1000, color: "#0b6bcb", weight: 1.5, dashArray: "4 4", fillOpacity: 0.06 })
+    .bindTooltip(`Unsicherheit des Standpunkts ±${formatKm(cam.radius_km)}`).addTo(focus);
   if (a.view) {
+    // Provisional wedge until the exact visible area is computed.
     const coneKm = Math.min(Math.max(a.view.distance_m / 1000, 0.05), 50);
-    L.polygon(viewCone(cam.lat, cam.lon, a.view.bearing_deg, a.view.fov_deg, coneKm), { color: "#e8590c", weight: 1, fillColor: "#ff922b", fillOpacity: 0.25 })
-      .bindTooltip(`Sichtfeld: ${Math.round(a.view.bearing_deg)}° (${compass(a.view.bearing_deg)}), ~${a.view.fov_deg}°`).addTo(focus);
+    state.coneLayer = L.polygon(viewCone(cam.lat, cam.lon, a.view.bearing_deg, a.view.fov_deg, coneKm), { color: "#e8590c", weight: 1, dashArray: "3 5", fillColor: "#ff922b", fillOpacity: 0.12 })
+      .bindTooltip(`Sichtfeld (vorläufig): ${Math.round(a.view.bearing_deg)}° (${compass(a.view.bearing_deg)}), ${a.view.fov_deg}°`).addTo(focus);
   }
   if (a.subject) {
     if (a.subject.radius_km > 0.02) L.circle([a.subject.lat, a.subject.lon], { radius: a.subject.radius_km * 1000, color: "#e8590c", weight: 1, fillOpacity: 0.08 }).addTo(focus);
@@ -619,7 +679,104 @@ function drawResultMap(a) {
   L.marker([cam.lat, cam.lon], { icon: pin("📷", "pin-camera", "Standpunkt"), zIndexOffset: 1000 })
     .bindPopup(`<b>Standpunkt:</b> ${escapeHtml(cam.name)}<br>${Math.round(cam.confidence * 100)} % · ±${formatKm(cam.radius_km)}`).addTo(focus);
   // Fly in from wherever the map is (world view or last interim estimate).
-  state.map.flyToBounds(focus.getBounds().pad(0.35), { duration: 2.2, maxZoom: 17 });
+  state.map.flyToBounds(focus.getBounds().pad(0.35), { duration: 2.2, maxZoom: 18 });
+}
+
+function setBaseLayer(name) {
+  if (!state.map || !state.bases) return;
+  const [on, off] = name === "aerial" ? [state.bases.aerial, state.bases.street] : [state.bases.street, state.bases.aerial];
+  if (state.map.hasLayer(off)) state.map.removeLayer(off);
+  if (!state.map.hasLayer(on)) on.addTo(state.map);
+}
+
+/** The best-known camera: EXIF GPS/compass/focal length where present, else the AI's estimate. */
+function bestView(r) {
+  const a = r.analysis;
+  const m = r.metadata || {};
+  const cam = r.exif_location || a?.camera;
+  const bearing = m.direction_deg ?? a?.view?.bearing_deg;
+  if (!cam || bearing == null) return null;
+  return {
+    lat: cam.lat,
+    lon: cam.lon,
+    bearingDeg: bearing,
+    fovDeg: m.fov_deg ?? a?.view?.fov_deg ?? 65,
+    pitchDeg: a?.view?.pitch_deg ?? 0,
+    eyeHeight: a?.view?.eye_height_m ?? 1.6,
+    distanceM: a?.view?.distance_m ?? 300,
+    aspect: r.aspect || state.aspect || 4 / 3,
+    sources: {
+      position: r.exif_location ? "GPS (EXIF)" : "Bildanalyse",
+      bearing: m.direction_deg != null ? "Kompass (EXIF)" : "Bildanalyse",
+      fov: m.fov_deg != null ? "Brennweite (EXIF)" : "Schätzung",
+    },
+  };
+}
+
+/**
+ * Exact visible area on the map (buildings and terrain block the view, the picture frame bounds it)
+ * and a 3D reconstruction from the final standpoint to lay over the photo.
+ */
+async function refineView(r) {
+  const v = bestView(r);
+  if (!v || !state.layer) return;
+  const token = state.resultToken;
+  const current = () => token === state.resultToken;
+  const maxDistM = Math.min(Math.max(v.distanceM * 2.5, 250), 40000);
+  log("viewshed", "Berechne den exakten Sichtbereich aus 3D-Gebäuden und Geländemodell …");
+  try {
+    const area = await visibleAreaFor({ osm, terrain, ...v, maxDistM });
+    if (!current()) return;
+    showVisibleArea(area, v);
+    const s = area.stats;
+    log("viewshed", `Sichtbereich berechnet: ${s.rays} Sichtstrahlen, ${s.buildings} Gebäude${s.terrain ? ", Geländemodell" : ""}` +
+      `${area.sceneMissing ? " (Gebäudedaten nicht erreichbar)" : ""} – sichtbar ab ${s.nearest_m ?? "?"} m bis ${formatKm(s.farthest_m / 1000)}.`);
+  } catch (err) {
+    if (current()) log("warning", `Sichtbereich konnte nicht berechnet werden (${err.message}) – gezeigt wird das vorläufige Sichtfeld.`);
+  }
+  const slot = $("#compare-slot");
+  if (!slot) return;
+  try {
+    const render = await renderViewImage({ osm, terrain, ...v, width: 900 });
+    if (!current()) return;
+    showComparison(slot, render, v);
+  } catch (err) {
+    if (current()) slot.replaceChildren(el("p", { class: "small muted" }, `3D-Nachbau nicht möglich (${err.message}).`));
+  }
+}
+
+function showVisibleArea(area, v) {
+  if (!area.polygons.length) return;
+  state.coneLayer?.remove();
+  const group = L.featureGroup().addTo(state.layer);
+  const tip = `Sichtbereich: was die Kamera sieht (Blick ${Math.round(v.bearingDeg)}° ${compass(v.bearingDeg)}, Bildwinkel ${Math.round(v.fovDeg)}°) – verdeckt durch Gebäude und Gelände ausgespart`;
+  for (const poly of area.polygons) {
+    L.polygon(poly, { color: "#e8590c", weight: 1, fillColor: "#ff922b", fillOpacity: 0.38 }).bindTooltip(tip).addTo(group);
+  }
+  for (const line of area.facades) {
+    L.polyline(line, { color: "#c92a2a", weight: 4, opacity: 0.9 }).bindTooltip("Sichtbare Fassade").addTo(group);
+  }
+  // Precise results are best judged on the aerial image.
+  if (area.stats.farthest_m < 3000) setBaseLayer("aerial");
+  const bounds = group.getBounds().extend([v.lat, v.lon]);
+  state.map.flyToBounds(bounds.pad(0.25), { duration: 1.2, maxZoom: 19 });
+}
+
+function showComparison(slot, render, v) {
+  const photo = $("#photo").src;
+  const overlay = el("img", { src: render.dataUrl, alt: "3D-Nachbau", class: "compare-render", style: "opacity:0.5" });
+  const slider = el("input", { type: "range", min: "0", max: "100", value: "50", "aria-label": "Überblendung Foto / 3D-Nachbau" });
+  slider.addEventListener("input", () => { overlay.style.opacity = String(slider.value / 100); });
+  const s = render.stats;
+  slot.replaceChildren(
+    el("p", { class: "label" }, "🧊 Foto ↔ 3D-Nachbau vom Standpunkt"),
+    el("div", { class: "compare", style: `aspect-ratio:${render.width}/${render.height}` }, el("img", { src: photo, alt: "Foto" }), overlay),
+    el("div", { class: "compare-slider" }, el("span", { class: "small" }, "Foto"), slider, el("span", { class: "small" }, "3D")),
+    el("p", { class: "small muted" },
+      `Nachbau aus ${s.buildings} OSM-Gebäuden${s.terrain ? " und dem Geländemodell" : ""}. Standpunkt: ${v.sources.position}, ` +
+      `Blickrichtung: ${v.sources.bearing}, Bildwinkel ${Math.round(v.fovDeg)}°: ${v.sources.fov}. ` +
+      "Decken sich Gebäudekanten, Straßenflucht und Horizont, stimmt der Standpunkt auf wenige Meter."),
+  );
 }
 
 function clueCrop(source, box) {
@@ -702,6 +859,10 @@ function renderResult(r) {
   }
   if (!a) {
     if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei, und die KI-Bildanalyse lief nicht (siehe Protokoll)."));
+    if (bestView(r)) {
+      box.append(el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")));
+      refineView(r);
+    }
     return;
   }
 
@@ -721,8 +882,11 @@ function renderResult(r) {
     a.subject ? el("p", { class: "label" }, "🎯 Motiv (das ist zu sehen)") : null,
     a.subject ? el("p", { class: "answer small-answer" }, a.subject.name) : null,
     a.subject ? el("p", { class: "coords" }, `${a.subject.lat.toFixed(6)}, ${a.subject.lon.toFixed(6)}`) : null,
-    a.view ? el("p", { class: "view" }, `🧭 Blick nach ${compass(a.view.bearing_deg)} (${Math.round(a.view.bearing_deg)}°) · ca. ${formatKm(a.view.distance_m / 1000)} bis zum Motiv · Bildwinkel ~${a.view.fov_deg}°`) : null,
+    a.view ? el("p", { class: "view" }, `🧭 Blick nach ${compass(a.view.bearing_deg)} (${Math.round(a.view.bearing_deg)}°) · ca. ${formatKm(a.view.distance_m / 1000)} bis zum Motiv · ` +
+      `Bildwinkel ${a.view.fov_source === "exif" ? `${a.view.fov_deg}° (aus der Brennweite)` : `~${Math.round(a.view.fov_deg)}°`}` +
+      `${a.view.eye_height_m > 3 ? ` · Kamerahöhe ~${Math.round(a.view.eye_height_m)} m` : ""}`) : null,
     el("p", { class: "summary" }, a.summary),
+    bestView(r) ? el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")) : null,
   ].filter(Boolean));
 
   if (r.truth) {
@@ -757,6 +921,7 @@ function renderResult(r) {
     }
     drawResultMap(a);
     if (!exif) setOsmLink(cam.lat, cam.lon);
+    refineView(r);
   }
 }
 

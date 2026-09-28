@@ -75,13 +75,37 @@ export async function extractMetadata(input) {
   }
   const t = gpsTime(raw);
   if (t) meta.gps_time_utc = t;
+  // Focal length gives the exact field of view; the compass direction (if stored) the viewing direction.
+  const f35 = Number(raw.FocalLengthIn35mmFormat);
+  if (f35 > 0) meta.focal_35mm = Math.round(f35);
+  const f = Number(raw.FocalLength);
+  if (f > 0) meta.focal_mm = Math.round(f * 100) / 100;
+  if (Number.isFinite(raw.GPSImgDirection)) meta.direction_deg = Math.round((((raw.GPSImgDirection % 360) + 360) % 360) * 10) / 10;
   // PNG/WebP headers come back as data too; only real EXIF/GPS fields count.
   return { has_exif: Object.keys(meta).length > 0, ...meta };
 }
 
-/** Non-GPS metadata that is useful context (time for sun/shadow checks, camera model). */
+/**
+ * Horizontal field of view in degrees from the 35 mm-equivalent focal length. The equivalent is defined
+ * on the 43.27 mm diagonal, so the image's aspect ratio decides how much of it is horizontal.
+ */
+export function horizontalFov(focal35, width, height) {
+  if (!(focal35 > 0) || !(width > 0) || !(height > 0)) return null;
+  const sensorWidth = (43.27 * width) / Math.hypot(width, height);
+  return Math.round(((2 * Math.atan(sensorWidth / (2 * focal35)) * 180) / Math.PI) * 10) / 10;
+}
+
+/** Non-GPS metadata that is useful context (time for sun/shadow checks, camera model, lens). */
 export function hintsForModel(meta) {
   const hints = [];
+  const fov = horizontalFov(meta.focal_35mm, meta.width, meta.height);
+  if (fov) {
+    hints.push(`Brennweite laut EXIF: ${meta.focal_35mm} mm (Kleinbild-äquivalent) → horizontaler Bildwinkel ${fov}° ` +
+      "(exakt, sofern das Foto nicht beschnitten wurde) – nutze diesen Wert für fov_deg und render_view.");
+  } else if (meta.focal_mm) {
+    hints.push(`Brennweite laut EXIF: ${meta.focal_mm} mm (echte Brennweite, ohne Kleinbild-Umrechnung).`);
+  }
+  if (meta.direction_deg != null) hints.push(`Kompassrichtung der Kamera laut EXIF: ${meta.direction_deg}° (Handy-Kompass, meist ±10–20° genau).`);
   if (meta.taken_at) hints.push(`Aufnahmezeit laut EXIF (Ortszeit der Kamera): ${meta.taken_at}${meta.utc_offset ? ` (UTC-Offset ${meta.utc_offset})` : ""}`);
   if (meta.gps_time_utc) hints.push(`GPS-Zeitstempel (UTC): ${meta.gps_time_utc}`);
   const camera = [meta.camera_make, meta.camera_model].filter(Boolean).join(" ");

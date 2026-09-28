@@ -25,7 +25,11 @@ test("valid submissions are normalized", () => {
   const r = validateSubmission(raw);
   assert.equal(r.camera.confidence, 1);
   assert.deepEqual(r.subject, { name: "Martinstor", lat: 47.9925, lon: 7.8495, radius_km: 0.05 });
-  assert.deepEqual(r.view, { bearing_deg: 350, fov_deg: 65, distance_m: 280 });
+  assert.deepEqual(r.view, { bearing_deg: 350, fov_deg: 65, distance_m: 280, eye_height_m: 1.6, pitch_deg: 0 });
+  const high = structuredClone(VALID_SUBMISSION);
+  high.view.eye_height_m = 45;
+  high.view.pitch_deg = -120;
+  assert.deepEqual([validateSubmission(high).view.eye_height_m, validateSubmission(high).view.pitch_deg], [45, -90]);
   assert.deepEqual(r.clues[0].box, [0.75, 0.66, 0.8, 0.7]);
   assert.equal(r.clues[1].category, "sonstiges");
   assert.deepEqual(r.clues[1].box, []);
@@ -46,23 +50,42 @@ for (const [label, mutate] of [
   });
 }
 
-function executor() {
+function executor({ withMapView = true } = {}) {
   const events = [];
   const zoomCalls = [];
+  const mapCalls = [];
+  const osmCalls = [];
   const osm = {
     geocode: async (q, cc, limit) => [{ name: `${q}, Deutschland`, lat: 47.99, lon: 7.85, kind: "highway/residential", importance: 0.4 }],
     reverse: async () => ({ name: "Bahnhofstraße 1, Freiburg" }),
     overpass: async () => ({ total: 0, elements: [] }),
+    nearbyFeatures: async (...args) => { osmCalls.push(["nearby", ...args]); return { center: { lat: args[0], lon: args[1] }, radius_m: args[2], total: 0, features: [] }; },
+    streetGeometry: async (...args) => { osmCalls.push(["street", ...args]); return { name: args[0], total: 0, ways: [] }; },
   };
   const ex = new ToolExecutor({
     zoom: async (box, enhance) => {
       zoomCalls.push({ box, enhance });
       return { data: "QUJD", width: 1024, height: 512, sourceWidth: 200, sourceHeight: 100, thumbnail: "data:image/jpeg;base64,QUJD" };
     },
+    mapView: withMapView
+      ? async (opts) => {
+        mapCalls.push(opts);
+        return { data: "TUFQ", width: 768, height: 768, metersPerPixel: 0.4, spanM: 307, thumbnail: "data:image/jpeg;base64,TUFQ" };
+      }
+      : undefined,
+    renderView: withMapView
+      ? async (opts) => {
+        mapCalls.push({ render: opts });
+        return {
+          data: "M0Q=", thumbnail: "data:image/jpeg;base64,M0Q=", note: "",
+          stats: { buildings: 12, heights_from_osm_pct: 25, terrain: true, ground_m: 278, building_ahead_m: 41, skyline_distance_m: 5400 },
+        };
+      }
+      : undefined,
     osm,
     emit: (t, d) => events.push([t, d]),
   });
-  return { ex, events, zoomCalls };
+  return { ex, events, zoomCalls, mapCalls, osmCalls };
 }
 
 test("zoom returns text + image and emits a thumbnail", async () => {
@@ -125,6 +148,70 @@ test("mark_hypothesis emits a live map event", async () => {
   assert.match(result, /markiert/);
   assert.deepEqual(events.at(-1), ["hypothesis", { label: "Vermutung: Freiburg", camera: { lat: 47.99, lon: 7.85 }, radius_km: 5, subject: { lat: 47.9925, lon: 7.8495 } }]);
   assert.equal((await ex.run("mark_hypothesis", { label: "x", camera_lat: 99, camera_lon: 0, radius_km: 1 })).isError, true);
+});
+
+test("map_view returns the aerial image, clamps zoom and emits a thumbnail", async () => {
+  const { ex, events, mapCalls } = executor();
+  const { result, isError } = await ex.run("map_view", { lat: 47.9925, lon: 7.8495, zoom: 22, layer: "satellit", purpose: "Dächer vergleichen" });
+  assert.equal(isError, false);
+  assert.deepEqual(mapCalls[0], { lat: 47.9925, lon: 7.8495, zoom: 19, layer: "satellit" });
+  assert.match(result[0].text, /Luftbild um 47\.992500, 7\.849500.*307 m breit, 0\.40 m pro Pixel, Norden oben/);
+  assert.deepEqual(result[1], { type: "image", mime_type: "image/jpeg", data: "TUFQ", resolution: "high" });
+  assert.deepEqual(events.at(-1), ["mapview", { lat: 47.9925, lon: 7.8495, zoom: 19, layer: "satellit", purpose: "Dächer vergleichen", thumbnail: "data:image/jpeg;base64,TUFQ" }]);
+  await ex.run("map_view", { lat: 47.9925, lon: 7.8495, zoom: 3, layer: "karte" });
+  assert.deepEqual(mapCalls[1], { lat: 47.9925, lon: 7.8495, zoom: 15, layer: "karte" });
+});
+
+test("map_view errors: no renderer, bad coordinates, limit", async () => {
+  const none = await executor({ withMapView: false }).ex.run("map_view", { lat: 48, lon: 7.8, zoom: 18, layer: "satellit" });
+  assert.equal(none.isError, true);
+  assert.match(none.result, /nicht verfügbar/);
+  const { ex } = executor();
+  assert.equal((await ex.run("map_view", { lat: 91, lon: 7.8, zoom: 18, layer: "satellit" })).isError, true);
+  ex.maxMapViews = 1;
+  assert.equal((await ex.run("map_view", { lat: 48, lon: 7.8, zoom: 18, layer: "satellit" })).isError, false);
+  const second = await ex.run("map_view", { lat: 48, lon: 7.8, zoom: 18, layer: "satellit" });
+  assert.equal(second.isError, true);
+  assert.match(second.result, /Limit/);
+});
+
+test("map_view draws the view wedge when a direction is given", async () => {
+  const { ex, mapCalls, events } = executor();
+  const { result } = await ex.run("map_view", { lat: 48, lon: 7.8, zoom: 18, layer: "satellit", view_bearing_deg: 350, view_fov_deg: 400 });
+  assert.deepEqual(mapCalls[0].view, { bearing_deg: 350, fov_deg: 150 });
+  assert.match(result[0].text, /Oranger Keil = Sichtfeld 350°/);
+  assert.equal(events.at(-1)[0], "mapview");
+});
+
+test("render_view normalises the camera and reports what the reconstruction shows", async () => {
+  const { ex, mapCalls, events } = executor();
+  const { result, isError } = await ex.run("render_view", { lat: 47.9925, lon: 7.8495, bearing_deg: -10, fov_deg: 200, purpose: "Kanten prüfen" });
+  assert.equal(isError, false);
+  assert.deepEqual(mapCalls[0].render, { lat: 47.9925, lon: 7.8495, bearingDeg: 350, fovDeg: 150, eyeHeight: 1.6, pitchDeg: 0 });
+  assert.match(result[0].text, /12 Gebäude sichtbar \(Höhe bei 25 % aus OSM-Angaben/);
+  assert.match(result[0].text, /Erstes Gebäude in Blickrichtung \(Bildmitte\): 41 m/);
+  assert.match(result[0].text, /Horizont bis 5\.4 km/);
+  assert.deepEqual(result[1], { type: "image", mime_type: "image/jpeg", data: "M0Q=", resolution: "high" });
+  assert.deepEqual(events.at(-1), ["render", { lat: 47.9925, lon: 7.8495, bearing_deg: 350, fov_deg: 150, purpose: "Kanten prüfen", thumbnail: "data:image/jpeg;base64,M0Q=" }]);
+  assert.equal((await ex.run("render_view", { lat: 47.99, lon: 7.85, bearing_deg: 10 })).isError, true, "fov_deg is required");
+  const none = await executor({ withMapView: false }).ex.run("render_view", { lat: 47.99, lon: 7.85, bearing_deg: 10, fov_deg: 60 });
+  assert.match(none.result, /nicht verfügbar/);
+});
+
+test("nearby_features and street_geometry pass through to the OSM client", async () => {
+  const { ex, osmCalls } = executor();
+  const near = await ex.run("nearby_features", { lat: 47.9925, lon: 7.8495, radius_m: 80 });
+  assert.equal(near.isError, false);
+  assert.equal(JSON.parse(near.result).radius_m, 80);
+  await ex.run("nearby_features", { lat: 47.9925, lon: 7.8495 });
+  const street = await ex.run("street_geometry", { name: "Kaiser-Joseph-Straße", lat: 47.9925, lon: 7.8495 });
+  assert.equal(JSON.parse(street.result).name, "Kaiser-Joseph-Straße");
+  assert.deepEqual(osmCalls, [
+    ["nearby", 47.9925, 7.8495, 80],
+    ["nearby", 47.9925, 7.8495, 150],
+    ["street", "Kaiser-Joseph-Straße", 47.9925, 7.8495, 1500],
+  ]);
+  assert.equal((await ex.run("street_geometry", { name: "", lat: 47.9925, lon: 7.8495 })).isError, true);
 });
 
 test("bearing_distance and destination_point are inverse", async () => {

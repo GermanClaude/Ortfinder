@@ -89,7 +89,7 @@ function parseArguments(raw) {
 }
 
 export class PuterAgent {
-  constructor({ model = PUTER_MODELS[0].id, maxSteps = 8, chat, emit = () => {}, signal } = {}) {
+  constructor({ model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal } = {}) {
     this.model = model;
     this.maxSteps = maxSteps;
     this.chat = chat ?? ((messages, options) => globalThis.puter.ai.chat(messages, options));

@@ -54,6 +54,42 @@ Google-Gemini-Key nutzen.
    - **mit Google suchen** (Google-Suche von Gemini, im bezahlten Tarif);
    - **den Sonnenstand berechnen** (`sun_position`), um Schatten gegen Kandidatenorte zu prüfen.
 
+   **Feinortung auf ~20–50 m.** Steht die Straße oder der Platz fest, geht es weiter bis zum Standpunkt:
+   - **Luftbild ansehen** (`map_view`): Ein Satellitenbild (Esri World Imagery) oder Kartenausschnitt um
+     einen Kandidatenpunkt, mit Maßstab und Nordpfeil. Die KI vergleicht Dächer, Straßenbreite,
+     Zebrastreifen, Bäume und Plätze mit dem Foto. Die Luftbilder erscheinen violett umrandet neben den Zooms;
+   - **Umgebung prüfen** (`nearby_features`): Was steht wirklich im Umkreis von z.B. 100 m (Geschäfte,
+     Haltestellen, Ampeln, Kirchen …) – mit Entfernung und Richtung vom Punkt;
+   - **Straßenverlauf holen** (`street_geometry`): Richtung jedes Straßenabschnitts. Passt die Flucht der
+     Straße im Foto zu 350°, ist Abschnitt und Blickrichtung gefunden;
+   - **zurückrechnen** (`destination_point`, `bearing_distance`): vom identifizierten Gebäude über
+     geschätzte Entfernung und Richtung zum Standpunkt;
+   - **3D-Nachbau rendern** (`render_view`): Aus OpenStreetMap-Gebäuden (mit echter oder geschätzter
+     Höhe), Straßen, Bäumen und einem Geländemodell entsteht ein perspektivisches Bild dessen, was eine
+     Kamera an diesem Punkt mit dieser Blickrichtung sehen müsste, im Seitenverhältnis des Fotos und mit
+     Kompassskala. Die KI vergleicht Gebäudekanten, Lücken, Straßenflucht und Horizont bzw. Bergsilhouette
+     mit dem Foto und verschiebt Standpunkt und Blickrichtung, bis beides deckungsgleich ist.
+
+   Einen Radius von 50 m oder weniger gibt die KI nur an, wenn mindestens zwei unabhängige Merkmale am
+   Punkt bestätigt sind, 20 m oder weniger nur, wenn der 3D-Nachbau zum Foto passt. Auf der Ergebniskarte
+   lässt sich oben rechts auf **Luftbild** umschalten; bei genauen Ergebnissen geschieht das automatisch.
+
+   **Exakter Sichtbereich statt Radius.** Aus Standpunkt, Blickrichtung, Bildwinkel, Kamerahöhe und
+   Neigung berechnet Ortfinder mit Sichtstrahlen alle 0,5°, welche Bodenfläche die Kamera wirklich sieht:
+   begrenzt vom Bildrahmen (auch nach unten, d.h. der Boden direkt vor den Füßen ist nicht im Bild),
+   verdeckt von Gebäuden und Gelände (Hügelkuppen, Bergrücken, Erdkrümmung). Die Karte zeigt diese Fläche
+   orange, die sichtbaren Fassaden rot. Im Ergebnis liegt der 3D-Nachbau vom Standpunkt über dem Foto
+   (Schieberegler zum Überblenden).
+
+   **Aus der Datei:** Die Brennweite (Kleinbild-äquivalent) ergibt den exakten Bildwinkel, eine
+   gespeicherte Kompassrichtung die Blickrichtung. Beides fließt in die Analyse und den Sichtbereich ein.
+
+   **Warum nicht Google Earth?** Google Earth hat keine Schnittstelle, die eine Website frei nutzen darf.
+   Googles fotorealistische 3D-Kacheln und Street View gibt es nur mit kostenpflichtigem API-Key samt
+   Abrechnung, und der ließe sich in einer öffentlichen Website nicht verbergen. Ortfinder nutzt deshalb
+   freie Quellen: Luftbilder von Esri (World Imagery), 3D-Gebäude aus OpenStreetMap und das
+   Mapzen-Geländemodell (AWS Open Data).
+
    Am Ende steht ein strukturiertes Ergebnis: Standpunkt der Kamera und Motiv mit Koordinaten,
    Blickrichtung, Unsicherheitsradius und Konfidenz, Alternativen, alle Hinweise (im Bild markiert und
    als Ausschnitte), gelesene Texte und die Überprüfung.
@@ -73,7 +109,8 @@ Ortsinformation enthalten (weiße Wand, Nahaufnahme einer Blume).
 | Bild | Zu erwarten |
 |---|---|
 | Originalfoto mit GPS in den Metadaten | exakt (auf wenige Meter) |
-| Straßenszene mit lesbaren Schildern, Geschäften, Hausnummern | oft straßengenau |
+| Straßenszene mit lesbaren Schildern, Geschäften, Hausnummern | oft auf 20–100 m (Feinortung per Luftbild) |
+| Straßenszene ohne lesbaren Text | meist Stadt oder Ortsteil |
 | Landschaft/Stadt ohne Text, aber mit typischer Architektur und Vegetation | meist Land, oft Region |
 | Innenraum, Baum vor neutralem Hintergrund, Nahaufnahme | eher Land oder Region, manchmal gar nichts |
 
@@ -171,7 +208,10 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/prompt.js        Anweisungen an die KI
   js/imaging.js       Bild laden (inkl. HEIC), Zoom-Ausschnitte, Schärfen, Raster
   js/metadata.js      EXIF/GPS auslesen
-  js/geo.js           OpenStreetMap (Nominatim/Overpass), Entfernungen, Sonnenstand
+  js/geo.js           OpenStreetMap (Nominatim/Overpass), Umgebung, Straßenverlauf, Entfernungen, Sonnenstand
+  js/mapview.js       Luftbild-/Kartenausschnitte für die KI (Esri World Imagery, OSM-Kacheln)
+  js/scene3d.js       3D-Nachbau aus OSM-Gebäuden + Gelände, exakter Sichtbereich (Sichtstrahlen)
+  js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
   vendor/             Leaflet, exifr, heic2any (mit Lizenzen), kein CDN nötig
 tests/js/             Unit-Tests der Website (Node)
 tests/test_web_e2e.py Browser-Test der Website (Playwright, Gemini/OSM simuliert)
