@@ -27,6 +27,12 @@ export function worldPixel(lat, lon, zoom) {
   };
 }
 
+/** Inverse of worldPixel: latitude/longitude of Web-Mercator pixel (x, y) at the given zoom level. */
+export function latLonFromWorldPixel(x, y, zoom) {
+  const size = TILE * 2 ** zoom;
+  return [(Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / size))) * 180) / Math.PI, (x / size) * 360 - 180];
+}
+
 /** Tiles needed to cover a square of `size` pixels centred on (lat, lon). */
 export function tilesFor(lat, lon, zoom, size) {
   const { x, y } = worldPixel(lat, lon, zoom);
@@ -51,7 +57,7 @@ export function scaleBar(mpp, size) {
   return { meters, pixels: meters / mpp };
 }
 
-function loadTile(url, timeoutMs = 15000) {
+export function loadTileImage(url, timeoutMs = 15000) {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = "anonymous"; // required so the canvas can be exported afterwards
@@ -85,7 +91,33 @@ function drawViewWedge(ctx, c, size, { bearing_deg: bearing, fov_deg: fov = 60 }
   ctx.setLineDash([]);
 }
 
-/** Render a size×size JPEG of the area around (lat, lon) with crosshair, scale bar and north arrow. */
+/** Thin grid lines every gridM metres from the crosshair, labelled in metres east (O) / north (N). */
+function drawMetreGrid(ctx, c, size, mpp) {
+  const gridM = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000].find((g) => g / mpp >= size / 9) ?? 5000;
+  const step = gridM / mpp;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1;
+  ctx.font = "10px sans-serif";
+  for (let k = -Math.floor(c / step); k <= Math.floor(c / step); k++) {
+    if (k === 0) continue;
+    const p = c + k * step;
+    ctx.beginPath();
+    ctx.moveTo(p, 0); ctx.lineTo(p, size);
+    ctx.moveTo(0, p); ctx.lineTo(size, p);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(p + 2, size - 58, 44, 13);
+    ctx.fillRect(2, p - 13, 44, 13);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(`${k > 0 ? "+" : ""}${k * gridM} O`, p + 4, size - 48);
+    ctx.fillText(`${k < 0 ? "+" : ""}${-k * gridM} N`, 4, p - 3);
+  }
+  ctx.restore();
+  return gridM;
+}
+
+/** Render a size×size JPEG of the area around (lat, lon) with crosshair, metre grid, scale bar and north arrow. */
 export async function renderMapView({ lat, lon, zoom, layer = "satellit", size = 768, view = null }) {
   const source = TILE_SOURCES[layer] ?? TILE_SOURCES.satellit;
   const canvas = document.createElement("canvas");
@@ -95,12 +127,13 @@ export async function renderMapView({ lat, lon, zoom, layer = "satellit", size =
   ctx.fillStyle = "#777";
   ctx.fillRect(0, 0, size, size);
   const tiles = tilesFor(lat, lon, zoom, size);
-  const images = await Promise.all(tiles.map((t) => loadTile(source.url(zoom, t.x, t.y))));
+  const images = await Promise.all(tiles.map((t) => loadTileImage(source.url(zoom, t.x, t.y))));
   if (!images.some(Boolean)) throw new Error(`${layer === "satellit" ? "Luftbild" : "Karte"} konnte nicht geladen werden.`);
   tiles.forEach((t, i) => images[i] && ctx.drawImage(images[i], t.dx, t.dy, TILE, TILE));
 
   const mpp = metersPerPixel(lat, zoom);
   const c = size / 2;
+  const gridM = drawMetreGrid(ctx, c, size, mpp);
   if (view && Number.isFinite(view.bearing_deg)) drawViewWedge(ctx, c, size, view);
   // Crosshair on the queried point.
   ctx.strokeStyle = "#ff1744";
@@ -143,5 +176,5 @@ export async function renderMapView({ lat, lon, zoom, layer = "satellit", size =
   thumb.width = 240;
   thumb.height = 240;
   thumb.getContext("2d").drawImage(canvas, 0, 0, 240, 240);
-  return { data, width: size, height: size, metersPerPixel: mpp, spanM: mpp * size, thumbnail: thumb.toDataURL("image/jpeg", 0.8) };
+  return { data, width: size, height: size, metersPerPixel: mpp, spanM: mpp * size, gridM, thumbnail: thumb.toDataURL("image/jpeg", 0.8) };
 }

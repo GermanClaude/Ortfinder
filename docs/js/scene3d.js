@@ -155,13 +155,19 @@ export function loadScene(osm, lat, lon, radiusM = 500) {
 
 // ---------- camera ----------
 
-/** Pinhole camera looking along bearingDeg (clockwise from north), tilted by pitchDeg (up positive). */
-export function makeCamera({ bearingDeg, pitchDeg = 0, fovDeg, width, height }) {
+/**
+ * Pinhole camera looking along bearingDeg (clockwise from north), tilted by pitchDeg (up positive) and
+ * rolled by rollDeg (positive: the horizon rises to the right in the image).
+ */
+export function makeCamera({ bearingDeg, pitchDeg = 0, rollDeg = 0, fovDeg, width, height }) {
   const b = bearingDeg * DEG;
   const p = pitchDeg * DEG;
   const f = [Math.sin(b) * Math.cos(p), Math.cos(b) * Math.cos(p), Math.sin(p)];
-  const r = [Math.cos(b), -Math.sin(b), 0];
-  const u = [-Math.sin(b) * Math.sin(p), -Math.cos(b) * Math.sin(p), Math.cos(p)];
+  const r0 = [Math.cos(b), -Math.sin(b), 0];
+  const u0 = [-Math.sin(b) * Math.sin(p), -Math.cos(b) * Math.sin(p), Math.cos(p)];
+  const ro = rollDeg * DEG;
+  const r = r0.map((v, i) => v * Math.cos(ro) - u0[i] * Math.sin(ro));
+  const u = u0.map((v, i) => v * Math.cos(ro) + r0[i] * Math.sin(ro));
   const fpx = width / 2 / Math.tan((clamp(fovDeg, 1, 170) * DEG) / 2);
   return {
     f, r, u, fpx, width, height,
@@ -188,7 +194,7 @@ export function clipNear(poly, near = NEAR) {
 }
 
 /** Heights relative to the eye, including terrain, earth curvature and refraction. */
-function groundModel({ lat, lon, eyeHeight, terrain }) {
+export function groundModel({ lat, lon, eyeHeight, terrain }) {
   const proj = localProjection(lat, lon);
   const hasTerrain = Boolean(terrain?.available);
   const raw = (x, y, d) => {
@@ -251,9 +257,14 @@ const LIGHT = (() => { const v = [-0.55, -0.65, 0.52]; const n = Math.hypot(...v
  * Draw the reconstructed view into a 2D canvas context. Returns statistics for the AI.
  * Everything is simple geometry: buildings are extruded footprints, the terrain is a height model.
  */
-export function drawView(ctx, { width: W, height: H, lat, lon, bearingDeg, fovDeg, pitchDeg = 0, eyeHeight = 1.7, scene, terrain, maxDistM = 30000, buildingRangeM = 1500 }) {
+export function drawView(ctx, {
+  width: W, height: H, lat, lon, bearingDeg, fovDeg, pitchDeg = 0, rollDeg = 0, eyeHeight = 1.7, scene, terrain, maxDistM = 30000, buildingRangeM = 1500,
+  drape = null,
+}) {
+  // drape: { canvas, skyline } – terrain already rendered with aerial imagery (see groundview.js); then
+  // buildings are drawn as see-through wireframes so the imagery (roofs, fields, roads) stays visible.
   fovDeg = clamp(fovDeg, 5, 150);
-  const cam = makeCamera({ bearingDeg, pitchDeg, fovDeg, width: W, height: H });
+  const cam = makeCamera({ bearingDeg, pitchDeg, rollDeg, fovDeg, width: W, height: H });
   const g = groundModel({ lat, lon, eyeHeight, terrain });
   const px = (c) => [W / 2 + (c[0] / c[2]) * cam.fpx, H / 2 - (c[1] / c[2]) * cam.fpx];
 
@@ -271,8 +282,9 @@ export function drawView(ctx, { width: W, height: H, lat, lon, bearingDeg, fovDe
   const landColor = (e) => (Math.abs(e) < 0.5 ? WATER : e > treeline + 700 ? SNOW : e > treeline ? ROCK : GRASS);
   const crestCols = [];
   const colW = 2;
-  let skylineMaxD = 0;
-  for (let sx = 0; sx < W; sx += colW) {
+  let skylineMaxD = drape ? drape.skyline : 0;
+  if (drape) ctx.drawImage(drape.canvas, 0, 0, W, H);
+  for (let sx = 0; !drape && sx < W; sx += colW) {
     const az = bearingDeg * DEG + Math.atan((sx + colW / 2 - W / 2) / cam.fpx);
     const dx = Math.sin(az);
     const dy = Math.cos(az);
@@ -351,9 +363,9 @@ export function drawView(ctx, { width: W, height: H, lat, lon, bearingDeg, fovDe
     return false;
   };
 
-  // Streets lie on the ground, so they go first.
+  // Streets lie on the ground, so they go first (the aerial imagery already shows them).
   const roadRange = Math.min(buildingRangeM, 1200);
-  for (const road of scene?.roads || []) {
+  for (const road of drape ? [] : scene?.roads || []) {
     const pts = road.points.map(([la, lo]) => g.proj.toXY(la, lo));
     for (let i = 0; i + 1 < pts.length; i++) {
       const [x1, y1] = pts[i];
@@ -390,14 +402,19 @@ export function drawView(ctx, { width: W, height: H, lat, lon, bearingDeg, fovDe
       faces.push({
         depth: Math.hypot(mx, my),
         pts: [[x1, y1, b.zb], [x2, y2, b.zb], [x2, y2, b.zt], [x1, y1, b.zt]],
-        fill: rgb(mix([96, 88, 76], WALL, 0.55 + 0.45 * lambert)),
-        stroke: "rgba(55,45,35,0.75)",
+        fill: drape ? "rgba(255,255,255,0.14)" : rgb(mix([96, 88, 76], WALL, 0.55 + 0.45 * lambert)),
+        stroke: drape ? "rgba(255,230,0,0.9)" : "rgba(55,45,35,0.75)",
         building: b,
       });
     }
-    if (b.zt < 0) faces.push({ depth: b.dist + b.radius * 0.5, pts: b.ring.map(([x, y]) => [x, y, b.zt]), fill: rgb(ROOF), stroke: "rgba(60,30,25,0.8)", building: b });
+    if (b.zt < 0) {
+      faces.push({
+        depth: b.dist + b.radius * 0.5, pts: b.ring.map(([x, y]) => [x, y, b.zt]), building: b,
+        fill: drape ? "rgba(255,255,255,0.08)" : rgb(ROOF), stroke: drape ? "rgba(255,230,0,0.9)" : "rgba(60,30,25,0.8)",
+      });
+    }
   }
-  for (const t of scene?.trees || []) {
+  for (const t of drape ? [] : scene?.trees || []) {
     const [x, y] = g.proj.toXY(t.lat, t.lon);
     const dist = Math.hypot(x, y);
     if (dist > roadRange || dist < 1) continue;
@@ -455,13 +472,16 @@ export function drawView(ctx, { width: W, height: H, lat, lon, bearingDeg, fovDe
   ctx.stroke();
   ctx.textAlign = "left";
   ctx.font = "11px sans-serif";
-  const info = `3D-Nachbau · ${lat.toFixed(5)}, ${lon.toFixed(5)} · Blick ${Math.round(bearingDeg)}° · Bildfeld ${Math.round(fovDeg)}° · Augenhöhe ${eyeHeight} m`;
+  const info = `${drape ? "Luftbild-3D" : "3D-Nachbau"} · ${lat.toFixed(5)}, ${lon.toFixed(5)} · Blick ${Math.round(bearingDeg)}° · Bildfeld ${Math.round(fovDeg)}° · Augenhöhe ${eyeHeight} m`;
+  const credit = drape ? "Luftbild: Esri · © OpenStreetMap · Gelände: Mapzen/AWS" : "© OpenStreetMap · Gelände: Mapzen/AWS";
+  // Narrow (portrait) images get the credit on a second line instead of on top of the info.
+  const twoLines = ctx.measureText(info).width + ctx.measureText(credit).width + 30 > W;
   ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(0, H - 18, W, 18);
+  ctx.fillRect(0, H - (twoLines ? 32 : 18), W, twoLines ? 32 : 18);
   ctx.fillStyle = "#fff";
-  ctx.fillText(info, 6, H - 5);
-  ctx.textAlign = "right";
-  ctx.fillText("© OpenStreetMap · Gelände: Mapzen/AWS", W - 6, H - 5);
+  ctx.fillText(info, 6, H - (twoLines ? 19 : 5));
+  ctx.textAlign = twoLines ? "left" : "right";
+  ctx.fillText(credit, twoLines ? 6 : W - 6, H - 5);
 
   const ahead = firstBuildingAhead(buildings, bearingDeg);
   const osmHeights = [...drawn].filter((b) => !b.estimated).length;
@@ -476,7 +496,10 @@ export function drawView(ctx, { width: W, height: H, lat, lon, bearingDeg, fovDe
 }
 
 /** Browser: render the reconstruction as a JPEG (plus thumbnail). Missing data degrades gracefully. */
-export async function renderViewImage({ osm, terrain, lat, lon, bearingDeg, fovDeg, pitchDeg = 0, eyeHeight = 1.6, aspect = 4 / 3, width = 768, maxDistM = 30000 }) {
+export async function renderViewImage({
+  osm, terrain, lat, lon, bearingDeg, fovDeg, pitchDeg = 0, rollDeg = 0, eyeHeight = 1.6, aspect = 4 / 3, width = 768, maxDistM = 30000,
+  texture = "modell", drapeTerrain = null,
+}) {
   // Same aspect ratio as the photo, so both can be laid on top of each other.
   let height = Math.round(width / aspect);
   if (height > 1024 || height < 320) {
@@ -491,10 +514,23 @@ export async function renderViewImage({ osm, terrain, lat, lon, bearingDeg, fovD
     }),
     terrain.prefetchView(lat, lon, bearingDeg, fovDeg, maxDistM).catch(() => {}),
   ]);
+  let drape = null;
+  if (texture === "satellit" && drapeTerrain) {
+    // The terrain seen from the camera with the aerial image laid over it (Google-Earth-like).
+    drape = await drapeTerrain({ terrain, lat, lon, bearingDeg, fovDeg, pitchDeg, rollDeg, eyeHeight, width, height, maxDistM }).catch((err) => {
+      notes.push(`Luftbild-Überzug nicht möglich (${err.message}) – normaler Nachbau gezeigt.`);
+      return null;
+    });
+    if (drape && !drape.tiles) {
+      notes.push("Keine Luftbild-Kacheln erreichbar – normaler Nachbau gezeigt.");
+      drape = null;
+    }
+  }
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const stats = drawView(canvas.getContext("2d"), { width, height, lat, lon, bearingDeg, fovDeg, pitchDeg, eyeHeight, scene, terrain, maxDistM });
+  const stats = drawView(canvas.getContext("2d"), { width, height, lat, lon, bearingDeg, fovDeg, pitchDeg, rollDeg, eyeHeight, scene, terrain, maxDistM, drape });
+  stats.texture = drape ? "satellit" : "modell";
   const dataUrl = canvas.toDataURL("image/jpeg", 0.86);
   const thumb = document.createElement("canvas");
   thumb.width = 240;

@@ -95,6 +95,23 @@ export function horizontalFov(focal35, width, height) {
   return Math.round(((2 * Math.atan(sensorWidth / (2 * focal35)) * 180) / Math.PI) * 10) / 10;
 }
 
+/**
+ * Without EXIF: the typical horizontal field of view of a phone's main camera (about 24 mm equivalent, i.e.
+ * ~72° across the long side of the sensor) for this aspect ratio – photos in other formats are crops of it
+ * (a tall 9:20 "full screen" photo keeps the long side and narrows the short one to ~36°).
+ */
+export function typicalPhoneFov(width, height) {
+  if (!(width > 0) || !(height > 0)) return null;
+  const halfLong = (71.6 / 2) * (Math.PI / 180);
+  const long = Math.max(width, height);
+  const short = Math.min(width, height);
+  // The long side of the picture keeps the long side of the sensor unless the crop is wider than 4:3.
+  const halfAcrossLong = long / short >= 4 / 3 ? halfLong : Math.atan(Math.tan(halfLong) * (long / short) * 0.75);
+  const halfAcrossShort = Math.atan(Math.tan(halfAcrossLong) * (short / long));
+  const half = width >= height ? halfAcrossLong : halfAcrossShort;
+  return Math.round(((2 * half * 180) / Math.PI) * 10) / 10;
+}
+
 /** Non-GPS metadata that is useful context (time for sun/shadow checks, camera model, lens). */
 export function hintsForModel(meta) {
   const hints = [];

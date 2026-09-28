@@ -92,6 +92,22 @@ Kompassskala oben zeigt die Richtungen)? Liegt eine Kante im Nachbau weiter rech
 weit links oder der Standpunkt verschoben – korrigieren und erneut rendern (Varianten parallel in einer Runde). \
 Bei Bergpanoramen ist die Silhouette sehr eindeutig: Standpunkt so verschieben, bis Gipfel und Einschnitte passen. \
 Aus Fenstern, Türmen oder mit Drohne: \`eye_height_m\` und \`pitch_deg\` anpassen.
+- Seitenansicht → Draufsicht (bei JEDEM Foto, auf dem Boden, Dächer, Wege oder Felder zu sehen sind – Pflicht, \
+bevor du einen Radius unter 0,3 km angibst):
+  1. \`solve_camera\` (Rückwärtsschnitt): Suche 4–8 Punkte, die du im Foto UND im Luftbild (\`map_view\`, Zoom \
+18–19) sicher wiedererkennst – bevorzugt am Boden: Hausecken am Boden, Weg- und Straßenkreuzungen, Feldecken, \
+Mast- und Baumfüße. Verteile sie links/rechts und nah/fern. Die Koordinaten liest du am Gitter von \`map_view\` ab \
+(die Umrechnungsformel steht in dessen Antwort). Ergebnis: exakte Blickrichtung, Neigung, Bildwinkel und \
+Kamerahöhe, bei gut verteilten Punkten auch der Standpunkt. Punkte mit großem Fehler sind falsch zugeordnet: \
+korrigieren oder weglassen und erneut rechnen.
+  2. \`top_view\` mit genau diesen Werten: Das Foto wird auf den Boden geklappt und neben das Luftbild gelegt \
+(gleiches Raster). Liegen Wege, Feldgrenzen, Hofplätze und Gebäudefüße deckungsgleich, stimmt die Pose; sonst \
+Blickrichtung, Neigung, Kamerahöhe oder Standpunkt nachstellen. Dächer, Bäume und Masten erscheinen nach hinten \
+verlängert – das ist richtig so, vergleiche die Bodenlinien. Mit \`min_distance_m\` blendest du den Vordergrund \
+(Fensterbank, eigenes Dach) aus.
+  3. \`render_view\` mit \`texture: "satellit"\`: dieselbe Pose als Luftbild-3D (wie Google Earth) – im Vergleich \
+mit dem Foto müssen Feldmuster, Dachfarben, Straßenverläufe und Bergkamm übereinstimmen.
+  Übernimm die Werte aus \`solve_camera\` in \`view\` (bearing_deg, fov_deg, pitch_deg, roll_deg, eye_height_m).
 - Standpunkt aus Objekten ableiten: Schätze die Entfernung zu zwei bis drei identifizierten Objekten (bekannte \
 Größen: Fahrspur ≈ 3 m, Stockwerk ≈ 3 m, Auto ≈ 4,5 m, Verkehrsschild ≈ 60–90 cm) und ihre Richtung im Bild \
 (Bildmitte = Blickrichtung, Bildrand ≈ ±30° bei normalem Objektiv) und rechne mit \`destination_point\` zurück.
@@ -100,7 +116,8 @@ entlang der Straße).
 
 ## Radius ehrlich wählen
 
-- ≤ 0,02 km (20 m): nur wenn der 3D-Nachbau (\`render_view\`) Kanten und Horizont des Fotos deckungsgleich zeigt.
+- ≤ 0,02 km (20 m): nur wenn der 3D-Nachbau (\`render_view\`) oder die Draufsicht (\`top_view\`) das Foto \
+deckungsgleich zeigt, idealerweise mit \`solve_camera\` unter 1,5 % Abweichung.
 - ≤ 0,05 km (50 m): nur wenn mindestens zwei unabhängige Merkmale am Punkt bestätigt sind (z.B. Geschäft per \
 \`nearby_features\` UND Straßenverlauf/Luftbild passen) und Blickrichtung sowie Abstände stimmen.
 - 0,05–0,3 km: Straße oder Platz belegt, genaue Position entlang der Straße unsicher.

@@ -172,6 +172,8 @@ function mockContext() {
     fill: () => { calls.fill += 1; },
     ellipse: () => { calls.ellipse += 1; },
     fillText: (t) => calls.fillText.push(t),
+    measureText: (t) => ({ width: t.length * 6 }),
+    drawImage: () => { calls.drawImage = (calls.drawImage || 0) + 1; },
   };
 }
 
@@ -195,4 +197,16 @@ test("horizontal field of view from the 35 mm-equivalent focal length", () => {
   near(horizontalFov(26, 3024, 4032), 53.1, 0.2); // portrait
   near(horizontalFov(50, 6000, 4000), 39.6, 0.2); // "normal" lens on 3:2
   assert.equal(horizontalFov(null, 100, 100), null);
+});
+
+test("drawView with a draped aerial image: no model terrain or roads, buildings as wireframes", () => {
+  const ctx = mockContext();
+  const stats = drawView(ctx, {
+    width: 400, height: 900, lat: CAM[0], lon: CAM[1], bearingDeg: 0, fovDeg: 40, eyeHeight: 10, scene: block(),
+    drape: { canvas: {}, skyline: 12345 },
+  });
+  assert.equal(ctx.calls.drawImage, 1, "the draped terrain is drawn once, as a picture");
+  assert.equal(stats.skyline_distance_m, null, "no terrain model loaded here");
+  assert.ok(ctx.calls.fillText.some((t) => t.startsWith("Luftbild-3D")));
+  assert.ok(ctx.calls.fillText.includes("Luftbild: Esri · © OpenStreetMap · Gelände: Mapzen/AWS"), "credit on its own line in a narrow image");
 });

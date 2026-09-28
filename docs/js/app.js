@@ -4,14 +4,16 @@ import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
 import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent } from "./claude-agent.js";
 import { OSMClient, haversineKm, viewCone } from "./geo.js";
 import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
+import { drapedTerrain, topViewImage } from "./groundview.js";
 import { DEVICES, GUIDES, detectDevice, guideNodes } from "./guides.js";
 import { renderMapView } from "./mapview.js";
-import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
+import { extractMetadata, hintsForModel, horizontalFov, typicalPhoneFov } from "./metadata.js";
 import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
 import {
   OPENROUTER_DEFAULT_MODEL, describeOpenRouterError, fallbackModels, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat, openRouterSignInUrl,
 } from "./openrouter.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
+import { solveCameraWithTerrain } from "./resection.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
 import { Terrain } from "./terrain.js";
@@ -678,6 +680,7 @@ function resetWorkspace() {
   state.imageSource = null;
   state.resultToken += 1;
   state.coneLayer = null;
+  state.topLayer = null;
   initMap();
   state.layer?.clearLayers();
   state.hypoLayer?.clearLayers();
@@ -705,6 +708,11 @@ function buildIntro(image, metadata) {
       ? "Metadaten aus der Datei (GPS-Daten, falls vorhanden, werden dir absichtlich nicht gezeigt):\n- " + hints.join("\n- ")
       : "Die Datei enthält keine verwertbaren Metadaten – nur der Bildinhalt zählt.",
   ];
+  if (!metadata.focal_35mm) {
+    const fov = typicalPhoneFov(image.width, image.height);
+    parts.push(`Bildwinkel unbekannt. Falls Handyfoto (Hauptkamera): bei diesem Seitenverhältnis typisch ≈ ${fov}° horizontal – ` +
+      "als Startwert für fov_deg; solve_camera bestimmt ihn genau.");
+  }
   return parts.join("\n\n");
 }
 
@@ -856,7 +864,9 @@ async function analyze(file, resumed = null) {
       const executor = new ToolExecutor({
         zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance),
         mapView: (opts) => renderMapView(opts),
-        renderView: (opts) => renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height }),
+        renderView: (opts) => renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height, drapeTerrain: drapedTerrain }),
+        topView: (opts) => topViewImage({ ...opts, bitmap, terrain }),
+        solveCamera: (opts) => solveCameraWithTerrain({ ...opts, terrain, width: bitmap.width, height: bitmap.height }),
         osm, emit,
       });
       executor.restoreCounts(resumed?.counts);
@@ -992,6 +1002,7 @@ async function runDemo() {
 
 const ICONS = {
   status: "•", warning: "⚠", error: "✖", step: "▸", thinking: "💭", note: "📝", zoom: "🔍", mapview: "🛰", render: "🧊", viewshed: "👁",
+  topview: "🗺", solve: "📐",
   tool_call: "🗺", tool_result: "↳", web_search: "🌐", web_results: "↳", metadata: "🏷", exif_location: "📍", result: "✔", hypothesis: "📌",
 };
 
@@ -1042,6 +1053,19 @@ function handle(type, data) {
       addSnapshot(data, "🧊 3D-Nachbau");
       log("render", `3D-Nachbau bei ${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)})${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
+    case "topview":
+      addSnapshot(data, "🗺 Draufsicht");
+      log("topview", `Draufsicht: Foto auf das Gelände geklappt, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)}), ` +
+        `mit dem Luftbild verglichen${data.purpose ? `: ${data.purpose}` : ""}`);
+      break;
+    case "solve":
+      log("solve", `Rückwärtsschnitt aus ${data.points} Punkten: Blick ${data.bearing_deg}° (${compass(data.bearing_deg)}), Bildwinkel ${data.fov_deg}°, ` +
+        `mittlere Abweichung ${String(data.rms_pct).replace(".", ",")} % der Bildbreite`);
+      if (state.hypoLayer) {
+        L.circleMarker([data.lat, data.lon], { radius: 5, color: "#fff", weight: 2, fillColor: "#0b6bcb", fillOpacity: 1 })
+          .bindTooltip(`📐 Standpunkt laut Rückwärtsschnitt (${data.points} Punkte)`).addTo(state.hypoLayer);
+      }
+      break;
     case "tool_call":
       if (!QUIET_TOOLS.has(data.tool)) log("tool_call", `${toolLabel(data.tool)}: ${toolInput(data)}`);
       break;
@@ -1069,7 +1093,7 @@ function handle(type, data) {
 }
 
 // Tools whose effect is shown elsewhere (zoom gallery, map) instead of as log lines.
-const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view"]);
+const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view", "top_view", "solve_camera"]);
 
 function toolLabel(name) {
   return {
@@ -1223,6 +1247,7 @@ function bestView(r) {
     bearingDeg: bearing,
     fovDeg: m.fov_deg ?? a?.view?.fov_deg ?? 65,
     pitchDeg: a?.view?.pitch_deg ?? 0,
+    rollDeg: a?.view?.roll_deg ?? 0,
     eyeHeight: a?.view?.eye_height_m ?? 1.6,
     distanceM: a?.view?.distance_m ?? 300,
     aspect: r.aspect || state.aspect || 4 / 3,
@@ -1264,6 +1289,52 @@ async function refineView(r) {
   } catch (err) {
     if (current()) slot.replaceChildren(el("p", { class: "small muted" }, `3D-Nachbau nicht möglich (${err.message}).`));
   }
+  // The photo folded down onto the terrain, next to the aerial image and on the map.
+  const topSlot = $("#topview-slot");
+  if (!topSlot) return;
+  if (!state.imageSource) {
+    topSlot.remove(); // no photo pixels (e.g. a replay whose picture is not decoded)
+    return;
+  }
+  try {
+    const tv = await topViewImage({
+      bitmap: state.imageSource, terrain, ...v,
+      minDistM: Math.max(8, v.eyeHeight * 2.5), maxDistM: Math.min(Math.max(v.distanceM * 2.5, 300), 3000),
+    });
+    if (!current()) return;
+    showTopView(topSlot, tv, v);
+  } catch (err) {
+    if (current()) topSlot.replaceChildren(el("p", { class: "small muted" }, `Draufsicht nicht möglich (${err.message}).`));
+  }
+}
+
+/** Photo laid flat onto the map (Leaflet image overlay) plus the side-by-side comparison with the aerial image. */
+function showTopView(slot, tv, v) {
+  if (tv.empty) {
+    slot.replaceChildren(el("p", { class: "small muted" }, `🗺 Draufsicht: ${tv.note}`));
+    return;
+  }
+  const b = tv.overlay.bounds;
+  if (state.topLayer) state.layer.removeLayer(state.topLayer);
+  state.topLayer = L.imageOverlay(tv.overlay.url, [[b.south, b.west], [b.north, b.east]], { opacity: 0.75, interactive: false }).addTo(state.layer);
+  setBaseLayer("aerial");
+  const show = el("input", { type: "checkbox", checked: true, id: "topview-toggle" });
+  const opacity = el("input", { type: "range", min: "0", max: "100", value: "75", "aria-label": "Deckkraft der Draufsicht" });
+  // Through the group: a layer removed only from the map would stay in the group and never come back.
+  show.addEventListener("change", () => (show.checked ? state.layer.addLayer(state.topLayer) : state.layer.removeLayer(state.topLayer)));
+  opacity.addEventListener("input", () => state.topLayer.setOpacity(opacity.value / 100));
+  const s = tv.stats;
+  slot.replaceChildren(
+    el("p", { class: "label" }, "🗺 Foto als Draufsicht ↔ Luftbild"),
+    el("a", { href: tv.dataUrl, target: "_blank", rel: "noopener" }, el("img", { src: tv.dataUrl, alt: "Foto als Draufsicht neben dem Luftbild", class: "topview-img" })),
+    el("div", { class: "compare-slider" },
+      el("label", { class: "check small" }, show, " auf der Karte"),
+      el("span", { class: "small" }, "Deckkraft"), opacity),
+    el("p", { class: "small muted" },
+      `Jeder Bildpunkt als Sichtstrahl auf das Gelände projiziert (Blick ${Math.round(v.bearingDeg)}°, Neigung ${v.pitchDeg}°, Bildwinkel ${Math.round(v.fovDeg)}°, ` +
+      `Kamerahöhe ${v.eyeHeight} m über dem Geländemodell): Boden von ${s.nearest_m} bis ${s.farthest_m} m, Raster ${s.grid_m} m. Liegen Wege, Feldgrenzen und Gebäudefüße ` +
+      "auf denen im Luftbild, stimmt die Kamerapose. Dächer, Bäume und Masten erscheinen nach hinten verlängert, weil sie über dem Boden liegen."),
+  );
 }
 
 function showVisibleArea(area, v) {
@@ -1289,10 +1360,23 @@ function showComparison(slot, render, v) {
   const slider = el("input", { type: "range", min: "0", max: "100", value: "50", "aria-label": "Überblendung Foto / 3D-Nachbau" });
   slider.addEventListener("input", () => { overlay.style.opacity = String(slider.value / 100); });
   const s = render.stats;
+  // The same view with the aerial image laid over the terrain (Google-Earth-like), rendered on demand.
+  const drapeButton = el("button", { type: "button", class: "ghost small-btn" }, "🛰 Luftbild-3D");
+  drapeButton.addEventListener("click", async () => {
+    drapeButton.disabled = true;
+    drapeButton.textContent = "Luftbild wird über das Gelände gelegt …";
+    try {
+      const draped = await renderViewImage({ osm, terrain, ...v, width: 900, texture: "satellit", drapeTerrain: drapedTerrain });
+      overlay.src = draped.dataUrl;
+      drapeButton.textContent = draped.stats.texture === "satellit" ? "🛰 Luftbild-3D aktiv" : "Luftbild nicht verfügbar";
+    } catch (err) {
+      drapeButton.textContent = `Luftbild-3D nicht möglich (${err.message})`;
+    }
+  });
   slot.replaceChildren(
     el("p", { class: "label" }, "🧊 Foto ↔ 3D-Nachbau vom Standpunkt"),
     el("div", { class: "compare", style: `aspect-ratio:${render.width}/${render.height}` }, el("img", { src: photo, alt: "Foto" }), overlay),
-    el("div", { class: "compare-slider" }, el("span", { class: "small" }, "Foto"), slider, el("span", { class: "small" }, "3D")),
+    el("div", { class: "compare-slider" }, el("span", { class: "small" }, "Foto"), slider, el("span", { class: "small" }, "3D"), drapeButton),
     el("p", { class: "small muted" },
       `Nachbau aus ${s.buildings} OSM-Gebäuden${s.terrain ? " und dem Geländemodell" : ""}. Standpunkt: ${v.sources.position}, ` +
       `Blickrichtung: ${v.sources.bearing}, Bildwinkel ${Math.round(v.fovDeg)}°: ${v.sources.fov}. ` +
@@ -1381,7 +1465,10 @@ function renderResult(r) {
   if (!a) {
     if (!exif) box.append(el("p", {}, "Keine GPS-Daten in der Datei, und die KI-Bildanalyse lief nicht (siehe Protokoll)."));
     if (bestView(r)) {
-      box.append(el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")));
+      box.append(
+        el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")),
+        el("div", { id: "topview-slot" }, el("p", { class: "small muted" }, "Draufsicht wird berechnet …")),
+      );
       refineView(r);
     }
     return;
@@ -1408,6 +1495,7 @@ function renderResult(r) {
       `${a.view.eye_height_m > 3 ? ` · Kamerahöhe ~${Math.round(a.view.eye_height_m)} m` : ""}`) : null,
     el("p", { class: "summary" }, a.summary),
     bestView(r) ? el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")) : null,
+    bestView(r) ? el("div", { id: "topview-slot" }, el("p", { class: "small muted" }, "Draufsicht wird berechnet …")) : null,
   ].filter(Boolean));
 
   if (r.truth) {
