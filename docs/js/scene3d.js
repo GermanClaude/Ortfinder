@@ -481,7 +481,7 @@ export async function renderViewImage({ osm, terrain, lat, lon, bearingDeg, fovD
   let height = Math.round(width / aspect);
   if (height > 1024 || height < 320) {
     height = clamp(height, 320, 1024);
-    width = Math.round(clamp(height * aspect, 320, 2048));
+    width = Math.round(clamp(height * aspect, 320, 2000)); // ≤2000 px: Claude rejects larger images when a request carries many
   }
   const notes = [];
   const [scene] = await Promise.all([

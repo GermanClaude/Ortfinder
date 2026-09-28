@@ -6,8 +6,12 @@ herauszufinden, wo es entstanden ist, bis hin zur Straße oder zum Standpunkt.
 
 Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs)) und läuft direkt auf
 **GitHub Pages**, ganz ohne Server. Die KI-Analyse läuft **kostenlos und ohne API-Key über
-[Puter](https://puter.com)** (Standard: Gemini 3.8 Flash); wer möchte, kann stattdessen einen eigenen
-Google-Gemini-Key nutzen.
+[Puter](https://puter.com)** (Standard: Gemini 3.8 Flash); wer möchte, nutzt stattdessen OpenRouter
+(kostenlos), einen eigenen Google-Gemini- oder Claude-Key oder die KI auf dem eigenen PC.
+
+**Anleitungen zum Abtippen** für jede KI-Option, jeweils für Windows, macOS, Android und iPhone:
+<https://germanclaude.github.io/Ortfinder/anleitung.html> (auch in Ortfinder unter ⚙, passend zur gewählten Option
+und zum erkannten Gerät).
 
 ![Oberfläche mit simulierter KI-Antwort (Foto: R.kaelcke, Wikimedia Commons, CC BY-SA 4.0)](docs/screenshot.png)
 
@@ -274,6 +278,36 @@ Technisch spricht Ortfinder die eigene Schnittstelle von Ollama an (`/api/chat` 
 das Kontextfenster pro Anfrage auf 32 000 Tokens (Ollama-Standard wären 4 096, zu wenig für Fotos).
 Ältere Zoom-Bilder werden aus dem Gesendeten entfernt, damit die Unterhaltung hineinpasst.
 
+### Claude (Anthropic) mit eigenem API-Key: kostenpflichtig
+
+Unter ⚙ „Claude (Anthropic)“ wählen und einen API-Key aus der [Claude Console](https://platform.claude.com)
+eintragen. **Ein Claude-Abo (Free, Pro, Max) funktioniert dafür nicht:** Anthropic erlaubt fremden Websites
+nicht, sich mit dem claude.ai-Konto anzumelden oder über das Abo zu rechnen. Der API-Zugang wird getrennt
+abgerechnet, über Guthaben, das man vorher kauft (ab 5 $):
+
+1. Auf [platform.claude.com](https://platform.claude.com) anmelden (Google oder E-Mail).
+2. [Settings → Billing](https://platform.claude.com/settings/billing): **Buy credits**, Karte eintragen, Betrag
+   wählen. „Auto reload“ aus lassen, dann wird nie mehr abgebucht als das Guthaben. Zusätzlich kann unter
+   [Limits](https://platform.claude.com/settings/limits) ein Monatslimit gesetzt werden.
+3. [API Keys](https://platform.claude.com/settings/keys): **Create Key**, Name „Ortfinder“, Key (`sk-ant-…`)
+   kopieren – er wird nur einmal angezeigt.
+4. In Ortfinder unter ⚙ „Claude (Anthropic)“ wählen, Key einfügen, Modell wählen, speichern.
+
+| Modell | Eignung |
+|---|---|
+| Claude Opus 5 (Standard) | am genauesten; Richtwert etwa 0,50–2 $ pro Analyse |
+| Claude Sonnet 5 | schneller und günstiger |
+| Claude Haiku 4.5 | am günstigsten |
+
+Technisch nutzt Ortfinder das offizielle [Anthropic-SDK](https://github.com/anthropics/anthropic-sdk-typescript)
+direkt im Browser (gebündelt in `docs/vendor/anthropic-sdk.mjs`, wird erst beim ersten Claude-Foto geladen):
+gestreamte Antworten, adaptives Nachdenken (die Zusammenfassung erscheint im Protokoll), parallele Werkzeuge
+mit Bildern in den Ergebnissen und Prompt-Caching, damit jede Runde den bisherigen Verlauf günstig aus dem
+Cache liest. Bei Opus 5 sind die **Refusal-Fallbacks** eingeschaltet (`fallbacks: "default"`): Lehnt der
+Sicherheitsfilter von Opus 5 eine Anfrage ab, beantwortet Anthropic sie automatisch mit einem Ersatzmodell;
+Ortfinder vermerkt das im Protokoll. Der Key wird nur in deinem Browser gespeichert (nur wenn „Key in diesem
+Browser merken“ an ist) und geht ausschließlich an `api.anthropic.com`.
+
 ## Verantwortungsvoller Umgang
 
 Ortfinder soll zeigen, wie viel ein einzelnes Foto verrät, auch um bewusster mit eigenen Bildern
@@ -302,9 +336,12 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
   js/ollama-agent.js  Agent für Ollama auf dem eigenen PC (native Chat-API, Streaming)
   js/openrouter.js    OpenRouter: kostenlose Modelle, Anmeldung per OAuth/PKCE
+  js/claude-agent.js  Claude-Agent (eigener Anthropic-Key; offizielles SDK, Streaming, Caching, Fallbacks)
+  js/guides.js        Schritt-für-Schritt-Anleitungen je KI-Option und Gerät
+  anleitung.html      alle Anleitungen auf einer Seite (+ js/anleitung.js)
   ki/                 Startskripte für Ollama (+ Cloudflare-Tunnel fürs Handy)
   sw.js               Service Worker nur für die Fertig-Benachrichtigung (speichert nichts)
-  vendor/             Leaflet, exifr, heic2any (mit Lizenzen), kein CDN nötig
+  vendor/             Leaflet, exifr, heic2any, QR-Code, Anthropic-SDK (mit Lizenzen), kein CDN nötig
 tests/js/             Unit-Tests der Website (Node)
 tests/test_web_e2e.py Browser-Test der Website (Playwright, Gemini/OSM simuliert)
 ortfinder/            ältere lokale Python-Version (mit Claude statt Gemini), siehe unten

@@ -1,8 +1,10 @@
 // Ortfinder web app: runs entirely in the browser (GitHub Pages friendly).
 
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
+import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent } from "./claude-agent.js";
 import { OSMClient, haversineKm, viewCone } from "./geo.js";
 import { decodeImage, detailTiles, gridImage, overview, zoomCrop } from "./imaging.js";
+import { DEVICES, GUIDES, detectDevice, guideNodes } from "./guides.js";
 import { renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov } from "./metadata.js";
 import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
@@ -167,7 +169,8 @@ function storageSet(value) {
 
 const settings = {
   // "puter": free, no key (user signs in at Puter) · "gemini": own Gemini API key ·
-  // "ollama": open model on the user's own PC (unlimited; phones reach it through a tunnel)
+  // "ollama": open model on the user's own PC (unlimited; phones reach it through a tunnel) ·
+  // "openrouter": free models, sign-in by tap · "claude": own Anthropic API key (paid per use)
   provider: "puter",
   puterModel: PUTER_MODELS[0].id,
   ollamaUrl: OLLAMA_DEFAULT_URL,
@@ -176,6 +179,8 @@ const settings = {
   tunnelUrl: "",
   openrouterKey: "",
   openrouterModel: OPENROUTER_DEFAULT_MODEL,
+  claudeKey: "",
+  claudeModel: CLAUDE_DEFAULT_MODEL,
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -213,7 +218,30 @@ function fillSettingsForm() {
   fillOpenRouterModels([{ id: settings.openrouterModel, name: settings.openrouterModel }]);
   $("#or-key").value = settings.openrouterKey;
   showOpenRouterStatus();
+  const claudeSelect = $("#claude-model");
+  claudeSelect.replaceChildren(...CLAUDE_MODELS.map((m) => el("option", { value: m.id }, m.label)));
+  if (!CLAUDE_MODELS.some((m) => m.id === settings.claudeModel)) claudeSelect.append(el("option", { value: settings.claudeModel }, settings.claudeModel));
+  claudeSelect.value = settings.claudeModel;
+  $("#claude-key").value = settings.claudeKey;
   checkKeyFormat();
+  checkClaudeKey();
+}
+
+function checkClaudeKey() {
+  const key = $("#claude-key").value.trim();
+  const hint = $("#claude-key-hint");
+  if (key && !CLAUDE_KEY_PATTERN.test(key)) {
+    hint.className = "small warn";
+    hint.textContent = "Das sieht nicht wie ein Claude-API-Key aus (beginnt mit „sk-ant-“). Du kannst es trotzdem versuchen.";
+  } else {
+    hint.className = "small muted";
+    hint.replaceChildren(
+      key ? "✔ Key eingetragen. " : "Noch kein Key. ",
+      "Erstellen unter ",
+      el("a", { href: "https://platform.claude.com/settings/keys", target: "_blank", rel: "noopener" }, "platform.claude.com → API Keys"),
+      " (Anleitung unten). Der Key bleibt in deinem Browser und geht nur direkt an Anthropic.",
+    );
+  }
 }
 
 function checkKeyFormat() {
@@ -234,8 +262,13 @@ function checkKeyFormat() {
   }
 }
 
+/** What is written to storage: API keys only when the visitor wants them remembered. */
+const storedSettings = () => ({
+  ...settings, apiKey: settings.remember ? settings.apiKey : "", claudeKey: settings.remember ? settings.claudeKey : "",
+});
+
 function persist() {
-  storageSet({ ...settings, apiKey: settings.remember ? settings.apiKey : "" });
+  storageSet(storedSettings());
   updateStatusChip();
 }
 
@@ -258,7 +291,37 @@ function applyProvider(provider) {
   note.hidden = provider !== "ollama";
   note.textContent = `Die KI läuft auf deinem PC (${settings.ollamaModel} über ${settings.ollamaUrl}) – unbegrenzt und kostenlos. ` +
     "Der PC muss eingeschaltet sein und das Ortfinder-Startskript laufen.";
+  const claudeNote = $("#claude-note");
+  claudeNote.hidden = provider !== "claude";
+  claudeNote.textContent = settings.claudeKey
+    ? `Claude (${settings.claudeModel}) mit deinem eigenen API-Key – Anthropic rechnet jede Analyse über dein Guthaben ab.`
+    : "Für Claude fehlt noch dein API-Key: unter ⚙ eintragen (die Anleitung dort zeigt Schritt für Schritt, wie du ihn bekommst).";
   showKeyBar(provider === "gemini" && !settings.apiKey);
+  renderGuide(provider);
+}
+
+// ---------- step-by-step guides ----------
+
+function renderGuide(provider = $("#provider").value) {
+  const guide = GUIDES[provider];
+  const box = $("#guide");
+  if (!guide) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  state.guideDevice ??= detectDevice();
+  const device = state.guideDevice;
+  $("#guide-title").textContent = `📖 Anleitung Schritt für Schritt: ${guide.title}`;
+  $("#guide-tabs").replaceChildren(...DEVICES.map((d) => el("button", {
+    type: "button", role: "tab", class: d.id === device ? "tab active" : "tab", "aria-selected": String(d.id === device),
+    onclick: () => {
+      state.guideDevice = d.id;
+      renderGuide(provider);
+    },
+  }, d.label)));
+  $("#guide-body").replaceChildren(...guideNodes(provider, device));
+  $("#guide-link").href = `anleitung.html#${provider}/${device}`;
 }
 
 // ---------- OpenRouter ----------
@@ -426,7 +489,7 @@ function applyLinkSettings() {
   settings.ollamaUrl = normalizeOllamaUrl(ki);
   if (params.get("modell")) settings.ollamaModel = params.get("modell");
   if (params.get("handy")) settings.tunnelUrl = normalizeOllamaUrl(params.get("handy"));
-  storageSet({ ...settings, apiKey: settings.remember ? settings.apiKey : "" });
+  storageSet(storedSettings());
   history.replaceState(null, "", location.pathname + location.search);
   state.openPhoneQr = Boolean(params.get("handy"));
 }
@@ -440,6 +503,8 @@ function saveSettings() {
   settings.tunnelUrl = $("#tunnel-url").value.trim() ? normalizeOllamaUrl($("#tunnel-url").value) : "";
   settings.openrouterModel = $("#or-model").value || settings.openrouterModel;
   settings.openrouterKey = $("#or-key").value.trim();
+  settings.claudeModel = $("#claude-model").value || settings.claudeModel;
+  settings.claudeKey = $("#claude-key").value.trim();
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
@@ -477,6 +542,9 @@ function updateStatusChip() {
   } else if (settings.provider === "ollama") {
     chip.textContent = `⚙ ${settings.ollamaModel} · auf deinem PC, unbegrenzt`;
     chip.className = "chip ok";
+  } else if (settings.provider === "claude") {
+    chip.textContent = settings.claudeKey ? `⚙ ${settings.claudeModel} · eigener Claude-Key` : "⚙ Claude: API-Key fehlt";
+    chip.className = settings.claudeKey ? "chip ok" : "chip";
   } else if (settings.apiKey) {
     chip.textContent = `⚙ ${settings.model} · ${settings.webSearch ? "mit Google-Suche" : "ohne Websuche"}`;
     chip.className = "chip ok";
@@ -503,6 +571,12 @@ function setupSettings() {
   });
   if (settings.provider === "openrouter") loadOpenRouterModels();
   $("#ollama-check").addEventListener("click", checkOllama);
+  $("#claude-key").addEventListener("input", checkClaudeKey);
+  $("#claude-key-visibility").addEventListener("click", () => {
+    const input = $("#claude-key");
+    input.type = input.type === "password" ? "text" : "password";
+    $("#claude-key-visibility").textContent = input.type === "password" ? "Zeigen" : "Verbergen";
+  });
   $("#tunnel-url").addEventListener("input", renderPhoneQr);
   $("#ollama-model").addEventListener("change", renderPhoneQr);
   if (state.openPhoneQr) {
@@ -634,8 +708,8 @@ function buildIntro(image, metadata) {
   return parts.join("\n\n");
 }
 
-const PROVIDER_MODEL = { puter: "puterModel", ollama: "ollamaModel", openrouter: "openrouterModel", gemini: "model" };
-const PROVIDER_SUFFIX = { puter: " (Puter)", ollama: " (eigener PC)", openrouter: " (OpenRouter)", gemini: "" };
+const PROVIDER_MODEL = { puter: "puterModel", ollama: "ollamaModel", openrouter: "openrouterModel", claude: "claudeModel", gemini: "model" };
+const PROVIDER_SUFFIX = { puter: " (Puter)", ollama: " (eigener PC)", openrouter: " (OpenRouter)", claude: "", gemini: "" };
 const modelName = (cfg) => cfg[PROVIDER_MODEL[cfg.provider] || "model"];
 const modelLabel = (cfg) => `${modelName(cfg)}${PROVIDER_SUFFIX[cfg.provider] ?? ""}`;
 
@@ -644,6 +718,7 @@ const runConfig = () => ({
   provider: settings.provider, puterModel: settings.puterModel, model: settings.model, thinking: settings.thinking,
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
   ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx, openrouterModel: settings.openrouterModel,
+  claudeModel: settings.claudeModel,
 });
 
 // Plain JSON copy: what AI services return may carry helper functions that IndexedDB cannot store.
@@ -669,6 +744,8 @@ function createAgent(cfg, common) {
     }
     case "ollama":
       return new OllamaAgent({ baseUrl: cfg.ollamaUrl, model: cfg.ollamaModel, numCtx: cfg.ollamaCtx, ...common });
+    case "claude":
+      return new ClaudeAgent({ apiKey: settings.claudeKey, model: cfg.claudeModel || CLAUDE_DEFAULT_MODEL, ...common });
     default:
       return new GeminiAgent({ apiKey: settings.apiKey, model: cfg.model, thinkingLevel: cfg.thinking, webSearch: cfg.webSearch, ...common });
   }
@@ -758,9 +835,13 @@ async function analyze(file, resumed = null) {
     if (cfg.useAI && cfg.provider === "gemini" && !settings.apiKey) {
       emit("warning", { message: "Für die KI-Bildanalyse mit Gemini fehlt noch der API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet. Tipp: Unter ⚙ „Puter“ wählen – kostenlos und ohne Key." });
       showKeyBar(true, true);
+    } else if (cfg.useAI && cfg.provider === "claude" && !settings.claudeKey) {
+      emit("warning", { message: "Für Claude fehlt noch dein API-Key. Unter ⚙ eintragen – die Anleitung dort zeigt, wie du ihn bekommst. Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet." });
+      showSettings(true);
+      $("#claude-key").focus();
     } else if (cfg.useAI) {
       const openrouter = cfg.provider === "openrouter";
-      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : "";
+      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : cfg.provider === "claude" ? " (Anthropic)" : "";
       if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName(cfg)}${where} …` });
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
       let fallbacks = [];
