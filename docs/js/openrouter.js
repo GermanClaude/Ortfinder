@@ -18,8 +18,11 @@ export const OPENROUTER_PREFERRED = [
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 ];
 
+// OpenRouter accepts at most 3 models per request ("'models' array must have 3 items or fewer").
+const MAX_MODELS = 3;
+
 /** Up to `max` other free models to fall back on; only models OpenRouter currently lists, if known. */
-export function fallbackModels(chosen, available = null, max = 3) {
+export function fallbackModels(chosen, available = null, max = MAX_MODELS - 1) {
   const pool = [...OPENROUTER_PREFERRED, ...(available || [])];
   return [...new Set(pool)].filter((id) => id !== chosen && (!available || available.includes(id))).slice(0, max);
 }
@@ -69,7 +72,7 @@ export function openRouterChat({ key, fetchImpl = globalThis.fetch.bind(globalTh
     const resp = await fetchImpl(`${OPENROUTER_API}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "X-Title": "Ortfinder" },
-      body: JSON.stringify({ model, ...(fallbacks.length ? { models: [model, ...fallbacks] } : {}), messages, tools, tool_choice: "auto" }),
+      body: JSON.stringify({ model, ...(fallbacks.length ? { models: [model, ...fallbacks].slice(0, MAX_MODELS) } : {}), messages, tools, tool_choice: "auto" }),
       signal,
     });
     const data = await resp.json().catch(() => ({}));
@@ -119,6 +122,9 @@ export function describeOpenRouterError(err) {
         "die kostenlosen Modelle erlauben (deren Anbieter dürfen Eingaben ggf. speichern) – oder einen anderen Anbieter wählen.",
       { code: "POLICY" },
     );
+  }
+  if (status === 400 && /'?models'? array/i.test(raw)) {
+    return new PuterError(`OpenRouter hat die Modell-Liste abgelehnt (${message.slice(0, 160)}). Bitte die Seite neu laden.`, { code: "MODEL" });
   }
   if (status === 404 || /no endpoints|not a valid model|tool use|image input/i.test(raw)) {
     return new PuterError(`Dieses Modell ist gerade nicht verfügbar oder kann keine Bilder/Werkzeuge (${message.slice(0, 160)}). Unter ⚙ ein anderes wählen.`, { code: "MODEL" });

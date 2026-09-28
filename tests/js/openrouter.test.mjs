@@ -37,7 +37,9 @@ test("only free models with image input and tool use are offered, the default fi
 });
 
 test("fallback models: preferred order, never the chosen one, only models OpenRouter lists", () => {
-  assert.deepEqual(fallbackModels("qwen/qwen3.8-27b:free"), ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"]);
+  // OpenRouter allows 3 models per request: the chosen one plus 2 fallbacks.
+  assert.deepEqual(fallbackModels("qwen/qwen3.8-27b:free"), ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free"]);
+  assert.deepEqual(fallbackModels("google/gemma-4-26b-a4b-it:free"), ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"]);
   assert.deepEqual(fallbackModels("google/gemma-4-31b-it:free", ["google/gemma-4-31b-it:free", "qwen/qwen3.8-27b:free", "new/vision:free"]), ["qwen/qwen3.8-27b:free", "new/vision:free"]);
   assert.deepEqual(fallbackModels("a:free", []), []);
 });
@@ -54,6 +56,15 @@ test("chat requests name fallback models, report the model used and keep Retry-A
   });
   await chat([], { model: "a:free", tools: [] });
   assert.deepEqual([seen[0].model, seen[0].models], ["a:free", ["a:free", "b:free", "c:free"]]);
+  const many = openRouterChat({
+    key: "k", fallbacks: ["b:free", "c:free", "d:free", "e:free"],
+    fetchImpl: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      return Response.json({ choices: [{ message: { role: "assistant", content: "ok" } }] });
+    },
+  });
+  await many([], { model: "a:free", tools: [] });
+  assert.equal(seen[1].models.length, 3, "never more than OpenRouter's limit of 3 models");
   assert.deepEqual(used, ["b:free"]);
   const busy = openRouterChat({ key: "k", fetchImpl: async () => Response.json({ error: { code: 429, message: "Provider returned error" } }, { status: 429, headers: { "retry-after": "7" } }) });
   await assert.rejects(busy([], { model: "a:free" }), (err) => err.retryAfterMs === 7000);
