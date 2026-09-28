@@ -203,6 +203,24 @@ Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/inte
 **zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;
 dafür wird der Verlauf bei jeder Runde vollständig mitgeschickt.
 
+### OpenRouter: kostenlose Modelle, auch nur mit dem Handy
+
+Wenn Puter und Gemini aufgebraucht sind und kein PC da ist: Unter ⚙ „OpenRouter“ wählen. Beim ersten Foto
+auf **„Bei OpenRouter anmelden (kostenlos)“** tippen, mit Google, GitHub oder E-Mail anmelden (ohne
+Kreditkarte), fertig. Man landet wieder in Ortfinder, und die Analyse des gewählten Fotos startet von selbst.
+Ortfinder erhält dabei per [OAuth mit PKCE](https://openrouter.ai/docs/use-cases/oauth-pkce) einen eigenen
+Schlüssel für dein Konto (nur in deinem Browser gespeichert, bei OpenRouter jederzeit löschbar).
+
+- **Kostenlose Modelle** mit Bildverständnis und Werkzeugen, z.B. Gemma 4 31B (Standard) oder Qwen 3.8 27B.
+  Die Liste unter ⚙ kommt live von OpenRouter.
+- **Limit:** zusammen 50 Anfragen am Tag (20 pro Minute), also etwa 5–8 Analysen. Danach meldet Ortfinder
+  das Tageslimit; am nächsten Tag geht es weiter.
+- Um mobile Daten zu sparen, gehen nur die jeweils neuesten 8 Bilder mit (das Foto selbst immer).
+- **Datenschutz:** Die kostenlosen Modelle laufen bei wechselnden Anbietern, die Eingaben unter Umständen
+  speichern dürfen. Keine privaten Fotos anderer hochladen. Lässt OpenRouter die Gratis-Modelle wegen der
+  Datenschutz-Einstellungen nicht zu, unter [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy)
+  erlauben.
+
 ### Eigener PC (Ollama): unbegrenzt und für immer kostenlos, auch fürs Handy
 
 Jeder kostenlose Cloud-Dienst hat Tages- oder Monatsgrenzen, und die Anbieter ändern sie immer wieder.
@@ -275,6 +293,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
   js/ollama-agent.js  Agent für Ollama auf dem eigenen PC (native Chat-API, Streaming)
+  js/openrouter.js    OpenRouter: kostenlose Modelle, Anmeldung per OAuth/PKCE
   ki/                 Startskripte für Ollama (+ Cloudflare-Tunnel fürs Handy)
   sw.js               Service Worker nur für die Fertig-Benachrichtigung (speichert nichts)
   vendor/             Leaflet, exifr, heic2any (mit Lizenzen), kein CDN nötig

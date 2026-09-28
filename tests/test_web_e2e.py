@@ -616,3 +616,65 @@ def test_own_pc_ollama_provider_and_phone_link(browser, site_url, tmp_path):
     assert not phone.is_visible("#settings")
     assert errors == []
     context.close()
+
+
+def test_openrouter_sign_in_on_the_phone_then_the_analysis_starts(browser, site_url, tmp_path):
+    """Phone only, other quotas used up: sign in at OpenRouter (free models), come back, the photo is analysed."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
+    context.add_init_script("if (!localStorage.getItem('ortfinder.settings.v1')) localStorage.setItem('ortfinder.settings.v1', JSON.stringify({provider: 'openrouter'}));")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    exchanges: list[dict] = []
+    chats: list[dict] = []
+    cors = {"Access-Control-Allow-Origin": "*"}
+
+    def openrouter(route):
+        url = route.request.url
+        if "/auth?" in url:
+            # OpenRouter's login page: after signing in it sends the user back with a code.
+            callback = url.split("callback_url=")[1].split("&")[0]
+            from urllib.parse import unquote
+            route.fulfill(status=302, headers={"Location": unquote(callback) + "?code=code-from-openrouter"})
+        elif url.endswith("/api/v1/auth/keys"):
+            exchanges.append(json.loads(route.request.post_data))
+            route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"key": "sk-or-v1-phone"}))
+        elif url.endswith("/api/v1/models"):
+            route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"data": [
+                {"id": "google/gemma-4-31b-it:free", "name": "Google: Gemma 4 31B (free)", "pricing": {"prompt": "0", "completion": "0"},
+                 "architecture": {"input_modalities": ["text", "image"]}, "supported_parameters": ["tools"]},
+            ]}))
+        elif url.endswith("/api/v1/chat/completions"):
+            chats.append({"auth": route.request.headers.get("authorization"), "body": json.loads(route.request.post_data)})
+            route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"choices": [{"message": {
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "submit_result", "arguments": json.dumps(SUBMISSION)}}],
+            }, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3000, "completion_tokens": 200}}))
+        else:
+            route.fulfill(status=404, headers=cors, body="")
+
+    page.route("https://openrouter.ai/**", openrouter)
+    page.goto(site_url)
+    assert page.is_visible("#openrouter-note") and "einmalig an" in page.text_content("#openrouter-note")
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector("#or-signin-run", timeout=20000)
+    assert chats == []
+    page.click("#or-signin-run")  # → openrouter.ai → back with ?code=…
+
+    page.wait_for_selector(".answer", timeout=30000)
+    assert "?code=" not in page.url
+    assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
+    assert "(OpenRouter)" in page.text_content("#result")
+    assert len(exchanges) == 1 and exchanges[0]["code"] == "code-from-openrouter" and exchanges[0]["code_challenge_method"] == "S256"
+    assert len(chats) == 1 and chats[0]["auth"] == "Bearer sk-or-v1-phone"
+    assert chats[0]["body"]["model"] == "google/gemma-4-31b-it:free"
+    first_user = chats[0]["body"]["messages"][1]["content"]
+    assert [p["type"] for p in first_user][:3] == ["text", "image_url", "image_url"], "the photo survived the sign-in redirect"
+    assert "kostenlos über OpenRouter" in page.text_content("#settings-toggle")
+    stored = page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1'))")
+    assert stored["openrouterKey"] == "sk-or-v1-phone" and stored["provider"] == "openrouter"
+    assert errors == []
+    context.close()
