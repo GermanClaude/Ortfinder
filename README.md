@@ -100,7 +100,22 @@ und zum erkannten Gerät).
      Boden: Jeder Bildpunkt wird als Sichtstrahl bis zum Geländemodell verfolgt und das Ergebnis neben das
      Luftbild desselben Ausschnitts gelegt (gleiches Raster, Norden oben). Liegen Wege, Feldgrenzen und
      Gebäudefüße deckungsgleich, stimmt die Pose. Dächer, Bäume und Masten erscheinen dabei nach hinten
-     verlängert, weil sie über dem Boden liegen.
+     verlängert, weil sie über dem Boden liegen;
+   - **Bergkamm-Abgleich wie PeakFinder** (`skyline_match`), sobald Berge oder Hügel vor dem Himmel zu
+     sehen sind: Ortfinder findet im Foto die Linie, an der der Himmel endet, und vergleicht sie mit dem
+     Horizont, den das Geländemodell vom Standpunkt aus zeigt: bis 200 km weit, mit Erdkrümmung,
+     Lichtbrechung und exakter Geodäsie (WGS84). Weil diese Silhouette praktisch ein Fingerabdruck ist,
+     findet die Suche auch ohne Vorgabe rundum die richtige Blickrichtung und legt Richtung, Neigung,
+     Schieflage und Bildwinkel auf Zehntelgrade fest, jeweils mit Fehlerangabe. Sie prüft den Standpunkt oder
+     sucht ihn in einem Umkreis, denn nahe Kämme verschieben sich gegen ferne, wenn die Kamera wandert.
+     Außerdem benennt sie jeden sichtbaren Gipfel mit Höhe, Entfernung und Richtung. Die Namen kommen aus
+     OpenStreetMap, ersatzweise aus Wikidata; Gipfel ohne Namen liefert das Geländemodell. Das Foto kommt
+     beschriftet zurück: roter Geländehorizont, weiße Kämme davor, Gipfelnamen. Im Ergebnis stehen
+     zusätzlich eine Gipfeltabelle und Linien zu den Gipfeln auf der Karte. Ohne KI-Aufruf lässt sich das
+     für jedes Ergebnis per Knopf „⛰ Gipfel beschriften“ nachholen.
+     **Zusammen mit dem Rückwärtsschnitt** wird es genau: `solve_camera` nutzt den Bergkamm danach
+     automatisch mit. Ferne Kämme halten dann Richtung, Neigung und Bildwinkel fest, sodass 3–5
+     Bodenpunkte reichen, um Standpunkt und Höhe aufs Haus genau zu bestimmen.
 
    Einen Radius von 50 m oder weniger gibt die KI nur an, wenn mindestens zwei unabhängige Merkmale am
    Punkt bestätigt sind, 20 m oder weniger nur, wenn der 3D-Nachbau zum Foto passt. Auf der Ergebniskarte
@@ -122,6 +137,13 @@ und zum erkannten Gerät).
    weltweite Höhenmodell dort etwa 8 m über der amtlichen Höhe, deshalb ist der Standpunkt nur auf etwa
    ±30 m genau. In der Draufsicht lagen Maisfeld, Hof und Häuser deckungsgleich auf dem Luftbild, und die
    Bergkämme im 3D-Nachbau passten auf die Berge im Foto.
+   Der Bergkamm-Abgleich fand am selben Foto **ohne Richtungsvorgabe** rundum die Blickrichtung 82° (die
+   Bodenpunkte hatten 81,5° ergeben) und benannte die Gipfel am Kamm in 5–9 km Entfernung. Er war sich zu
+   99 % sicher; die nächstbeste Richtung passte klar schlechter. Den Standpunkt bestätigte er, konnte ihn aber allein nur auf
+   ±375 m eingrenzen. Die Kämme sind nah, und das freie Geländemodell weicht an diesen Felsgraten um
+   50–80 m ab. Gemeinsam mit den 8 Bodenpunkten lagen 99 % der Himmelslinie auf dem Geländehorizont, die
+   Punkte passten noch etwas besser (1,08 % statt 1,17 %), und der Bildwinkel ergab sich zu 32°. Das ist
+   typisch für die Hauptkamera im 20:9-Vollbildmodus.
 
    **Aus der Datei:** Die Brennweite (Kleinbild-äquivalent) ergibt den exakten Bildwinkel, eine
    gespeicherte Kompassrichtung die Blickrichtung. Beides fließt in die Analyse und den Sichtbereich ein.
@@ -132,8 +154,8 @@ und zum erkannten Gerät).
    **Warum nicht Google Earth?** Google Earth hat keine Schnittstelle, die eine Website frei nutzen darf.
    Googles fotorealistische 3D-Kacheln und Street View gibt es nur mit kostenpflichtigem API-Key samt
    Abrechnung, und der ließe sich in einer öffentlichen Website nicht verbergen. Ortfinder nutzt deshalb
-   freie Quellen: Luftbilder von Esri (World Imagery), 3D-Gebäude aus OpenStreetMap und das
-   Mapzen-Geländemodell (AWS Open Data).
+   freie Quellen: Luftbilder von Esri (World Imagery), 3D-Gebäude und Gipfel aus OpenStreetMap (Gipfel
+   ersatzweise aus Wikidata) und das Mapzen-Geländemodell (AWS Open Data).
 
    Am Ende steht ein strukturiertes Ergebnis: Standpunkt der Kamera und Motiv mit Koordinaten,
    Blickrichtung, Unsicherheitsradius und Konfidenz, Alternativen, alle Hinweise (im Bild markiert und
@@ -163,8 +185,8 @@ Entscheidung braucht:
   machen würden. Dort sorgt Prompt-Caching dafür, dass Wiederholungen nur ein Zehntel kosten.
 
 Gemessen an einer typischen Analyse (Test `tests/js/token-budget.test.mjs`, derselbe Ablauf mit echten
-Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **61–66 % weniger Tokens**
-(z.B. Gemini 225 000 → 77 000) und eine Anfrage weniger; bei Claude sinken die abgerechneten Tokens um
+Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **60–65 % weniger Tokens**
+(z.B. Gemini 225 000 → 79 000) und eine Anfrage weniger; bei Claude sinken die abgerechneten Tokens um
 14 %, gegenüber den Rohdaten spart der Cache dort rund 75 %.
 
 ## Was realistisch ist
@@ -179,6 +201,16 @@ Ortsinformation enthalten (weiße Wand, Nahaufnahme einer Blume).
 | Straßenszene ohne lesbaren Text | meist Stadt oder Ortsteil |
 | Landschaft/Stadt ohne Text, aber mit typischer Architektur und Vegetation | meist Land, oft Region |
 | Innenraum, Baum vor neutralem Hintergrund, Nahaufnahme | eher Land oder Region, manchmal gar nichts |
+| Berge/Hügel vor Himmel (Bergkamm-Abgleich) | Blickrichtung auf ~0,1–0,5°, Gipfel benannt; Standpunkt allein aus dem Kamm nur auf einige hundert Meter bis Kilometer |
+| Berge **und** erkennbarer Boden (Häuser, Wege, Felder) | Standpunkt meist auf 10–30 m, oft das Haus |
+
+**Zu „mindestens 90 % Wahrscheinlichkeit“:** Der Bergkamm-Abgleich nennt, wie sicher die Berge richtig
+zugeordnet sind. Bei einer klaren Silhouette mit Gipfeln und Einschnitten liegt das meist über 90 %
+(im Test oben 99 %). Das gilt für Blickrichtung und Gegend. Für das exakte Haus braucht es zusätzlich
+nahe Details, die im Luftbild wiederzufinden sind. Den Radius legt die KI deshalb ehrlich fest und
+verkleinert ihn erst, wenn Draufsicht und Rückwärtsschnitt passen. Harte Grenzen sind das freie
+Geländemodell (an steilen Graten 20–100 m daneben, abseits der USA meist SRTM-Daten) und Wolken oder
+Dunst auf dem Kamm.
 
 Ortfinder gibt deshalb immer einen **Unsicherheitsradius** und eine **Konfidenz** an, statt Präzision
 vorzutäuschen. Tipp: WhatsApp, Instagram & Co. entfernen die GPS-Daten. Für den Wow-Effekt am besten
@@ -381,7 +413,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/mapview.js       Luftbild-/Kartenausschnitte für die KI (Esri World Imagery, OSM-Kacheln)
   js/scene3d.js       3D-Nachbau aus OSM-Gebäuden + Gelände, exakter Sichtbereich (Sichtstrahlen)
   js/groundview.js    Sichtstrahlen je Bildpunkt: Foto als Draufsicht, Luftbild über dem Gelände (Luftbild-3D)
-  js/resection.js     Rückwärtsschnitt: Kamerapose aus Punktpaaren Foto ↔ Karte (Levenberg–Marquardt)
+  js/resection.js     Rückwärtsschnitt: Kamerapose aus Punktpaaren Foto ↔ Karte (Levenberg–Marquardt), optional mit Bergkamm
+  js/skyline.js       Bergkamm-Abgleich (wie PeakFinder): Himmelslinie im Foto, Geländehorizont bis 200 km, Pose, Gipfelnamen
   js/compact.js       kleine Anfragen: frühere Bilder/Ergebnisse als kurze Hinweise, Kacheln nur in Runde 1
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund

@@ -14,6 +14,7 @@ import json
 import math
 import os
 import threading
+import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -424,7 +425,7 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     assert "Zwischenstand: Südbaden" in page.text_content("#log")
     calls = page.evaluate("window.__puterCalls")
     assert len(calls) == 2
-    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 15}
+    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 16}
     first_user = calls[0]["messages"][1]["content"]
     assert first_user[1]["type"] == "image_url" and first_user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     roles = [m["role"] for m in calls[1]["messages"]]
@@ -817,7 +818,7 @@ def test_claude_provider_with_own_api_key(browser, site_url, tmp_path):
     body = first["body"]
     assert body["model"] == "claude-opus-5" and body["stream"] is True and body["fallbacks"] == "default"
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-    assert len(body["tools"]) == 15 and all(t["eager_input_streaming"] for t in body["tools"])
+    assert len(body["tools"]) == 16 and all(t["eager_input_streaming"] for t in body["tools"])
     first_user = body["messages"][0]["content"]
     assert [b["type"] for b in first_user][:2] == ["text", "image"]
     assert first_user[1]["source"]["media_type"] == "image/jpeg"
@@ -943,5 +944,180 @@ def test_gemini_daily_limit_continues_with_the_next_free_model(browser, site_url
     page.set_input_files("#file", str(street))
     page.wait_for_function("document.querySelectorAll('.answer').length > 0 && document.querySelector('#log').textContent.includes('Fertig')", timeout=30000)
     assert models == ["gemini-3.7-flash"]
+    assert errors == []
+    context.close()
+
+
+# ---------- mountain skyline (PeakFinder-like) ----------
+
+MOUNTAIN_CAMERA = (46.40, 9.10)
+# Synthetic mountains around the camera: azimuth °, distance m, summit m, width m, name.
+MOUNTAINS = [(70, 6000, 2400, 1500, "Testhorn"), (86, 9000, 3000, 2000, "Grosser Probestock"), (101, 5000, 2000, 1000, "Kleines Musterhorn"),
+             (116, 15000, 3500, 3000, "Beispielspitz"), (250, 7000, 2600, 1800, "Hinterberg")]
+MOUNTAIN_BASE = 600.0
+
+
+def _mountain_xy():
+    lat0, _ = MOUNTAIN_CAMERA
+    kx = 111195.0 * math.cos(math.radians(lat0))
+    return [(d * math.sin(math.radians(az)), d * math.cos(math.radians(az)), h, w, name) for az, d, h, w, name in MOUNTAINS], kx
+
+
+def _mountain_elevation(lat, lon):
+    peaks, kx = _mountain_xy()
+    e = (lon - MOUNTAIN_CAMERA[1]) * kx
+    n = (lat - MOUNTAIN_CAMERA[0]) * 111195.0
+    z = MOUNTAIN_BASE
+    for pe, pn, h, w, _ in peaks:
+        d2 = ((e - pe) ** 2 + (n - pn) ** 2) / (w * w)
+        if d2 < 25:
+            z += (h - MOUNTAIN_BASE) * math.exp(-d2)
+    return z
+
+
+def _mountain_tile(z, x, y, cache={}):
+    """Terrarium tile of the synthetic mountains (tiles far from them are flat)."""
+    if (z, x, y) in cache:
+        return cache[(z, x, y)]
+    n = 2 ** z
+    lon_of = lambda px: px / (256 * n) * 360 - 180
+    lat_of = lambda py: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * py / (256 * n)))))
+    lats = [lat_of(y * 256 + j + 0.5) for j in range(256)]
+    lons = [lon_of(x * 256 + i + 0.5) for i in range(256)]
+    peaks, kx = _mountain_xy()
+    near = any(
+        abs((lons[0] + lons[-1]) / 2 - MOUNTAIN_CAMERA[1]) * kx - abs(lons[-1] - lons[0]) * kx / 2 < abs(pe) + 5 * w
+        and abs((lats[0] + lats[-1]) / 2 - MOUNTAIN_CAMERA[0]) * 111195 - abs(lats[-1] - lats[0]) * 111195 / 2 < abs(pn) + 5 * w
+        for pe, pn, _, w, _ in peaks
+    )
+    img = Image.new("RGB", (256, 256))
+    if near:
+        px = img.load()
+        for j, la in enumerate(lats):
+            for i, lo in enumerate(lons):
+                v = _mountain_elevation(la, lo) + 32768
+                px[i, j] = (int(v // 256), int(v % 256), int((v % 1) * 256))
+    else:
+        v = MOUNTAIN_BASE + 32768
+        img.paste((int(v // 256), int(v % 256), 0), (0, 0, 256, 256))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    cache[(z, x, y)] = buf.getvalue()
+    return cache[(z, x, y)]
+
+
+def _mountain_peaks_json():
+    lat0, lon0 = MOUNTAIN_CAMERA
+    peaks, kx = _mountain_xy()
+    elements = []
+    for i, (pe, pn, _, _, name) in enumerate(peaks):
+        lat, lon = lat0 + pn / 111195.0, lon0 + pe / kx
+        elements.append({"type": "node", "id": 900 + i, "lat": lat, "lon": lon, "tags": {"natural": "peak", "name": name, "ele": str(round(_mountain_elevation(lat, lon)))}})
+    return {"elements": elements}
+
+
+def test_mountain_skyline_names_the_peaks(browser, site_url, tmp_path):
+    """skyline_match: the photo's sky line against the terrain horizon – direction, field of view and peak names."""
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(GEMINI_SETTINGS)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    overpass_queries: list[str] = []
+
+    def tile(route):
+        z, x, y = (int(v) for v in route.request.url.split("?")[0].removesuffix(".png").rsplit("/", 3)[-3:])
+        route.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=_mountain_tile(z, x, y))
+
+    def overpass(route):
+        overpass_queries.append(route.request.post_data or "")
+        route.fulfill(status=200, content_type="application/json", headers={"Access-Control-Allow-Origin": "*"}, body=json.dumps(_mountain_peaks_json()))
+
+    page.route("https://s3.amazonaws.com/elevation-tiles-prod/**", tile)
+    page.route("**/api/interpreter", overpass)
+    page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
+    page.route("https://server.arcgisonline.com/**", lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=PNG_1X1))
+    page.goto(site_url)
+
+    # The photo: rendered from the same terrain model, looking at 88° with a 50° field of view, tilted up 3°.
+    truth = {"bearing": 88, "pitch": 3, "roll": 0, "fov": 50}
+    data_url = page.evaluate("""async ({ lat, lon, pose }) => {
+      const { Terrain } = await import('./js/terrain.js');
+      const sk = await import('./js/skyline.js');
+      const { makeCamera } = await import('./js/scene3d.js');
+      const terrain = new Terrain();
+      const dem = await sk.buildDem(terrain, { lat, lon, levels: sk.DEM_FINE, sector: { center: pose.bearing, half: 40 }, shiftM: 0, maxDistM: 60000 });
+      const h = sk.traceHorizon(dem, { eyeZ: dem.height(0, 0) + 1.6, az0: pose.bearing - 40, count: 1601, stepDeg: 0.05, maxDistM: 60000 });
+      const W = 1200, H = 800;
+      const cam = makeCamera({ bearingDeg: pose.bearing, pitchDeg: pose.pitch, rollDeg: pose.roll, fovDeg: pose.fov, width: W, height: H });
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const ctx = c.getContext('2d'); const img = ctx.createImageData(W, H);
+      let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const a = (x + 0.5 - W / 2) / cam.fpx, b = (H / 2 - y - 0.5) / cam.fpx;
+        const d = [0, 1, 2].map((i) => cam.f[i] + a * cam.r[i] + b * cam.u[i]);
+        const hz = sk.horizonAt(h, Math.atan2(d[0], d[1]) * 180 / Math.PI);
+        const sky = !hz || Math.atan2(d[2], Math.hypot(d[0], d[1])) * 180 / Math.PI > hz.el;
+        const i = (y * W + x) * 4, t = y / H;
+        const col = sky ? [90 + 90 * t, 140 + 60 * t, 235] : [60 + 40 * rnd(), 95 + 40 * rnd(), 55 + 30 * rnd()];
+        img.data.set([...col, 255], i);
+      }
+      ctx.putImageData(img, 0, 0);
+      return c.toDataURL('image/jpeg', 0.92);
+    }""", {"lat": MOUNTAIN_CAMERA[0], "lon": MOUNTAIN_CAMERA[1], "pose": truth})
+    photo = tmp_path / "berge.jpg"
+    photo.write_bytes(base64.b64decode(data_url.split(",")[1]))
+
+    bodies: list[dict] = []
+    script = [
+        _interaction([{"type": "function_call", "id": "s1", "name": "skyline_match", "arguments": {
+            "camera_lat": MOUNTAIN_CAMERA[0], "camera_lon": MOUNTAIN_CAMERA[1], "fov_deg": 55, "purpose": "Bergkette benennen"}}]),
+        _interaction([{"type": "function_call", "id": "s2", "name": "submit_result", "arguments": {
+            **SUBMISSION, "summary": "Bergkamm eindeutig zugeordnet.", "city": "Testtal",
+            "camera": {"name": "Aussichtspunkt Testtal", "lat": MOUNTAIN_CAMERA[0], "lon": MOUNTAIN_CAMERA[1], "radius_km": 0.5, "confidence": 0.9},
+            "subject": {"name": "Grosser Probestock", "lat": 46.4056, "lon": 9.2171, "radius_km": 0.3},
+            "view": {"bearing_deg": 88, "fov_deg": 50, "distance_m": 9000, "pitch_deg": 3}, "clues": []}}]),
+    ]
+
+    def gemini(route):
+        bodies.append(json.loads(route.request.post_data))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(script.pop(0)))
+
+    page.route("https://generativelanguage.googleapis.com/**", gemini)
+    page.route("https://nominatim.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="application/json", headers={"Access-Control-Allow-Origin": "*"}, body="[]"))
+    page.set_input_files("#file", str(photo))
+    page.wait_for_selector(".answer", timeout=120000)
+
+    # What the AI got back: the pose (all-round search found the direction), the peaks and the labelled photo.
+    result = next(s for s in bodies[1]["input"] if s["type"] == "function_result" and s["name"] == "skyline_match")
+    assert "is_error" not in result, result["result"]
+    assert [b["type"] for b in result["result"]] == ["text", "image"]
+    out = json.loads(result["result"][0]["text"])
+    assert abs(out["view"]["bearing_deg"] - 88) < 0.5, out["view"]
+    assert abs(out["view"]["fov_deg"] - 50) < 1.5 and abs(out["view"]["pitch_deg"] - 3) < 0.5, out["view"]
+    assert out["match_confidence"] >= 0.9, out
+    names = [p["name"] for p in out["peaks"]]
+    assert {"Testhorn", "Grosser Probestock", "Kleines Musterhorn"} <= set(names), names
+    assert "Hinterberg" not in names  # behind the camera
+    probe = next(p for p in out["peaks"] if p["name"] == "Grosser Probestock")
+    assert abs(probe["km"] - 9.0) < 0.2 and abs(probe["bearing_deg"] - 86) < 0.3, probe
+    assert out["peak_names"] == "OpenStreetMap"
+    assert any('"natural"~' in urllib.parse.unquote_plus(q) for q in overpass_queries)
+    labelled = Image.open(io.BytesIO(base64.b64decode(result["result"][1]["data"])))
+    assert labelled.size[0] == 1200 and labelled.size[1] < 800  # cropped to the skyline band
+
+    # The user sees it too: log line, snapshot, and the peaks section in the result.
+    log = page.text_content("#log")
+    assert "Bergkamm-Abgleich: Blick 8" in log and "Grosser Probestock" in log
+    assert "Bergkamm: Bergkette benennen" in page.text_content(".zooms")
+    page.wait_for_selector("#skyline-slot table.peaks", timeout=30000)
+    table = page.text_content("#skyline-slot table.peaks")
+    assert "Grosser Probestock" in table and "9,0 km" in table
+    lines_before = page.locator("path.leaflet-interactive").count()
+    page.check("#skyline-slot input[type=checkbox]")
+    assert page.locator("path.leaflet-interactive").count() > lines_before
+    if os.environ.get("ORTFINDER_SHOTS"):
+        page.wait_for_timeout(1500)
+        page.locator("#skyline-slot").screenshot(path=os.path.join(os.environ["ORTFINDER_SHOTS"], "e2e-skyline.png"))
     assert errors == []
     context.close()

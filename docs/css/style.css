@@ -123,8 +123,13 @@ a { color: var(--accent); }
 .compare-slider { display: flex; align-items: center; gap: 8px; margin: 6px 0 2px; }
 .compare-slider input { flex: 1; }
 .compare-slider input[type="checkbox"] { flex: none; }
-#topview-slot { margin-top: 14px; }
+#topview-slot, #skyline-slot { margin-top: 14px; }
 .topview-img { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--border); }
+table.peaks { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin: 8px 0; }
+table.peaks th, table.peaks td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--border); }
+table.peaks th { color: var(--muted); font-weight: 600; }
+table.peaks tr.on-skyline td:first-child { font-weight: 600; }
+table.peaks td:nth-child(n+2) { white-space: nowrap; }
 
 .map-card { padding-bottom: 12px; }
 #map { height: 380px; border-radius: 10px; z-index: 0; }

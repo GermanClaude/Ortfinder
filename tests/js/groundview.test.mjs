@@ -72,12 +72,12 @@ test("the photo is laid flat: each map pixel takes the colour of the photo pixel
 });
 
 test("Mercator box, grid spacing and imagery zoom", () => {
-  const box = mercatorBox([[46.66, 7.85], [46.67, 7.87]], 500);
+  const box = mercatorBox([[46.4, 9.1], [46.41, 9.12]], 500);
   assert.equal(Math.max(box.width, box.height), 500);
   const [la, lo] = latLonFromWorldPixel(box.x0, box.y0, box.zoom);
-  assert.ok(Math.abs(la - 46.67) < 1e-6 && Math.abs(lo - 7.85) < 1e-6);
+  assert.ok(Math.abs(la - 46.41) < 1e-6 && Math.abs(lo - 9.1) < 1e-6);
   // The far corner moves by less than a pixel (the box has whole pixels).
-  assert.ok(Math.abs(box.bounds.south - 46.66) < 5e-5 && Math.abs(box.bounds.east - 7.87) < 5e-5);
+  assert.ok(Math.abs(box.bounds.south - 46.4) < 5e-5 && Math.abs(box.bounds.east - 9.12) < 5e-5);
   assert.deepEqual([gridSpacing(600), gridSpacing(1300), gridSpacing(90), gridSpacing(14000)], [100, 250, 20, 2500]);
   assert.equal(imageryZoom(46.7, 0.4), 18);
   assert.equal(imageryZoom(46.7, 0.01), 19, "never finer than the imagery exists");
