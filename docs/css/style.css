@@ -273,8 +273,21 @@ button.chip:hover { border-color: var(--accent); }
 .clue-desc { font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; hyphens: auto; }
 
 /* ---- provider-specific settings ---- */
-#settings[data-provider="puter"] .gemini-only { display: none !important; }
-#settings[data-provider="gemini"] .puter-only { display: none !important; }
+#settings:not([data-provider="gemini"]) .gemini-only,
+#settings:not([data-provider="puter"]) .puter-only,
+#settings:not([data-provider="ollama"]) .ollama-only { display: none !important; }
+.ollama-box { margin-top: 4px; }
+.ollama-box details { margin: 8px 0; }
+.ollama-box summary { cursor: pointer; font-weight: 600; }
+.ollama-box ol { margin: 6px 0; padding-left: 20px; }
+.ollama-box code { word-break: break-all; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap select { flex: 1; min-width: 0; }
+.qr { margin: 10px 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.qr img { width: 220px; height: 220px; image-rendering: pixelated; background: #fff; padding: 8px; border-radius: 8px; border: 1px solid var(--border); }
+.qr a { word-break: break-all; font-size: 0.8rem; }
+.status-ok { color: #12805c; }
+.status-bad { color: #c92a2a; }
 .puter-note { margin: 0; padding: 10px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); color: var(--muted); }
 .puter-note a { font-weight: 600; }
 .signin-box { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }

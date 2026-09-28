@@ -39,6 +39,7 @@
         <a href="https://puter.com" target="_blank" rel="noopener">Puter</a> an (Google, Microsoft, Apple oder E-Mail).
         Die KI läuft dann über dein eigenes, kostenloses Puter-Kontingent.
       </p>
+      <p id="ollama-note" class="puter-note small" hidden></p>
 
       <div id="key-bar" class="key-bar" hidden>
         <p class="key-title"><strong>Für eigene Fotos einmalig einen Gemini-API-Key eintragen</strong></p>
@@ -60,6 +61,26 @@
             <select id="provider">
               <option value="puter">Puter – kostenlos, ohne API-Key (empfohlen)</option>
               <option value="gemini">Google Gemini – eigener API-Key</option>
+              <option value="ollama">Eigener PC (Ollama) – unbegrenzt &amp; kostenlos, auch fürs Handy</option>
+            </select>
+          </div>
+          <div class="ollama-only">
+            <label for="ollama-url">Adresse der KI auf dem PC</label>
+            <input id="ollama-url" type="url" spellcheck="false" autocomplete="off" placeholder="http://localhost:11434">
+          </div>
+          <div class="ollama-only">
+            <label for="ollama-model">Modell</label>
+            <div class="row nowrap">
+              <select id="ollama-model"></select>
+              <button id="ollama-check" type="button" class="ghost">Verbindung prüfen</button>
+            </div>
+          </div>
+          <div class="ollama-only">
+            <label for="ollama-ctx">Gedächtnis (Kontext)</label>
+            <select id="ollama-ctx">
+              <option value="16384">16 000 Tokens (PC mit wenig Speicher)</option>
+              <option value="32768">32 000 Tokens (empfohlen)</option>
+              <option value="65536">64 000 Tokens (viel Grafik-/Arbeitsspeicher)</option>
             </select>
           </div>
           <div class="puter-only">
@@ -100,6 +121,53 @@
           Gemini: 3.8 Flash läuft auch im kostenlosen Tarif (20 Anfragen pro Tag); 3.1 Pro und die Google-Suche brauchen den bezahlten Tarif.
           Im kostenlosen Tarif darf Google die Eingaben zur Verbesserung seiner Produkte verwenden – dort keine privaten Fotos anderer hochladen.
         </p>
+        <div class="ollama-only ollama-box">
+          <p class="small">
+            Die KI läuft als offenes Modell auf deinem eigenen PC: <strong>ohne Limit, ohne Konto, für immer kostenlos</strong>,
+            und deine Fotos verlassen dein Zuhause nicht. Nötig ist ein PC oder Mac mit mindestens 16 GB Arbeitsspeicher, am besten
+            mit Grafikkarte oder Apple-Chip (dann meist 2–7 Minuten pro Analyse; ohne Grafikkarte deutlich länger).
+          </p>
+          <p id="ollama-status" class="small muted" role="status"></p>
+          <details id="ollama-help">
+            <summary>So richtest du es ein (einmalig, ca. 10 Minuten)</summary>
+            <ol class="small">
+              <li><a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> auf dem PC installieren
+                (kostenlos, Open Source, Windows/Mac/Linux).</li>
+              <li>Startskript herunterladen und starten:
+                <a href="ki/ortfinder-ki-windows.bat" download>für Windows</a> ·
+                <a href="ki/ortfinder-ki-mac-linux.sh" download>für Mac/Linux</a>
+                (im Terminal: <code>bash ortfinder-ki-mac-linux.sh</code>).
+                Es gibt Ortfinder für Ollama frei, lädt beim ersten Mal das Modell (Gemma 4, ca. 8 GB) und startet den Tunnel fürs Handy.
+                Warnt Windows („Unbekannter Herausgeber“): „Weitere Informationen“ → „Trotzdem ausführen“.</li>
+              <li>Hier auf „Verbindung prüfen“ klicken. Chrome fragt einmal, ob die Seite auf Apps auf diesem Gerät
+                zugreifen darf – erlauben. (Klappt es in Safari nicht: Chrome, Edge oder Firefox verwenden.)</li>
+            </ol>
+            <p class="small muted">
+              Ohne Skript: Umgebungsvariable <code>OLLAMA_ORIGINS=https://germanclaude.github.io</code> setzen, Ollama neu starten
+              und <code>ollama pull gemma4:12b</code> ausführen. Für schwächere PCs: <code>qwen3.5:4b</code>, für starke: <code>gemma4:26b</code>.
+            </p>
+          </details>
+          <details id="phone-help">
+            <summary>📱 Mit dem Handy nutzen</summary>
+            <p class="small">
+              Das Handy nutzt die KI deines PCs über einen kostenlosen, verschlüsselten Tunnel von Cloudflare – auch unterwegs,
+              solange der PC läuft und das Startskript offen ist.
+            </p>
+            <ol class="small">
+              <li>Einmalig am PC cloudflared installieren: Windows <code>winget install Cloudflare.cloudflared</code>,
+                Mac <code>brew install cloudflared</code>.</li>
+              <li>Startskript starten: Es zeigt die Tunnel-Adresse (<code>https://…trycloudflare.com</code>) und öffnet Ortfinder hier mit dem QR-Code.</li>
+              <li>QR-Code mit dem Handy scannen – das Handy ist verbunden.</li>
+            </ol>
+            <label for="tunnel-url">Tunnel-Adresse</label>
+            <input id="tunnel-url" type="url" spellcheck="false" autocomplete="off" placeholder="https://…trycloudflare.com">
+            <div id="phone-qr" class="qr" hidden></div>
+            <p class="small muted">
+              Wer diesen Link kennt, kann die KI deines PCs mitbenutzen, solange das Skript läuft – also nicht weitergeben.
+              Die Adresse ändert sich bei jedem Start.
+            </p>
+          </details>
+        </div>
         <div class="row end">
           <button id="save-settings" type="button" class="primary">Speichern</button>
         </div>

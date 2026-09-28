@@ -195,13 +195,58 @@ Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit erreicht, bric
 klaren Hinweis ab.
 
 **Tempo:** Große Fotos gehen gleich mit vier hochaufgelösten Detail-Kacheln an die KI, die Werkzeuge einer
-Runde laufen parallel, und die KI soll nach 2–4 Runden abgeben (höchstens 8, einstellbar unter ⚙).
+Runde laufen parallel, und die KI soll nach 3–7 Runden abgeben (höchstens 10, einstellbar unter ⚙).
 Standard-Denktiefe ist „mittel“; „hoch“ ist gründlicher, aber langsamer. Im bezahlten Tarif dauert eine
 Analyse so meist unter einer Minute; im kostenlosen bremst das Limit von 5 Anfragen pro Minute.
 
 Ortfinder ruft die [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)
 **zustandslos** auf (`store: false`). Die Bilder werden nicht als Unterhaltung bei Google gespeichert;
 dafür wird der Verlauf bei jeder Runde vollständig mitgeschickt.
+
+### Eigener PC (Ollama): unbegrenzt und für immer kostenlos, auch fürs Handy
+
+Jeder kostenlose Cloud-Dienst hat Tages- oder Monatsgrenzen, und die Anbieter ändern sie immer wieder.
+Wirklich unbegrenzt und dauerhaft kostenlos ist nur ein **offenes KI-Modell, das auf dem eigenen PC
+läuft**. Ortfinder nutzt dafür [Ollama](https://ollama.com) (Open Source, Windows/Mac/Linux): kein Konto,
+kein Limit, keine Kosten, und die Fotos verlassen dein Zuhause nicht.
+
+**Voraussetzungen:** PC oder Mac mit mindestens 16 GB Arbeitsspeicher, am besten mit Grafikkarte
+(ab 8 GB Grafikspeicher) oder Apple-Chip. Dann dauert eine Analyse meist 2–7 Minuten. Ohne Grafikkarte
+rechnet nur der Prozessor: Im Test brauchte `qwen3.5:4b` auf 4 Prozessorkernen rund 15 Minuten.
+
+| Modell | Download | für |
+|---|---|---|
+| `gemma4:12b` (Standard) | 7,6 GB | normale PCs mit 16 GB RAM |
+| `qwen3.5:4b` | 3,4 GB | schwächere PCs (schneller, weniger genau) |
+| `gemma4:26b`, `qwen3.5:27b` | 17–19 GB | starke PCs (genauer) |
+
+Alle können Bilder verstehen und Werkzeuge benutzen (zoomen, Karten, 3D-Nachbau). Ganz an Gemini kommen
+sie meist nicht heran, die Werkzeuge gleichen aber viel aus.
+
+**Einrichten (einmalig, ca. 10 Minuten):**
+
+1. [Ollama](https://ollama.com/download) installieren.
+2. Startskript herunterladen und starten: [Windows](docs/ki/ortfinder-ki-windows.bat) (Doppelklick) bzw.
+   [Mac/Linux](docs/ki/ortfinder-ki-mac-linux.sh) (`bash ortfinder-ki-mac-linux.sh`). Es startet Ollama mit
+   der Freigabe für Ortfinder (`OLLAMA_ORIGINS=https://germanclaude.github.io`), lädt beim ersten Mal das
+   Modell und öffnet Ortfinder. Anderes Modell: Modellname anhängen, z.B. `ortfinder-ki-windows.bat qwen3.5:4b`.
+   Windows warnt bei heruntergeladenen Skripten evtl. mit „Der Computer wurde durch Windows geschützt“:
+   „Weitere Informationen“ → „Trotzdem ausführen“. Das Skript ist kurz und im Klartext lesbar.
+3. In Ortfinder unter ⚙ „Eigener PC (Ollama)“ ist dann schon ausgewählt; „Verbindung prüfen“ zeigt die
+   installierten passenden Modelle. Chrome fragt beim ersten Mal, ob die Seite auf Apps auf diesem Gerät
+   zugreifen darf: erlauben. Klappt die Verbindung in Safari nicht, Chrome, Edge oder Firefox verwenden.
+
+**Mit dem Handy:** Einmalig am PC `cloudflared` installieren (Windows: `winget install Cloudflare.cloudflared`,
+Mac: `brew install cloudflared`). Dann öffnet das Startskript zusätzlich einen kostenlosen, verschlüsselten
+[Cloudflare-Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+(ohne Konto) und zeigt in Ortfinder einen **QR-Code**. Mit dem Handy scannen: Das Handy schickt die Fotos
+dann über den Tunnel an deinen PC, auch unterwegs, solange der PC läuft und das Skript offen ist. Die
+Tunnel-Adresse ändert sich bei jedem Start. Wer sie kennt, kann die KI deines PCs mitbenutzen, solange das
+Skript läuft, also nicht weitergeben.
+
+Technisch spricht Ortfinder die eigene Schnittstelle von Ollama an (`/api/chat` mit Streaming) und stellt
+das Kontextfenster pro Anfrage auf 32 000 Tokens (Ollama-Standard wären 4 096, zu wenig für Fotos).
+Ältere Zoom-Bilder werden aus dem Gesendeten entfernt, damit die Unterhaltung hineinpasst.
 
 ## Verantwortungsvoller Umgang
 
@@ -229,6 +274,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/scene3d.js       3D-Nachbau aus OSM-Gebäuden + Gelände, exakter Sichtbereich (Sichtstrahlen)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
+  js/ollama-agent.js  Agent für Ollama auf dem eigenen PC (native Chat-API, Streaming)
+  ki/                 Startskripte für Ollama (+ Cloudflare-Tunnel fürs Handy)
   sw.js               Service Worker nur für die Fertig-Benachrichtigung (speichert nichts)
   vendor/             Leaflet, exifr, heic2any (mit Lizenzen), kein CDN nötig
 tests/js/             Unit-Tests der Website (Node)
