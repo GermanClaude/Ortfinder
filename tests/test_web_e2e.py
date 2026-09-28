@@ -57,6 +57,14 @@ GEMINI_SCRIPT = [
         {"type": "function_call", "id": "c2b", "name": "mark_hypothesis", "arguments": {"label": "Vermutung: Südbaden", "camera_lat": 47.99, "camera_lon": 7.85, "radius_km": 30}},
         {"type": "function_call", "id": "c2c", "name": "map_view", "arguments": {"lat": 47.99, "lon": 7.85, "zoom": 18, "layer": "satellit", "purpose": "Kreuzung vergleichen"}},
         {"type": "function_call", "id": "c2d", "name": "render_view", "arguments": {"lat": 47.99, "lon": 7.85, "bearing_deg": 352, "fov_deg": 65, "purpose": "Straßenflucht prüfen"}},
+        {"type": "function_call", "id": "c2e", "name": "top_view", "arguments": {"camera_lat": 47.99, "camera_lon": 7.85, "bearing_deg": 352, "fov_deg": 65, "pitch_deg": -8, "eye_height_m": 6, "max_distance_m": 300, "purpose": "Straße von oben"}},
+        {"type": "function_call", "id": "c2f", "name": "solve_camera", "arguments": {"camera_lat": 47.99, "camera_lon": 7.85, "eye_height_m": 1.6, "points": [
+            {"x": 0.2, "y": 0.8, "lat": 47.99020, "lon": 7.84990, "label": "Bordstein links"},
+            {"x": 0.8, "y": 0.8, "lat": 47.99020, "lon": 7.85010, "label": "Bordstein rechts"},
+            {"x": 0.45, "y": 0.62, "lat": 47.99100, "lon": 7.84995, "label": "Laterne"},
+            {"x": 0.6, "y": 0.6, "lat": 47.99150, "lon": 7.85010, "label": "Hausecke"},
+        ]}},
+        {"type": "function_call", "id": "c2g", "name": "render_view", "arguments": {"lat": 47.99, "lon": 7.85, "bearing_deg": 352, "fov_deg": 65, "texture": "satellit", "purpose": "Luftbild-3D"}},
     ]),
     _interaction([{"type": "function_call", "id": "c3", "name": "submit_result", "arguments": SUBMISSION}]),
 ]
@@ -203,15 +211,26 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     answers = page.locator(".answer").all_text_contents()
     assert answers == ["Bahnhofstraße, Freiburg", "Martinstor"]  # standpoint and motif
     assert "Blick nach N" in page.text_content("#result")
-    assert page.locator(".zooms figure").count() == 3  # photo zoom, aerial view, 3D reconstruction
+    assert page.locator(".zooms figure").count() == 5  # photo zoom, aerial view, 3D reconstruction, top view, aerial 3D
     assert "Luftbild: Kreuzung vergleichen" in page.text_content(".zooms figure.mapview")
     assert "3D-Nachbau: Straßenflucht prüfen" in page.text_content(".zooms figure.render")
+    assert "Draufsicht: Straße von oben" in page.text_content(".zooms")
+    log_now = page.text_content("#log")
+    assert "Draufsicht: Foto auf das Gelände geklappt, Blick 352°" in log_now
+    assert "Rückwärtsschnitt aus 4 Punkten" in log_now
     # After the result: exact visible area on the map and the photo/3D overlay in the result card.
     page.wait_for_selector("#compare-slot .compare img.compare-render", timeout=30000)
     page.wait_for_function("document.querySelector('#log').textContent.includes('Sichtbereich berechnet')", timeout=30000)
     log_text = page.text_content("#log")
     assert "Geländemodell" in log_text and "sichtbar ab" in log_text
-    assert page.locator("#result .compare-slider input").count() == 1
+    assert page.locator("#compare-slot .compare-slider input").count() == 1
+    # The photo laid flat on the map (image overlay) with the side-by-side comparison.
+    page.wait_for_selector("#topview-slot img.topview-img", timeout=30000)
+    assert page.locator(".leaflet-image-layer").count() == 1
+    page.uncheck("#topview-toggle")
+    assert page.locator(".leaflet-image-layer").count() == 0
+    page.check("#topview-toggle")
+    assert page.locator(".leaflet-image-layer").count() == 1
     if os.environ.get("ORTFINDER_SHOTS"):
         page.wait_for_timeout(2500)
         page.screenshot(path=os.path.join(os.environ["ORTFINDER_SHOTS"], "e2e-result.png"), full_page=True)
@@ -244,6 +263,18 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     assert "Gebäude sichtbar" in render_text and "Boden am Standpunkt 278 m" in render_text, render_text
     render_image = Image.open(io.BytesIO(base64.b64decode(render_result["result"][1]["data"])))
     assert render_image.size == (768, 480)  # same aspect ratio as the 1600×1000 photo
+    top_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "top_view")
+    assert "is_error" not in top_result, top_result["result"]
+    top_text = top_result["result"][0]["text"]
+    assert "Draufsicht vom Standpunkt 47.990000, 7.850000" in top_text and "Links: das Foto auf den Boden projiziert" in top_text, top_text
+    top_image = Image.open(io.BytesIO(base64.b64decode(top_result["result"][1]["data"])))
+    assert top_image.size[0] > top_image.size[1]  # two panels side by side
+    solve_result = next(s for s in second["input"] if s["type"] == "function_result" and s["name"] == "solve_camera")
+    assert "is_error" not in solve_result, solve_result["result"]
+    solved = json.loads(solve_result["result"])
+    assert set(solved) >= {"camera", "view", "rms_pct_of_width", "points", "note"} and len(solved["points"]) == 4
+    draped = [s for s in second["input"] if s["type"] == "function_result" and s["name"] == "render_view"][1]
+    assert "Luftbild-3D" in draped["result"][0]["text"], draped["result"][0]["text"]
 
     # The key is remembered across reloads (localStorage).
     page.reload()
@@ -385,7 +416,7 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     assert "Zwischenstand: Südbaden" in page.text_content("#log")
     calls = page.evaluate("window.__puterCalls")
     assert len(calls) == 2
-    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 13}
+    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 15}
     first_user = calls[0]["messages"][1]["content"]
     assert first_user[1]["type"] == "image_url" and first_user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     roles = [m["role"] for m in calls[1]["messages"]]
@@ -778,7 +809,7 @@ def test_claude_provider_with_own_api_key(browser, site_url, tmp_path):
     body = first["body"]
     assert body["model"] == "claude-opus-5" and body["stream"] is True and body["fallbacks"] == "default"
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-    assert len(body["tools"]) == 13 and all(t["eager_input_streaming"] for t in body["tools"])
+    assert len(body["tools"]) == 15 and all(t["eager_input_streaming"] for t in body["tools"])
     first_user = body["messages"][0]["content"]
     assert [b["type"] for b in first_user][:3] == ["text", "image", "image"]
     assert first_user[1]["source"]["media_type"] == "image/jpeg"

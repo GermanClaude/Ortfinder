@@ -25,7 +25,7 @@ test("valid submissions are normalized", () => {
   const r = validateSubmission(raw);
   assert.equal(r.camera.confidence, 1);
   assert.deepEqual(r.subject, { name: "Martinstor", lat: 47.9925, lon: 7.8495, radius_km: 0.05 });
-  assert.deepEqual(r.view, { bearing_deg: 350, fov_deg: 65, distance_m: 280, eye_height_m: 1.6, pitch_deg: 0 });
+  assert.deepEqual(r.view, { bearing_deg: 350, fov_deg: 65, distance_m: 280, eye_height_m: 1.6, pitch_deg: 0, roll_deg: 0 });
   const high = structuredClone(VALID_SUBMISSION);
   high.view.eye_height_m = 45;
   high.view.pitch_deg = -120;
@@ -79,6 +79,27 @@ function executor({ withMapView = true } = {}) {
         return {
           data: "M0Q=", thumbnail: "data:image/jpeg;base64,M0Q=", note: "",
           stats: { buildings: 12, heights_from_osm_pct: 25, terrain: true, ground_m: 278, building_ahead_m: 41, skyline_distance_m: 5400 },
+        };
+      }
+      : undefined,
+    topView: withMapView
+      ? async (opts) => {
+        mapCalls.push({ top: opts });
+        if (opts.maxDistM < 50) return { empty: true, note: "In diesem Entfernungsbereich zeigt das Foto keinen Boden." };
+        return {
+          data: "VE9Q", thumbnail: "data:image/jpeg;base64,VE9Q",
+          stats: { covered_pct: 44, width_m: 674, height_m: 444, m_per_px: 1.05, grid_m: 200, nearest_m: 60, farthest_m: 650, terrain: true, ground_m: 626, imagery_tiles: 16 },
+        };
+      }
+      : undefined,
+    solveCamera: withMapView
+      ? async (opts) => {
+        mapCalls.push({ solve: opts });
+        return {
+          camera: { lat: 46.61992, lon: 7.90018, eye_height_m: 6.17, moved_m: 11.6 },
+          view: { bearing_deg: 81.42, pitch_deg: -4.32, roll_deg: 0.66, fov_deg: 36 },
+          points: opts.points.map((p, i) => ({ index: i + 1, error_px: i === 2 ? 90 : 8, error_pct: i === 2 ? 9.8 : 0.9 })),
+          rms_px: 10.8, rms_pct: 1.2, solved_position: false, geometry: { spreadDeg: 10, depthRatio: 2.8, strong: false },
         };
       }
       : undefined,
@@ -187,7 +208,7 @@ test("render_view normalises the camera and reports what the reconstruction show
   const { ex, mapCalls, events } = executor();
   const { result, isError } = await ex.run("render_view", { lat: 47.9925, lon: 7.8495, bearing_deg: -10, fov_deg: 200, purpose: "Kanten prüfen" });
   assert.equal(isError, false);
-  assert.deepEqual(mapCalls[0].render, { lat: 47.9925, lon: 7.8495, bearingDeg: 350, fovDeg: 150, eyeHeight: 1.6, pitchDeg: 0 });
+  assert.deepEqual(mapCalls[0].render, { lat: 47.9925, lon: 7.8495, bearingDeg: 350, fovDeg: 150, eyeHeight: 1.6, pitchDeg: 0, rollDeg: 0, texture: "modell" });
   assert.match(result[0].text, /12 Gebäude sichtbar \(Höhe bei 25 % aus OSM-Angaben/);
   assert.match(result[0].text, /Erstes Gebäude in Blickrichtung \(Bildmitte\): 41 m/);
   assert.match(result[0].text, /Horizont bis 5\.4 km/);
@@ -224,10 +245,62 @@ test("bearing_distance and destination_point are inverse", async () => {
 
 test("usage counters survive a resume, so limits still hold", async () => {
   const { ex } = executor();
-  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1 });
-  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1 });
+  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1, topView: 2 });
+  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1, topView: 2 });
   const r = await ex.run("zoom_image", { x_min: 0, y_min: 0, x_max: 0.5, y_max: 0.5, purpose: "" });
   assert.match(r.result, /Zoom-Limit/);
   ex.restoreCounts(undefined);
-  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0 });
+  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0, topView: 0 });
+});
+
+test("top_view: pose normalised, foreground hidden by default, result described for the AI", async () => {
+  const { ex, mapCalls, events } = executor();
+  const { result, isError } = await ex.run("top_view", {
+    camera_lat: 46.62, camera_lon: 7.9, bearing_deg: 441.4, fov_deg: 36, pitch_deg: -4.3, eye_height_m: 10, max_distance_m: 650, purpose: "Maisfeld",
+  });
+  assert.equal(isError, false);
+  assert.deepEqual(mapCalls[0].top, {
+    lat: 46.62, lon: 7.9, bearingDeg: 81.39999999999998, fovDeg: 36, pitchDeg: -4.3, rollDeg: 0, eyeHeight: 10,
+    minDistM: 25, maxDistM: 650, region: null, style: "nebeneinander",
+  });
+  assert.match(result[0].text, /Ausschnitt 674 × 444 m \(1.05 m pro Pixel\), Raster alle 200 m/);
+  assert.match(result[0].text, /Links: das Foto auf den Boden projiziert; rechts: Luftbild/);
+  assert.equal(result[1].data, "VE9Q");
+  assert.equal(events.at(-1)[0], "topview");
+  const region = await ex.run("top_view", { camera_lat: 46.62, camera_lon: 7.9, bearing_deg: 80, fov_deg: 36, photo_region: [0, 0.4, 1, 0.75], style: "ueberlagert" });
+  assert.deepEqual(mapCalls[1].top.region, [0, 0.4, 1, 0.75]);
+  assert.match(region.result[0].text, /Luftbild mit dem Foto zu 60 % darüber/);
+  const empty = await ex.run("top_view", { camera_lat: 46.62, camera_lon: 7.9, bearing_deg: 80, fov_deg: 36, min_distance_m: 0, max_distance_m: 30 });
+  assert.match(empty.result, /keinen Boden/);
+  assert.equal((await ex.run("top_view", { camera_lat: 46.62, camera_lon: 7.9, bearing_deg: 80, fov_deg: 36, min_distance_m: 500, max_distance_m: 400 })).isError, true);
+  assert.equal(ex.counts.topView, 2);
+});
+
+test("solve_camera: checks the points, reports the pose and flags a mismatched point", async () => {
+  const { ex, mapCalls, events } = executor();
+  const points = [
+    { x: 0.4, y: 0.647, lat: 46.62026, lon: 7.9031, label: "Giebelwand NW" },
+    { x: 0.53, y: 0.647, lat: 46.62011, lon: 7.9031, label: "Giebelwand SW" },
+    { x: 0.68, y: 0.604, lat: 46.627, lon: 7.9041, label: "Scheune SW", height_m: 0 },
+    { x: 0.5, y: 0.52, lat: 46.62084, lon: 7.9075, label: "Mais NO" },
+  ];
+  const { result, isError } = await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, eye_height_m: 10, points });
+  assert.equal(isError, false);
+  const out = JSON.parse(result);
+  assert.deepEqual(out.view, { bearing_deg: 81.4, pitch_deg: -4.3, roll_deg: 0.7, fov_deg: 36 });
+  assert.equal(out.camera.eye_height_m, 6.2);
+  assert.equal(out.rms_pct_of_width, 1.2);
+  assert.match(out.note, /Verdächtig: Scheune SW/);
+  assert.match(out.note, /Standpunkt festgehalten/);
+  assert.match(out.note, /top_view mit genau diesen Werten/);
+  assert.equal(mapCalls[0].solve.fixFov, false);
+  assert.equal(mapCalls[0].solve.positionSigmaM, 25);
+  assert.equal(events.at(-1)[0], "solve");
+  // Known focal length: kept fixed.
+  await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, fov_deg: 36, fov_fixed: true, points });
+  assert.equal(mapCalls[1].solve.fixFov, true);
+  // Bad input.
+  assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: points.slice(0, 2) })).result, /Mindestens 3/);
+  assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: [...points, { x: 1.4, y: 0.5, lat: 46.6, lon: 7.8 }] })).result, /'x' muss zwischen 0 und 1/);
+  assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: [...points.slice(0, 2), { x: 0.5, y: 0.5, lat: 48.1, lon: 11.5, label: "München" }] })).result, /über 60 km/);
 });

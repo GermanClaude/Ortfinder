@@ -88,7 +88,19 @@ und zum erkannten Gerät).
      Höhe), Straßen, Bäumen und einem Geländemodell entsteht ein perspektivisches Bild dessen, was eine
      Kamera an diesem Punkt mit dieser Blickrichtung sehen müsste, im Seitenverhältnis des Fotos und mit
      Kompassskala. Die KI vergleicht Gebäudekanten, Lücken, Straßenflucht und Horizont bzw. Bergsilhouette
-     mit dem Foto und verschiebt Standpunkt und Blickrichtung, bis beides deckungsgleich ist.
+     mit dem Foto und verschiebt Standpunkt und Blickrichtung, bis beides deckungsgleich ist. Mit
+     `texture: "satellit"` wird das **Luftbild über das Gelände gelegt** (wie Google Earth, Gebäude als
+     gelbe Drahtgitter): Feldmuster, Dachfarben, Wege und Bergkamm lassen sich direkt mit dem Foto vergleichen;
+   - **Seitenansicht → Draufsicht** (`solve_camera`, `top_view`), bei jedem Foto mit sichtbarem Boden:
+     Die KI ordnet 4–8 Punkte im Foto ihren Positionen im Luftbild zu, z.B. Hausecken am Boden, Kreuzungen
+     oder Feldecken (`map_view` hat dafür ein Meter-Raster und eine Umrechnungsformel). Der
+     **Rückwärtsschnitt** (Photogrammetrie, Levenberg–Marquardt) berechnet daraus Blickrichtung, Neigung,
+     Schieflage, Bildwinkel, Kamerahöhe und bei gut verteilten Punkten auch den Standpunkt. Er nennt den
+     Fehler je Punkt, sodass falsch zugeordnete Punkte auffallen. Danach klappt `top_view` das Foto auf den
+     Boden: Jeder Bildpunkt wird als Sichtstrahl bis zum Geländemodell verfolgt und das Ergebnis neben das
+     Luftbild desselben Ausschnitts gelegt (gleiches Raster, Norden oben). Liegen Wege, Feldgrenzen und
+     Gebäudefüße deckungsgleich, stimmt die Pose. Dächer, Bäume und Masten erscheinen dabei nach hinten
+     verlängert, weil sie über dem Boden liegen.
 
    Einen Radius von 50 m oder weniger gibt die KI nur an, wenn mindestens zwei unabhängige Merkmale am
    Punkt bestätigt sind, 20 m oder weniger nur, wenn der 3D-Nachbau zum Foto passt. Auf der Ergebniskarte
@@ -99,10 +111,23 @@ und zum erkannten Gerät).
    begrenzt vom Bildrahmen (auch nach unten, d.h. der Boden direkt vor den Füßen ist nicht im Bild),
    verdeckt von Gebäuden und Gelände (Hügelkuppen, Bergrücken, Erdkrümmung). Die Karte zeigt diese Fläche
    orange, die sichtbaren Fassaden rot. Im Ergebnis liegt der 3D-Nachbau vom Standpunkt über dem Foto
-   (Schieberegler zum Überblenden).
+   (Schieberegler zum Überblenden, Knopf „Luftbild-3D“). Darunter steht das Foto als Draufsicht neben dem
+   Luftbild. Auf der Karte liegt es als eigene Ebene über dem Luftbild, ein- und ausschaltbar und mit
+   Regler für die Deckkraft.
+
+   **Getestet an einem echten Foto** (Blick aus einem Obergeschoss am Hang über eine Talebene im Berner
+   Oberland, ohne EXIF-Daten): Aus 8 von Hand zugeordneten Punkten (Hof, Straße, Maisfeld-Ecken) fand der
+   Rückwärtsschnitt Blickrichtung, Neigung und Bildwinkel. Jeder Punkt lag im Mittel nur 1,1 % der
+   Bildbreite daneben. Den Standpunkt legte er rund 25 m neben das Gebäude. Grenze: Am Hang liegt das
+   weltweite Höhenmodell dort etwa 8 m über der amtlichen Höhe, deshalb ist der Standpunkt nur auf etwa
+   ±30 m genau. In der Draufsicht lagen Maisfeld, Hof und Häuser deckungsgleich auf dem Luftbild, und die
+   Bergkämme im 3D-Nachbau passten auf die Berge im Foto.
 
    **Aus der Datei:** Die Brennweite (Kleinbild-äquivalent) ergibt den exakten Bildwinkel, eine
    gespeicherte Kompassrichtung die Blickrichtung. Beides fließt in die Analyse und den Sichtbereich ein.
+   Fehlt die Brennweite (z.B. nach dem Versand per Messenger), schätzt Ortfinder den Bildwinkel der
+   Handy-Hauptkamera aus dem Seitenverhältnis, bei 9:20 hochkant etwa 36°. Der Rückwärtsschnitt bestimmt
+   ihn dann genau.
 
    **Warum nicht Google Earth?** Google Earth hat keine Schnittstelle, die eine Website frei nutzen darf.
    Googles fotorealistische 3D-Kacheln und Street View gibt es nur mit kostenpflichtigem API-Key samt
@@ -332,6 +357,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/geo.js           OpenStreetMap (Nominatim/Overpass), Umgebung, Straßenverlauf, Entfernungen, Sonnenstand
   js/mapview.js       Luftbild-/Kartenausschnitte für die KI (Esri World Imagery, OSM-Kacheln)
   js/scene3d.js       3D-Nachbau aus OSM-Gebäuden + Gelände, exakter Sichtbereich (Sichtstrahlen)
+  js/groundview.js    Sichtstrahlen je Bildpunkt: Foto als Draufsicht, Luftbild über dem Gelände (Luftbild-3D)
+  js/resection.js     Rückwärtsschnitt: Kamerapose aus Punktpaaren Foto ↔ Karte (Levenberg–Marquardt)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
   js/ollama-agent.js  Agent für Ollama auf dem eigenen PC (native Chat-API, Streaming)

@@ -100,7 +100,9 @@ export const FUNCTION_TOOLS = [
       "Seitenverhältnis des Fotos, mit Kompassskala oben. Vergleiche mit dem Foto: Gebäudekanten und -lücken, " +
       "Dachlinien, Straßenflucht, Horizont/Bergkamm. Passt es nicht, Standpunkt (±10–30 m) oder Blick (±5–10°) " +
       "ändern und erneut rendern – mehrere Varianten in EINER Runde parallel. Grenzen: keine Fenster/Fassaden-" +
-      "details, Dachformen flach, Gebäudehöhen teils geschätzt.",
+      "details, Dachformen flach, Gebäudehöhen teils geschätzt. texture \"satellit\" legt das LUFTBILD über das " +
+      "Gelände (wie Google Earth) und zeichnet Gebäude als gelbe Drahtgitter: ideal für Blicke über Felder, Dächer, " +
+      "Täler und Ortschaften – Feldgrenzen, Wege, Hofplätze und Dachfarben direkt mit dem Foto vergleichen.",
     parameters: obj({
       lat: { type: "number", description: "Standpunkt der Kamera" },
       lon: { type: "number" },
@@ -108,8 +110,69 @@ export const FUNCTION_TOOLS = [
       fov_deg: { type: "number", description: "horizontaler Bildwinkel in Grad (EXIF-Wert nutzen, falls angegeben)" },
       eye_height_m: { type: "number", description: "Kamerahöhe über Boden: 1.6 zu Fuß, 3–30 aus Fenster/Turm, 50–120 Drohne" },
       pitch_deg: { type: "number", description: "Neigung: 0 = waagrecht, negativ = nach unten" },
+      roll_deg: { type: "number", description: "Schieflage: positiv = Horizont steigt nach rechts an (meist 0)" },
+      texture: { type: "string", enum: ["modell", "satellit"], description: "modell (Standard) oder satellit (Luftbild über dem Gelände)" },
       purpose: { type: "string", description: "Was du prüfen willst" },
     }, ["lat", "lon", "bearing_deg", "fov_deg"]),
+  },
+  {
+    type: "function",
+    name: "top_view",
+    description:
+      "DRAUFSICHT: Klappt das Foto auf den Boden herunter – jeder Bildpunkt wird als Sichtstrahl bis zum Gelände " +
+      "verfolgt – und zeigt es NEBEN dem Luftbild desselben Ausschnitts: Norden oben, gleiches Raster (A, B, C … / 1, 2, 3 …) " +
+      "in beiden Hälften, roter Punkt = Standpunkt, gelbe Linien = linker und rechter Bildrand, Bögen = Entfernungen. " +
+      "Stimmt die Kamerapose, liegen Straßen, Wege, Feldgrenzen, Hofplätze, Bäume und Hausgrundrisse deckungsgleich – so " +
+      "prüfst du Standpunkt UND Blickrichtung auf wenige Meter. Alles über dem Boden (Dächer, Bäume, Masten) erscheint nach " +
+      "hinten verlängert; vergleiche deshalb vor allem Bodenlinien und Gebäudefüße. Verdreht gegenüber dem Luftbild → " +
+      "bearing_deg ändern; zu lang oder zu kurz gezogen → pitch_deg bzw. eye_height_m; seitlich versetzt → Standpunkt. " +
+      "Am schnellsten erst solve_camera, dann top_view mit dessen Werten. style \"ueberlagert\" legt beides übereinander.",
+    parameters: obj({
+      camera_lat: { type: "number", description: "Standpunkt der Kamera" },
+      camera_lon: { type: "number" },
+      bearing_deg: { type: "number", description: "Blickrichtung (Bildmitte), 0 = Nord, 90 = Ost" },
+      fov_deg: { type: "number", description: "horizontaler Bildwinkel (EXIF-Wert oder aus solve_camera)" },
+      pitch_deg: { type: "number", description: "Neigung, negativ = nach unten (entscheidend bei Blicken ins Tal)" },
+      roll_deg: { type: "number", description: "Schieflage, meist 0" },
+      eye_height_m: { type: "number", description: "Kamerahöhe über Boden (Fenster im 3. Stock ≈ 10)" },
+      min_distance_m: { type: "number", description: "Boden erst ab dieser Entfernung zeigen (Vordergrund wie Fensterbank/Dach ausblenden)" },
+      max_distance_m: { type: "number", description: "bis zu dieser Entfernung (Standard 1500; kleiner = schärfer)" },
+      photo_region: { type: "array", items: { type: "number" }, description: "Optional: nur diesen Bildteil verwenden [x_min, y_min, x_max, y_max] in 0-1" },
+      style: { type: "string", enum: ["nebeneinander", "ueberlagert"] },
+      purpose: { type: "string", description: "Was du prüfen willst" },
+    }, ["camera_lat", "camera_lon", "bearing_deg", "fov_deg"]),
+  },
+  {
+    type: "function",
+    name: "solve_camera",
+    description:
+      "RÜCKWÄRTSSCHNITT (Photogrammetrie): Berechnet aus 4–8 Punkten, die du im Foto UND auf Luftbild/Karte eindeutig " +
+      "wiedererkennst, die exakte Kamerapose – Blickrichtung, Neigung, Schieflage, Bildwinkel, Kamerahöhe und bei gut " +
+      "verteilten Punkten (über 25° breit, nah und fern gemischt) auch den Standpunkt selbst. Gute Punkte liegen am BODEN: " +
+      "Hausecken am Boden, Weg- und Straßenkreuzungen, Feldecken, Mast- und Baumfüße; oder mit bekannter Höhe über Boden " +
+      "(height_m, z.B. Dachtraufe ≈ 3 m je Stockwerk). Verteile sie über das Bild (links/rechts, nah/fern). Die Antwort " +
+      "nennt den Fehler je Punkt: Ein Punkt mit großem Fehler ist vermutlich falsch zugeordnet – korrigieren oder weglassen " +
+      "und erneut rechnen. Koordinaten: aus map_view (Umrechnung steht in dessen Antwort), geocode oder overpass_query.",
+    parameters: obj({
+      camera_lat: { type: "number", description: "vermuteter Standpunkt" },
+      camera_lon: { type: "number" },
+      eye_height_m: { type: "number", description: "geschätzte Kamerahöhe über Boden" },
+      fov_deg: { type: "number", description: "Optional: bekannter Bildwinkel (EXIF); mit fov_fixed: true festhalten" },
+      fov_fixed: { type: "boolean" },
+      position_uncertainty_m: { type: "number", description: "wie weit der Standpunkt sich verschieben darf (Standard 25)" },
+      points: {
+        type: "array",
+        description: "Punktpaare Foto ↔ Karte",
+        items: obj({
+          x: { type: "number", description: "Position im Foto 0-1 (links → rechts)" },
+          y: { type: "number", description: "Position im Foto 0-1 (oben → unten)" },
+          lat: { type: "number" },
+          lon: { type: "number" },
+          height_m: { type: "number", description: "Höhe des Punktes über dem Boden (0 = am Boden)" },
+          label: { type: "string", description: "was der Punkt ist" },
+        }, ["x", "y", "lat", "lon"]),
+      },
+    }, ["camera_lat", "camera_lon", "points"]),
   },
   {
     type: "function",
@@ -201,6 +264,7 @@ export const FUNCTION_TOOLS = [
         distance_m: { type: "number", description: "Entfernung Kamera → Motiv in Metern" },
         eye_height_m: { type: "number", description: "Kamerahöhe über Boden (1.6 zu Fuß, mehr aus Fenster/Turm/Drohne)" },
         pitch_deg: { type: "number", description: "Neigung der Kamera, 0 = waagrecht, negativ = nach unten" },
+        roll_deg: { type: "number", description: "Schieflage (aus solve_camera), meist 0" },
       }, ["bearing_deg", "fov_deg", "distance_m"]),
       candidates: {
         type: "array",
@@ -242,6 +306,14 @@ function str(inp, key, required = true) {
   if (typeof v !== "string") throw new ToolInputError(`'${key}' muss ein Text sein`);
   if (required && !v.trim()) throw new ToolInputError(`'${key}' darf nicht leer sein`);
   return v;
+}
+
+/** "nach Nordosten" etc. for an offset in metres east/north. */
+function direction(east, north) {
+  if (Math.hypot(east, north) < 0.5) return "(unverändert)";
+  const names = ["Norden", "Nordosten", "Osten", "Südosten", "Süden", "Südwesten", "Westen", "Nordwesten"];
+  const deg = ((Math.atan2(east, north) * 180) / Math.PI + 360) % 360;
+  return `nach ${names[Math.round(deg / 45) % 8]}`;
 }
 
 const clamp01 = (v) => (typeof v === "number" && Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0);
@@ -312,6 +384,7 @@ export function validateSubmission(inp) {
       distance_m: Math.round(Math.min(dist, 200000)),
       eye_height_m: Number.isFinite(v.eye_height_m) ? Math.round(Math.min(Math.max(v.eye_height_m, 0.3), 3000) * 10) / 10 : 1.6,
       pitch_deg: Number.isFinite(v.pitch_deg) ? Math.round(Math.min(Math.max(v.pitch_deg, -90), 60) * 10) / 10 : 0,
+      roll_deg: Number.isFinite(v.roll_deg) ? Math.round(Math.min(Math.max(v.roll_deg, -45), 45) * 10) / 10 : 0,
     };
   }
   for (const clue of Array.isArray(inp.clues) ? inp.clues : []) {
@@ -343,10 +416,16 @@ function parseUtc(value) {
  */
 export class ToolExecutor {
   // Stateless requests resend every crop, so the total is capped to stay well below request size limits.
-  constructor({ zoom, mapView, renderView, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12, maxRenders = 12 }) {
+  constructor({
+    zoom, mapView, renderView, topView, solveCamera, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12, maxRenders = 12, maxTopViews = 10,
+  }) {
     this.zoom = zoom;
     this.mapView = mapView;
     this.renderView = renderView;
+    this.topView = topView;
+    this.solveCamera = solveCamera;
+    this.maxTopViews = maxTopViews;
+    this.topViewCount = 0;
     this.osm = osm;
     this.emit = emit;
     this.maxZooms = maxZooms;
@@ -359,13 +438,14 @@ export class ToolExecutor {
 
   /** Usage counters, saved with a checkpoint so limits still hold after resuming. */
   get counts() {
-    return { zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount };
+    return { zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount, topView: this.topViewCount };
   }
 
-  restoreCounts({ zoom = 0, mapView = 0, render = 0 } = {}) {
+  restoreCounts({ zoom = 0, mapView = 0, render = 0, topView = 0 } = {}) {
     this.zoomCount = zoom;
     this.mapViewCount = mapView;
     this.renderCount = render;
+    this.topViewCount = topView;
   }
 
   /** Returns { result, isError } where result is a string or an array of text/image content blocks. */
@@ -430,9 +510,17 @@ export class ToolExecutor {
     const view = await this.mapView(opts);
     this.mapViewCount += 1;
     this.emit("mapview", { lat, lon, zoom, layer, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    // Exact position of anything visible in the image, e.g. for solve_camera.
+    const degN = view.metersPerPixel / 111195;
+    const degE = view.metersPerPixel / (111195 * Math.cos((lat * Math.PI) / 180));
+    const half = view.width / 2;
     const info =
       `${layer === "satellit" ? "Luftbild" : "Karte"} um ${lat.toFixed(6)}, ${lon.toFixed(6)} (rotes Kreuz), Zoom ${zoom}: ` +
       `${Math.round(view.spanM)} m breit, ${view.metersPerPixel.toFixed(2)} m pro Pixel, Norden oben.` +
+      (view.gridM ? ` Gitter alle ${view.gridM} m, beschriftet in Metern Ost (O) / Nord (N) ab dem Kreuz.` : "") +
+      ` Koordinaten eines Bildpunkts (px, py) im ${view.width}×${view.height}-Bild: lat = ${lat.toFixed(6)} − (py − ${half})·${degN.toExponential(4)}, ` +
+      `lon = ${lon.toFixed(6)} + (px − ${half})·${degE.toExponential(4)}; oder per Gitter: 1 m Nord = ${(1 / 111195).toExponential(4)}°, ` +
+      `1 m Ost = ${(degE / view.metersPerPixel).toExponential(4)}°.` +
       (opts.view ? ` Oranger Keil = Sichtfeld ${Math.round(opts.view.bearing_deg)}° ± ${Math.round(opts.view.fov_deg / 2)}°.` : "");
     return [{ type: "text", text: info }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
   }
@@ -447,20 +535,108 @@ export class ToolExecutor {
       fovDeg: Math.min(Math.max(num(args, "fov_deg"), 5), 150),
       eyeHeight: Number.isFinite(args.eye_height_m) ? Math.min(Math.max(args.eye_height_m, 0.3), 3000) : 1.6,
       pitchDeg: Number.isFinite(args.pitch_deg) ? Math.min(Math.max(args.pitch_deg, -89), 60) : 0,
+      rollDeg: Number.isFinite(args.roll_deg) ? Math.min(Math.max(args.roll_deg, -45), 45) : 0,
+      texture: args.texture === "satellit" ? "satellit" : "modell",
     };
     const view = await this.renderView(opts);
     this.renderCount += 1;
     this.emit("render", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
     const s = view.stats;
     const parts = [
-      `3D-Nachbau vom Standpunkt ${opts.lat.toFixed(6)}, ${opts.lon.toFixed(6)} (Augenhöhe ${opts.eyeHeight} m), ` +
-        `Blick ${Math.round(opts.bearingDeg)}°, Bildfeld ${Math.round(opts.fovDeg)}°, Neigung ${opts.pitchDeg}°.`,
+      `${s.texture === "satellit" ? "Luftbild-3D (Luftbild über dem Gelände, Gebäude als gelbe Drahtgitter)" : "3D-Nachbau"} ` +
+        `vom Standpunkt ${opts.lat.toFixed(6)}, ${opts.lon.toFixed(6)} (Augenhöhe ${opts.eyeHeight} m), ` +
+        `Blick ${Math.round(opts.bearingDeg)}°, Bildfeld ${Math.round(opts.fovDeg)}°, Neigung ${opts.pitchDeg}°${opts.rollDeg ? `, Schieflage ${opts.rollDeg}°` : ""}.`,
       s.buildings ? `${s.buildings} Gebäude sichtbar (Höhe bei ${s.heights_from_osm_pct} % aus OSM-Angaben, sonst geschätzt).` : "Keine Gebäude in OSM im Blickfeld.",
       s.building_ahead_m != null ? `Erstes Gebäude in Blickrichtung (Bildmitte): ${s.building_ahead_m} m.` : "",
       s.terrain ? `Geländemodell: Boden am Standpunkt ${s.ground_m} m ü. NN, Horizont bis ${Math.round(s.skyline_distance_m / 100) / 10} km.` : "Geländemodell nicht verfügbar – Boden flach angenommen.",
       view.note || "",
     ];
     return [{ type: "text", text: parts.filter(Boolean).join(" ") }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
+  }
+
+  async tool_top_view(args) {
+    if (!this.topView) throw new ToolInputError("Die Draufsicht ist in dieser Umgebung nicht verfügbar");
+    if (this.topViewCount >= this.maxTopViews) throw new ToolInputError(`Limit für Draufsichten (${this.maxTopViews}) erreicht`);
+    const opt = (key, lo, hi, fallback) => (Number.isFinite(args[key]) ? Math.min(Math.max(args[key], lo), hi) : fallback);
+    const eyeHeight = opt("eye_height_m", 0.3, 3000, 1.6);
+    const opts = {
+      lat: num(args, "camera_lat", -85, 85),
+      lon: num(args, "camera_lon", -180, 180),
+      bearingDeg: ((num(args, "bearing_deg") % 360) + 360) % 360,
+      fovDeg: Math.min(Math.max(num(args, "fov_deg"), 5), 150),
+      pitchDeg: opt("pitch_deg", -89, 60, 0),
+      rollDeg: opt("roll_deg", -45, 45, 0),
+      eyeHeight,
+      // Right below a window or roof the photo mostly shows the building itself, not the ground.
+      minDistM: opt("min_distance_m", 0, 20000, Math.max(8, eyeHeight * 2.5)),
+      maxDistM: opt("max_distance_m", 20, 20000, 1500),
+      region: Array.isArray(args.photo_region) && args.photo_region.length === 4 ? normalizeBox(...args.photo_region) : null,
+      style: args.style === "ueberlagert" ? "ueberlagert" : "nebeneinander",
+    };
+    if (opts.maxDistM <= opts.minDistM + 5) throw new ToolInputError("max_distance_m muss deutlich größer als min_distance_m sein");
+    if (opts.region && (opts.region[2] - opts.region[0] < 0.02 || opts.region[3] - opts.region[1] < 0.02)) {
+      throw new ToolInputError("photo_region ist zu klein");
+    }
+    const view = await this.topView(opts);
+    if (view.empty) return view.note;
+    this.topViewCount += 1;
+    this.emit("topview", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    const s = view.stats;
+    const text = [
+      `Draufsicht vom Standpunkt ${opts.lat.toFixed(6)}, ${opts.lon.toFixed(6)} (Augenhöhe ${opts.eyeHeight} m), Blick ${Math.round(opts.bearingDeg * 10) / 10}°, ` +
+        `Bildwinkel ${Math.round(opts.fovDeg * 10) / 10}°, Neigung ${opts.pitchDeg}°${opts.rollDeg ? `, Schieflage ${opts.rollDeg}°` : ""}.`,
+      `Ausschnitt ${s.width_m} × ${s.height_m} m (${s.m_per_px} m pro Pixel), Raster alle ${s.grid_m} m. Das Foto zeigt Boden von ${s.nearest_m} bis ${s.farthest_m} m ` +
+        `(${s.covered_pct} % der Fläche).`,
+      opts.style === "ueberlagert" ? "Luftbild mit dem Foto zu 60 % darüber." : "Links: das Foto auf den Boden projiziert; rechts: Luftbild desselben Ausschnitts.",
+      s.terrain ? `Geländemodell: Boden am Standpunkt ${s.ground_m} m ü. NN.` : "Geländemodell nicht verfügbar – Boden flach angenommen.",
+      s.imagery_tiles ? "" : "Luftbild nicht erreichbar.",
+    ];
+    return [{ type: "text", text: text.filter(Boolean).join(" ") }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
+  }
+
+  async tool_solve_camera(args) {
+    if (!this.solveCamera) throw new ToolInputError("Der Rückwärtsschnitt ist in dieser Umgebung nicht verfügbar");
+    if (!Array.isArray(args.points)) throw new ToolInputError("'points' muss eine Liste von Punktpaaren sein");
+    const points = args.points.slice(0, 20).map((p, i) => {
+      if (!p || typeof p !== "object") throw new ToolInputError(`Punkt ${i + 1} ist kein Objekt`);
+      return {
+        x: num(p, "x", 0, 1), y: num(p, "y", 0, 1), lat: num(p, "lat", -85, 85), lon: num(p, "lon", -180, 180),
+        height_m: Number.isFinite(p.height_m) ? Math.min(Math.max(p.height_m, -50), 1000) : 0,
+        label: typeof p.label === "string" ? p.label.slice(0, 80) : "",
+      };
+    });
+    if (points.length < 3) throw new ToolInputError("Mindestens 3 Punktpaare nötig (besser 4–8, über das Bild verteilt)");
+    const lat = num(args, "camera_lat", -85, 85);
+    const lon = num(args, "camera_lon", -180, 180);
+    const far = points.find((p) => haversineKm(lat, lon, p.lat, p.lon) > 60);
+    if (far) throw new ToolInputError(`Punkt „${far.label || "?"}“ liegt über 60 km vom Standpunkt entfernt – Koordinaten prüfen`);
+    const fovDeg = Number.isFinite(args.fov_deg) ? Math.min(Math.max(args.fov_deg, 5), 150) : null;
+    const sol = await this.solveCamera({
+      points, lat, lon,
+      eyeHeight: Number.isFinite(args.eye_height_m) ? Math.min(Math.max(args.eye_height_m, 0.3), 3000) : 1.6,
+      fovDeg, fixFov: Boolean(fovDeg && args.fov_fixed),
+      positionSigmaM: Number.isFinite(args.position_uncertainty_m) ? Math.min(Math.max(args.position_uncertainty_m, 2), 500) : 25,
+    });
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const bad = sol.points.filter((p) => p.error_pct == null || p.error_pct > Math.max(3, 2.5 * sol.rms_pct));
+    const out = {
+      camera: { lat: Math.round(sol.camera.lat * 1e6) / 1e6, lon: Math.round(sol.camera.lon * 1e6) / 1e6, eye_height_m: r1(sol.camera.eye_height_m), moved_m: r1(sol.camera.moved_m) },
+      view: { bearing_deg: r1(sol.view.bearing_deg), pitch_deg: r1(sol.view.pitch_deg), roll_deg: r1(sol.view.roll_deg), fov_deg: r1(sol.view.fov_deg) },
+      rms_pct_of_width: Math.round(sol.rms_pct * 100) / 100,
+      points: sol.points.map((p, i) => ({ label: points[i].label || `Punkt ${i + 1}`, error_pct: p.error_pct == null ? null : Math.round(p.error_pct * 100) / 100 })),
+      standpoint_solved: sol.solved_position,
+      note: [
+        sol.solved_position
+          ? `Standpunkt mitberechnet: ${Math.round(sol.camera.moved_m)} m ${direction(sol.camera.east_m ?? 0, sol.camera.north_m ?? 0)} vom angenommenen` +
+            (sol.position_by_fit ? " – nur weil die Punkte damit deutlich besser passen; übernimm das, wenn es zum Foto passt (z.B. anderes Fenster, anderer Gebäudeteil)." : ".")
+          : `Standpunkt festgehalten (Punkte ${Math.round(sol.geometry.spreadDeg)}° breit, Entfernungsverhältnis ${r1(sol.geometry.depthRatio)} – für den Standpunkt braucht es ≥5 Punkte, >25° breit, nah und fern gemischt).`,
+        bad.length ? `Verdächtig: ${bad.map((p) => sol.points.indexOf(p) + 1).map((n) => points[n - 1].label || `Punkt ${n}`).join(", ")} – vermutlich falsch zugeordnet.` : "",
+        sol.rms_pct < 1.5 ? "Gute Übereinstimmung." : sol.rms_pct < 4 ? "Mäßige Übereinstimmung – Punkte prüfen." : "Schlechte Übereinstimmung – Zuordnung oder Standpunkt falsch.",
+        "Nächster Schritt: top_view mit genau diesen Werten.",
+      ].filter(Boolean).join(" "),
+    };
+    this.emit("solve", { lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, rms_pct: out.rms_pct_of_width, points: points.length });
+    return JSON.stringify(out);
   }
 
   async tool_nearby_features(args) {
