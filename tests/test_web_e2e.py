@@ -644,12 +644,14 @@ def test_openrouter_sign_in_on_the_phone_then_the_analysis_starts(browser, site_
             route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"key": "sk-or-v1-phone"}))
         elif url.endswith("/api/v1/models"):
             route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"data": [
-                {"id": "google/gemma-4-31b-it:free", "name": "Google: Gemma 4 31B (free)", "pricing": {"prompt": "0", "completion": "0"},
-                 "architecture": {"input_modalities": ["text", "image"]}, "supported_parameters": ["tools"]},
+                {"id": model_id, "name": model_id, "pricing": {"prompt": "0", "completion": "0"},
+                 "architecture": {"input_modalities": ["text", "image"]}, "supported_parameters": ["tools"]}
+                for model_id in ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"]
             ]}))
         elif url.endswith("/api/v1/chat/completions"):
             chats.append({"auth": route.request.headers.get("authorization"), "body": json.loads(route.request.post_data)})
-            route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"choices": [{"message": {
+            # Qwen is overloaded, OpenRouter answered with the fallback model.
+            route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps({"model": "google/gemma-4-31b-it:free", "choices": [{"message": {
                 "role": "assistant", "content": None,
                 "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "submit_result", "arguments": json.dumps(SUBMISSION)}}],
             }, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3000, "completion_tokens": 200}}))
@@ -670,7 +672,9 @@ def test_openrouter_sign_in_on_the_phone_then_the_analysis_starts(browser, site_
     assert "(OpenRouter)" in page.text_content("#result")
     assert len(exchanges) == 1 and exchanges[0]["code"] == "code-from-openrouter" and exchanges[0]["code_challenge_method"] == "S256"
     assert len(chats) == 1 and chats[0]["auth"] == "Bearer sk-or-v1-phone"
-    assert chats[0]["body"]["model"] == "google/gemma-4-31b-it:free"
+    assert chats[0]["body"]["model"] == "qwen/qwen3.8-27b:free"
+    assert chats[0]["body"]["models"] == ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"], "fallback named in the request"
+    assert "OpenRouter hat auf google/gemma-4-31b-it:free ausgewichen" in page.text_content("#log")
     first_user = chats[0]["body"]["messages"][1]["content"]
     assert [p["type"] for p in first_user][:3] == ["text", "image_url", "image_url"], "the photo survived the sign-in redirect"
     assert "kostenlos über OpenRouter" in page.text_content("#settings-toggle")
