@@ -260,3 +260,11 @@ button.chip:hover { border-color: var(--accent); }
 .clue-noimg { aspect-ratio: 4 / 3; display: grid; place-items: center; color: var(--muted); font-size: 0.85rem; background: var(--accent-soft); }
 .clue-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
 .clue-desc { font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; hyphens: auto; }
+
+/* ---- provider-specific settings ---- */
+#settings[data-provider="puter"] .gemini-only { display: none !important; }
+#settings[data-provider="gemini"] .puter-only { display: none !important; }
+.puter-note { margin: 0; padding: 10px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); color: var(--muted); }
+.puter-note a { font-weight: 600; }
+.signin-box { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.signin-box p { margin: 0; }

@@ -5,7 +5,9 @@ Du gibst ein beliebiges Foto hinein, und das Programm versucht so genau wie mög
 herauszufinden, wo es entstanden ist, bis hin zur Straße oder zum Standpunkt.
 
 Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs)) und läuft direkt auf
-**GitHub Pages**, ganz ohne Server. Die KI-Analyse übernimmt **Google Gemini**.
+**GitHub Pages**, ganz ohne Server. Die KI-Analyse läuft **kostenlos und ohne API-Key über
+[Puter](https://puter.com)** (Standard: Gemini 3.8 Flash); wer möchte, kann stattdessen einen eigenen
+Google-Gemini-Key nutzen.
 
 ![Oberfläche mit simulierter KI-Antwort (Foto: R.kaelcke, Wikimedia Commons, CC BY-SA 4.0)](docs/screenshot.png)
 
@@ -13,8 +15,10 @@ Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs))
 
 **Direkt im Browser:** <https://germanclaude.github.io/Ortfinder/>
 
-1. Einmalig den Gemini-API-Key in das Feld unter dem Upload-Bereich eintragen (siehe unten).
-2. Ein Foto in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
+1. Ein Foto in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
+2. Beim allerersten Foto einmalig auf **„Bei Puter anmelden (kostenlos)“** klicken und mit Google, Microsoft,
+   Apple oder E-Mail anmelden. Danach läuft die Analyse automatisch weiter; beim nächsten Mal ist man
+   schon angemeldet.
 3. Live verfolgen, wohin die KI zoomt und was sie sucht. Ihre Zwischenstände erscheinen sofort auf der
    Karte, die von der Weltkarte aus immer weiter heranzoomt.
 4. Am Ende zeigt die Karte zwei Punkte:
@@ -90,7 +94,25 @@ Lokal ausprobieren geht auch: `python -m http.server -d docs 8000` und dann <htt
 öffnen. Die Seite muss über `http(s)://` geladen werden; ein Doppelklick auf `index.html` reicht wegen
 der JavaScript-Module nicht.
 
-## Gemini-API-Key
+## KI-Anbieter
+
+### Puter (Standard): kostenlos, ohne API-Key
+
+Ortfinder nutzt [Puter.js](https://docs.puter.com/) nach dem „User-Pays“-Prinzip: Jede Person meldet sich
+einmal kostenlos bei Puter an und nutzt ihr **eigenes kostenloses Monatskontingent**. Für dich als
+Betreiber entstehen keine Kosten, es gibt keinen Key im Code und keinen, der ablaufen oder gesperrt werden
+kann. Eine Analyse mit Gemini 3.8 Flash kostet grob 5–10 Cent aus diesem Kontingent, die sparsamen
+Modelle (unter ⚙ wählbar) deutlich weniger. Ist das Kontingent aufgebraucht, bietet Puter an, es
+aufzustocken; Ortfinder zeigt dann einen Hinweis.
+
+Warum kein fest eingebauter Key für alle? Ein Key im öffentlichen Code wird von Bots gefunden und
+missbraucht; Google, OpenAI & Co. sperren solche Keys automatisch. Außerdem teilen sich dann alle Besucher
+ein einziges Limit (bei Gemini kostenlos 20 Anfragen pro Tag), sodass es schon nach einer Analyse für alle
+anderen nicht mehr funktionieren würde.
+
+### Google Gemini mit eigenem API-Key (optional)
+
+Unter ⚙ „Google Gemini – eigener API-Key“ wählen. Dann:
 
 1. Key kostenlos erstellen: <https://aistudio.google.com/apikey>. Neue Gemini-Keys beginnen mit `AQ.`
    (ältere mit `AIza`). Eine 12-stellige Zahl ist eine Projektnummer, kein Key.
@@ -104,7 +126,7 @@ Empfehlung: In der [Google Cloud Console](https://console.cloud.google.com/apis/
 einschränken: *Application restrictions → Websites* auf `https://germanclaude.github.io/*` (und für
 lokale Tests `http://localhost:8000/*`), *API restrictions* auf die „Generative Language API“.
 
-### Tarife
+#### Gemini-Tarife
 
 | | Kostenloser Tarif | Bezahlter Tarif |
 |---|---|---|
@@ -143,7 +165,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   index.html
   css/style.css
   js/app.js           Oberfläche und Ablauf
-  js/agent.js         Gemini-Agent (Interactions API, Werkzeug-Schleife, Fehlerbehandlung)
+  js/puter-agent.js   Puter-Agent (Standard: kostenlos, ohne Key; OpenAI-Format mit Werkzeugen)
+  js/agent.js         Gemini-Agent (eigener Key; Interactions API, Werkzeug-Schleife, Fehlerbehandlung)
   js/tools.js         Werkzeuge + Ergebnis-Schema und -Prüfung
   js/prompt.js        Anweisungen an die KI
   js/imaging.js       Bild laden (inkl. HEIC), Zoom-Ausschnitte, Schärfen, Raster
