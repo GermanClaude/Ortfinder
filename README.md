@@ -218,7 +218,7 @@ Schlüssel für dein Konto (nur in deinem Browser gespeichert, bei OpenRouter je
 - **Kostenlose Modelle** mit Bildverständnis und Werkzeugen, z.B. Qwen 3.8 27B (Standard), Gemma 4 31B oder
   Gemma 4 26B. Die Liste unter ⚙ kommt live von OpenRouter.
 - **Überlastung:** Die Gratis-Kapazität eines Modells teilen sich alle OpenRouter-Nutzer, beliebte Modelle
-  sind deshalb oft kurz überlastet. Ortfinder nennt bei jeder Anfrage bis zu drei weitere Gratis-Modelle als
+  sind deshalb oft kurz überlastet. Ortfinder nennt bei jeder Anfrage bis zu zwei weitere Gratis-Modelle als
   Ersatz; OpenRouter weicht dann selbst aus (im Protokoll sichtbar). Sind alle belegt, wartet Ortfinder
   15, 30, 60 und 60 Sekunden und versucht es erneut.
 - **Limit:** zusammen 50 Anfragen am Tag (20 pro Minute), also etwa 5–8 Analysen. Danach meldet Ortfinder
