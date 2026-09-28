@@ -103,6 +103,28 @@ function executor({ withMapView = true } = {}) {
         };
       }
       : undefined,
+    skylineMatch: withMapView
+      ? async (opts) => {
+        mapCalls.push({ skyline: opts });
+        if (opts.lat > 60) return { match: { ok: false, note: "Im Foto ist kein klarer Übergang Himmel → Berg/Land zu finden." }, image: null };
+        const constraint = { nEff: 6, residuals: () => [0.2, -0.4], terms() { return this.residuals().map((v) => v * 2); } };
+        return {
+          match: {
+            ok: true, pose: { bearing: 81.5651, pitch: -3.892, roll: 1.2614, fov: 30.7967 }, sd: { bearing: 0.3606, pitch: 0.5616, roll: 0.7954, fov: 1.0171 },
+            camera: { lat: opts.lat, lon: opts.lon, eye_height_m: opts.eyeHeight, ground_m: 625.9, moved_m: 0, east_m: 0, north_m: 0, uncertainty_m: 559, searched_m: opts.searchRadiusM, consistent: true, best_fit: null },
+            fit: { inlier_share: 0.97, rms_deg: 0.155, coverage: 0.916, relief_deg: 7.58 }, skyline_km: { median: 7.2, max: 33.9 },
+            confidence: 0.94, limit: "unique", alternative: { bearing_deg: 103.51, fov_deg: 20.68 },
+            peaks: [
+              { name: "Musterhorn", ele_m: 2230, distance_m: 5980, bearing_deg: 91.11, x: 0.7971, y: 0.2153, on_skyline: true },
+              { name: "", ele_m: 1905, distance_m: 7100, bearing_deg: 84.2, x: 0.62, y: 0.26, on_skyline: true },
+              { name: "Probeflue", ele_m: 2296, distance_m: 7870, bearing_deg: 78.64, x: 0.394, y: 0.27, on_skyline: true },
+            ],
+            peakSource: "OpenStreetMap", peakNote: "", constraint,
+          },
+          image: { data: "U0tZ", thumbnail: "data:image/jpeg;base64,U0tZ" },
+        };
+      }
+      : undefined,
     osm,
     emit: (t, d) => events.push([t, d]),
   });
@@ -245,12 +267,12 @@ test("bearing_distance and destination_point are inverse", async () => {
 
 test("usage counters survive a resume, so limits still hold", async () => {
   const { ex } = executor();
-  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1, topView: 2 });
-  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1, topView: 2 });
+  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1, topView: 2, skyline: 1 });
+  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1, topView: 2, skyline: 1 });
   const r = await ex.run("zoom_image", { x_min: 0, y_min: 0, x_max: 0.5, y_max: 0.5, purpose: "" });
   assert.match(r.result, /Zoom-Limit/);
   ex.restoreCounts(undefined);
-  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0, topView: 0 });
+  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0, topView: 0, skyline: 0 });
 });
 
 test("top_view: pose normalised, foreground hidden by default, result described for the AI", async () => {
@@ -306,4 +328,45 @@ test("solve_camera: checks the points, reports the pose and flags a mismatched p
   assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: points.slice(0, 2) })).result, /Mindestens 3/);
   assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: [...points, { x: 1.4, y: 0.5, lat: 46.6, lon: 7.8 }] })).result, /'x' muss zwischen 0 und 1/);
   assert.match((await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points: [...points.slice(0, 2), { x: 0.5, y: 0.5, lat: 48.1, lon: 11.5, label: "München" }] })).result, /über 60 km/);
+});
+
+test("skyline_match: pose with error bars, named peaks, labelled image; solve_camera then uses the skyline", async () => {
+  const { ex, mapCalls, events } = executor();
+  const { result, isError } = await ex.run("skyline_match", {
+    camera_lat: 46.62, camera_lon: 7.9, bearing_deg: 441, fov_deg: 36, eye_height_m: 6, search_radius_m: 9000, purpose: "Bergkette rechts",
+  });
+  assert.equal(isError, false);
+  assert.deepEqual(mapCalls[0].skyline, {
+    lat: 46.62, lon: 7.9, bearingDeg: 81, fovDeg: 36, fixFov: false, eyeHeight: 6, searchRadiusM: 5000, solveHeight: false,
+  });
+  const out = JSON.parse(result[0].text);
+  assert.deepEqual(out.view, { bearing_deg: 81.57, pitch_deg: -3.89, roll_deg: 1.26, fov_deg: 30.8, sd_deg: { bearing: 0.36, pitch: 0.56, roll: 0.8, fov: 1.02 } });
+  assert.equal(out.match_confidence, 0.94);
+  assert.match(out.camera.standpoint, /angenommener Standpunkt passt \(±559 m\)/);
+  assert.deepEqual(out.peaks.map((p) => p.name), ["Probeflue", "(Gipfel ohne Namen)", "Musterhorn"]);
+  assert.deepEqual(out.peaks[2], { name: "Musterhorn", ele_m: 2230, km: 5.98, bearing_deg: 91.1, x: 0.797, y: 0.215, skyline: true });
+  assert.match(out.note, /Eindeutige Zuordnung/);
+  assert.match(out.note, /solve_camera mit 3–8 Bodenpunkten/);
+  assert.equal(result[1].data, "U0tZ");
+  assert.deepEqual(events.at(-1)[1].peaks, ["Musterhorn", "Probeflue"]);
+  assert.equal(events.at(-1)[0], "skyline");
+
+  // The resection now gets the skyline as a constraint (camera within 3 km) …
+  const points = [
+    { x: 0.4, y: 0.647, lat: 46.62026, lon: 7.9031 }, { x: 0.53, y: 0.647, lat: 46.62011, lon: 7.9031 }, { x: 0.68, y: 0.604, lat: 46.61996, lon: 7.9041 },
+  ];
+  const solve = await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points });
+  const constraint = mapCalls.find((c) => c.solve)?.solve.skyline;
+  assert.ok(constraint && typeof constraint.terms === "function" && constraint.pose.bearing === 81.5651);
+  assert.match(JSON.parse(solve.result[0].text).note, /Bergkamm aus skyline_match mitgenutzt/);
+  // … unless switched off, or the camera is far from the skyline standpoint.
+  await ex.run("solve_camera", { camera_lat: 46.62, camera_lon: 7.9, points, use_skyline: false });
+  await ex.run("solve_camera", { camera_lat: 46.85, camera_lon: 7.9, points: points.map((p) => ({ ...p, lat: p.lat + 0.23 })) });
+  const solves = mapCalls.filter((c) => c.solve);
+  assert.equal(solves[1].solve.skyline, null);
+  assert.equal(solves[2].solve.skyline, null);
+
+  // No skyline in the photo: a short note, no image.
+  const none = await ex.run("skyline_match", { camera_lat: 70, camera_lon: 20 });
+  assert.match(none.result, /kein klarer Übergang/);
 });

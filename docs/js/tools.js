@@ -119,6 +119,7 @@ export const FUNCTION_TOOLS = [
       fov_deg: { type: "number", description: "bekannter/typischer Bildwinkel" },
       fov_fixed: { type: "boolean", description: "true bei EXIF-Wert" },
       position_uncertainty_m: { type: "number", description: "Standard 25" },
+      use_skyline: { type: "boolean", description: "skyline_match mitnutzen, Standard true" },
       points: {
         type: "array",
         items: obj({
@@ -130,6 +131,21 @@ export const FUNCTION_TOOLS = [
         }, ["x", "y", "lat", "lon"]),
       },
     }, ["camera_lat", "camera_lon", "points"]),
+  },
+  {
+    type: "function",
+    name: "skyline_match",
+    description: "Bergkamm wie PeakFinder: Himmelslinie des Fotos gegen den Geländehorizont (bis 200 km). Gibt Richtung, Neigung, " +
+      "Schieflage, Bildwinkel (±), prüft/sucht den Standpunkt, benennt Gipfel (Höhe, Entfernung, Richtung, Lage im Foto).",
+    parameters: obj({
+      camera_lat: NUM, camera_lon: NUM,
+      bearing_deg: { type: "number", description: "grob; weglassen = rundum" },
+      fov_deg: NUM, fov_fixed: { type: "boolean" },
+      eye_height_m: NUM,
+      search_radius_m: { type: "number", description: "Standpunkt suchen, 0-5000" },
+      solve_height: { type: "boolean" },
+      purpose: { type: "string" },
+    }, ["camera_lat", "camera_lon"]),
   },
   {
     type: "function",
@@ -340,9 +356,14 @@ function parseUtc(value) {
 export class ToolExecutor {
   // Stateless requests resend every crop, so the total is capped to stay well below request size limits.
   constructor({
-    zoom, mapView, renderView, topView, solveCamera, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12, maxRenders = 12, maxTopViews = 10,
+    zoom, mapView, renderView, topView, solveCamera, skylineMatch, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12, maxRenders = 12,
+    maxTopViews = 10, maxSkylines = 6,
   }) {
     this.zoom = zoom;
+    this.skylineMatch = skylineMatch;
+    this.maxSkylines = maxSkylines;
+    this.skylineCount = 0;
+    this.lastSkyline = null; // latest match, reused by solve_camera
     this.mapView = mapView;
     this.renderView = renderView;
     this.topView = topView;
@@ -361,14 +382,15 @@ export class ToolExecutor {
 
   /** Usage counters, saved with a checkpoint so limits still hold after resuming. */
   get counts() {
-    return { zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount, topView: this.topViewCount };
+    return { zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount, topView: this.topViewCount, skyline: this.skylineCount };
   }
 
-  restoreCounts({ zoom = 0, mapView = 0, render = 0, topView = 0 } = {}) {
+  restoreCounts({ zoom = 0, mapView = 0, render = 0, topView = 0, skyline = 0 } = {}) {
     this.zoomCount = zoom;
     this.mapViewCount = mapView;
     this.renderCount = render;
     this.topViewCount = topView;
+    this.skylineCount = skyline;
   }
 
   /** Returns { result, isError } where result is a string or an array of text/image content blocks. */
@@ -534,11 +556,15 @@ export class ToolExecutor {
     const far = points.find((p) => haversineKm(lat, lon, p.lat, p.lon) > 60);
     if (far) throw new ToolInputError(`Punkt „${far.label || "?"}“ liegt über 60 km vom Standpunkt entfernt – Koordinaten prüfen`);
     const fovDeg = Number.isFinite(args.fov_deg) ? Math.min(Math.max(args.fov_deg, 5), 150) : null;
+    // A good mountain-skyline match nearby holds the orientation; the points then fix standpoint and height.
+    const sky = this.lastSkyline;
+    const useSky = args.use_skyline !== false && sky && sky.confidence >= 0.5 && haversineKm(lat, lon, sky.lat, sky.lon) < 3;
     const sol = await this.solveCamera({
       points, lat, lon,
       eyeHeight: Number.isFinite(args.eye_height_m) ? Math.min(Math.max(args.eye_height_m, 0.3), 3000) : 1.6,
       fovDeg, fixFov: Boolean(fovDeg && args.fov_fixed),
       positionSigmaM: Number.isFinite(args.position_uncertainty_m) ? Math.min(Math.max(args.position_uncertainty_m, 2), 500) : 25,
+      skyline: useSky ? sky.constraint : null,
     });
     const r1 = (v) => Math.round(v * 10) / 10;
     const bad = sol.points.filter((p) => p.error_pct == null || p.error_pct > Math.max(3, 2.5 * sol.rms_pct));
@@ -555,8 +581,10 @@ export class ToolExecutor {
           : `Standpunkt festgehalten (Punkte ${Math.round(sol.geometry.spreadDeg)}° breit, Entfernungsverhältnis ${r1(sol.geometry.depthRatio)} – für den Standpunkt braucht es ≥5 Punkte, >25° breit, nah und fern gemischt).`,
         bad.length ? `Verdächtig: ${bad.map((p) => sol.points.indexOf(p) + 1).map((n) => points[n - 1].label || `Punkt ${n}`).join(", ")} – vermutlich falsch zugeordnet.` : "",
         sol.rms_pct < 1.5 ? "Gute Übereinstimmung." : sol.rms_pct < 4 ? "Mäßige Übereinstimmung – Punkte prüfen." : "Schlechte Übereinstimmung – Zuordnung oder Standpunkt falsch.",
+        useSky ? `Bergkamm aus skyline_match mitgenutzt: ${Math.round((sol.skyline_share ?? 0) * 100)} % der Himmelslinie liegen auf dem Geländehorizont.` : "",
       ].filter(Boolean).join(" "),
     };
+    if (useSky) out.skyline_pct = Math.round((sol.skyline_share ?? 0) * 100);
     this.emit("solve", { lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, rms_pct: out.rms_pct_of_width, points: points.length });
     // The check that normally follows comes right with it: the photo laid flat with the solved pose (saves a round).
     if (this.topView && sol.rms_pct < 5 && this.topViewCount < this.maxTopViews) {
@@ -577,6 +605,64 @@ export class ToolExecutor {
     }
     out.note += " Nächster Schritt: top_view mit genau diesen Werten.";
     return JSON.stringify(out);
+  }
+
+  async tool_skyline_match(args) {
+    if (!this.skylineMatch) throw new ToolInputError("Der Bergkamm-Abgleich ist in dieser Umgebung nicht verfügbar");
+    if (this.skylineCount >= this.maxSkylines) throw new ToolInputError(`Limit für Bergkamm-Abgleiche (${this.maxSkylines}) erreicht`);
+    const fovDeg = Number.isFinite(args.fov_deg) ? Math.min(Math.max(args.fov_deg, 5), 150) : null;
+    const opts = {
+      lat: num(args, "camera_lat", -85, 85),
+      lon: num(args, "camera_lon", -180, 180),
+      bearingDeg: Number.isFinite(args.bearing_deg) ? ((args.bearing_deg % 360) + 360) % 360 : null,
+      fovDeg, fixFov: Boolean(fovDeg && args.fov_fixed),
+      eyeHeight: Number.isFinite(args.eye_height_m) ? Math.min(Math.max(args.eye_height_m, 0.3), 3000) : 1.6,
+      searchRadiusM: Number.isFinite(args.search_radius_m) ? Math.min(Math.max(args.search_radius_m, 0), 5000) : 0,
+      solveHeight: Boolean(args.solve_height),
+    };
+    const { match: m, image } = await this.skylineMatch(opts);
+    this.skylineCount += 1;
+    if (!m.ok) return m.note;
+    const r1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+    const r2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
+    const c = m.camera;
+    this.lastSkyline = { lat: c.lat, lon: c.lon, confidence: m.confidence, constraint: { ...m.constraint, pose: m.pose } };
+    const named = m.peaks.filter((p) => p.name);
+    const peaks = [...named, ...m.peaks.filter((p) => !p.name)].slice(0, 20).map((p) => ({
+      name: p.name || "(Gipfel ohne Namen)", ele_m: p.ele_m, km: r2(p.distance_m / 1000), bearing_deg: r1(p.bearing_deg),
+      x: Math.round(p.x * 1000) / 1000, y: Math.round(p.y * 1000) / 1000, ...(p.on_skyline ? { skyline: true } : {}),
+    })).sort((a, b) => a.x - b.x);
+    const standpoint = !c.searched_m ? "nur geprüft (search_radius_m 0)"
+      : c.consistent ? `angenommener Standpunkt passt (±${Math.round(c.uncertainty_m)} m)` + (c.best_fit ? `; knapp besser, aber nicht signifikant: ${c.best_fit.lat.toFixed(6)}, ${c.best_fit.lon.toFixed(6)}` : "")
+      : `Bergkamm passt deutlich besser ${Math.round(c.moved_m)} m ${direction(c.east_m, c.north_m)} (±${Math.round(c.uncertainty_m)} m)`;
+    const out = {
+      view: {
+        bearing_deg: r2(m.pose.bearing), pitch_deg: r2(m.pose.pitch), roll_deg: r2(m.pose.roll), fov_deg: r2(m.pose.fov),
+        sd_deg: Object.fromEntries(Object.entries(m.sd).map(([k, v]) => [k, r2(v)])),
+      },
+      camera: { lat: Math.round(c.lat * 1e6) / 1e6, lon: Math.round(c.lon * 1e6) / 1e6, eye_height_m: r1(c.eye_height_m), ground_m: Math.round(c.ground_m), standpoint },
+      match_confidence: r2(m.confidence),
+      fit: {
+        on_skyline_pct: Math.round(m.fit.inlier_share * 100), rms_deg: r2(m.fit.rms_deg), skyline_width_pct: Math.round(m.fit.coverage * 100),
+        relief_deg: r1(m.fit.relief_deg), ridges_km: [r1(m.skyline_km.median), r1(m.skyline_km.max)],
+      },
+      ...(m.alternative ? { next_best: { bearing_deg: r1(m.alternative.bearing_deg), fov_deg: r1(m.alternative.fov_deg) } } : {}),
+      peaks,
+      peak_names: m.peakSource || "keine (nur Geländemodell)",
+      note: [
+        m.confidence >= 0.9 ? "Eindeutige Zuordnung der Berge." : m.confidence >= 0.6 ? "Wahrscheinliche Zuordnung – mit dem Bild prüfen."
+          : `Unsichere Zuordnung (begrenzt durch ${{ fit: "Übereinstimmung", relief: "flachen Horizont", coverage: "wenig sichtbare Himmelslinie", unique: "ähnlich gute andere Richtung" }[m.limit] || m.limit}).`,
+        "Rot = Geländehorizont; liegt er auf der Himmelslinie, stimmen Richtung und Gegend (view übernehmen). Das Geländemodell weicht an " +
+          "Graten 20–100 m ab, nahe Kämme passen nie ganz; den Standpunkt legt der Kamm nur grob fest.",
+        "Exaktes Haus: solve_camera mit 3–8 Bodenpunkten – nutzt diesen Kamm automatisch (Punkte bestimmen dann Standpunkt und Höhe).",
+        m.peakNote,
+      ].filter(Boolean).join(" "),
+    };
+    this.emit("skyline", {
+      lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, confidence: m.confidence,
+      peaks: named.slice(0, 8).map((p) => p.name), purpose: String(args.purpose || ""), thumbnail: image.thumbnail,
+    });
+    return [{ type: "text", text: JSON.stringify(out) }, { type: "image", mime_type: "image/jpeg", data: image.data, resolution: "high" }];
   }
 
   async tool_nearby_features(args) {

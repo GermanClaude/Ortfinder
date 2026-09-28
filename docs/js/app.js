@@ -17,6 +17,7 @@ import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter
 import { solveCameraWithTerrain } from "./resection.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
+import { peakLabel, photoSkyline, skylineImage, skylineMatch } from "./skyline.js";
 import { Terrain } from "./terrain.js";
 import qrcode from "../vendor/qrcode.mjs";
 import { ToolExecutor } from "./tools.js";
@@ -49,7 +50,7 @@ const STORAGE_KEY = "ortfinder.settings.v1";
 
 const state = {
   controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null,
-  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0, running: false, wakeLock: null,
+  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0, running: false, wakeLock: null, skyline: null,
 };
 const osm = new OSMClient();
 const terrain = new Terrain();
@@ -682,6 +683,7 @@ function resetWorkspace() {
   state.resultToken += 1;
   state.coneLayer = null;
   state.topLayer = null;
+  state.skyline = null;
   initMap();
   state.layer?.clearLayers();
   state.hypoLayer?.clearLayers();
@@ -912,6 +914,7 @@ async function analyze(file, resumed = null) {
         renderView: (opts) => renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height, drapeTerrain: drapedTerrain }),
         topView: (opts) => topViewImage({ ...opts, bitmap, terrain }),
         solveCamera: (opts) => solveCameraWithTerrain({ ...opts, terrain, width: bitmap.width, height: bitmap.height }),
+        skylineMatch: (opts) => runSkyline(bitmap, opts, { crop: true }),
         osm, emit,
       });
       executor.restoreCounts(resumed?.counts);
@@ -1047,7 +1050,7 @@ async function runDemo() {
 
 const ICONS = {
   status: "•", warning: "⚠", error: "✖", step: "▸", thinking: "💭", note: "📝", zoom: "🔍", mapview: "🛰", render: "🧊", viewshed: "👁",
-  topview: "🗺", solve: "📐",
+  topview: "🗺", solve: "📐", skyline: "⛰",
   tool_call: "🗺", tool_result: "↳", web_search: "🌐", web_results: "↳", metadata: "🏷", exif_location: "📍", result: "✔", hypothesis: "📌",
 };
 
@@ -1103,6 +1106,11 @@ function handle(type, data) {
       log("topview", `Draufsicht: Foto auf das Gelände geklappt, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)}), ` +
         `mit dem Luftbild verglichen${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
+    case "skyline":
+      addSnapshot(data, "⛰ Bergkamm");
+      log("skyline", `Bergkamm-Abgleich: Blick ${fmt1(data.bearing_deg)}° (${compass(data.bearing_deg)}), Bildwinkel ${fmt1(data.fov_deg)}°, ` +
+        `Zuordnung ${Math.round(data.confidence * 100)} % sicher${data.peaks.length ? ` – erkannt: ${data.peaks.join(", ")}` : ""}`);
+      break;
     case "solve":
       log("solve", `Rückwärtsschnitt aus ${data.points} Punkten: Blick ${data.bearing_deg}° (${compass(data.bearing_deg)}), Bildwinkel ${data.fov_deg}°, ` +
         `mittlere Abweichung ${String(data.rms_pct).replace(".", ",")} % der Bildbreite`);
@@ -1138,7 +1146,7 @@ function handle(type, data) {
 }
 
 // Tools whose effect is shown elsewhere (zoom gallery, map) instead of as log lines.
-const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view", "top_view", "solve_camera"]);
+const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view", "top_view", "solve_camera", "skyline_match"]);
 
 function toolLabel(name) {
   return {
@@ -1305,6 +1313,106 @@ function bestView(r) {
 }
 
 /**
+ * Mountain-skyline match in the browser (see skyline.js). The latest match is kept for the result view.
+ * Returns { match, image } – image cropped to the skyline band for the AI, or the whole photo.
+ */
+async function runSkyline(bitmap, opts, { crop = false } = {}) {
+  const match = await skylineMatch({
+    ...opts, bitmap, terrain, osm,
+    onStatus: (text) => { if (state.running) $("#progress").textContent = text; },
+  });
+  if (!match.ok) return { match, image: null };
+  state.skyline = { match, bitmap };
+  return { match, image: skylineImage(bitmap, match, { crop, maxWidth: crop ? 1200 : 1000 }) };
+}
+
+const fmt1 = (v) => (Math.round(v * 10) / 10).toString().replace(".", ",");
+
+/** Result view: the photo labelled like PeakFinder, the peaks as a table and as lines on the map. */
+function showSkyline(slot, match, bitmap) {
+  const img = skylineImage(bitmap, match, { maxWidth: 1000 });
+  const p = match.pose;
+  const sd = match.sd || {};
+  const pm = (k) => (sd[k] != null ? ` ±${fmt1(sd[k])}` : "");
+  const named = match.peaks.filter((q) => q.name);
+  const rows = [...named, ...match.peaks.filter((q) => !q.name)].slice(0, 30).sort((a, b) => a.x - b.x);
+  const peakGroup = L.featureGroup();
+  const cam = [match.camera.lat, match.camera.lon];
+  for (const q of named) {
+    L.polyline([cam, [q.lat, q.lon]], { color: "#7a4cc2", weight: 1, opacity: 0.7, dashArray: "4 4", interactive: false }).addTo(peakGroup);
+    L.circleMarker([q.lat, q.lon], { radius: 4, color: "#fff", weight: 1, fillColor: "#7a4cc2", fillOpacity: 1 })
+      .bindTooltip(`⛰ ${peakLabel(q)} · ${Math.round(q.bearing_deg)}°`).addTo(peakGroup);
+  }
+  const onMap = el("input", { type: "checkbox" });
+  onMap.addEventListener("change", () => {
+    if (onMap.checked) {
+      state.layer.addLayer(peakGroup);
+      state.map.flyToBounds(peakGroup.getBounds().extend(cam).pad(0.1), { duration: 1 });
+    } else {
+      state.layer.removeLayer(peakGroup);
+    }
+  });
+  const conf = Math.round(match.confidence * 100);
+  slot.replaceChildren(
+    el("p", { class: "label" }, "⛰ Gipfel & Bergkamm"),
+    el("a", { href: img.dataUrl, target: "_blank", rel: "noopener" }, el("img", { src: img.dataUrl, alt: "Foto mit beschrifteten Gipfeln und Geländehorizont", class: "topview-img" })),
+    el("p", { class: "small" },
+      `Blick ${fmt1(p.bearing)}°${pm("bearing")} · Neigung ${fmt1(p.pitch)}°${pm("pitch")} · Schieflage ${fmt1(p.roll)}°${pm("roll")} · ` +
+      `Bildwinkel ${fmt1(p.fov)}°${pm("fov")} · ${Math.round(match.fit.inlier_share * 100)} % der Himmelslinie auf dem Geländehorizont · ` +
+      `Zuordnung der Berge: ${conf} % sicher.`),
+    rows.length ? el("table", { class: "peaks" },
+      el("thead", {}, el("tr", {}, el("th", {}, "Gipfel"), el("th", {}, "Höhe"), el("th", {}, "Entfernung"), el("th", {}, "Richtung"))),
+      el("tbody", {}, rows.map((q) => el("tr", { class: q.on_skyline ? "on-skyline" : "" },
+        el("td", {}, q.name || "Gipfel ohne Namen"),
+        el("td", {}, `${q.ele_m.toLocaleString("de-DE")} m${q.ele_from_dem ? " *" : ""}`),
+        el("td", {}, `${(q.distance_m / 1000).toFixed(1).replace(".", ",")} km`),
+        el("td", {}, `${Math.round(q.bearing_deg)}° ${compass(q.bearing_deg)}`))))) : el("p", { class: "small muted" }, "Keine Gipfel im Bild gefunden."),
+    named.length ? el("label", { class: "check small" }, onMap, " Linien zu den Gipfeln auf der Karte") : null,
+    el("p", { class: "small muted" },
+      "Rot = Horizont aus dem Geländemodell vom Standpunkt aus (mit Erdkrümmung), weiß = weitere Kämme davor. Liegt Rot auf der " +
+      `Himmelslinie des Fotos, stimmen Blickrichtung und Standpunktgebiet. Gipfelnamen: ${match.peakSource || "–"}; * = Höhe aus dem ` +
+      "Geländemodell. Das freie Geländemodell weicht an steilen Graten teils 20–100 m ab – nahe Kämme passen deshalb nicht immer pixelgenau."),
+  );
+}
+
+/** Offer the peak labels for any result with a view: runs the match on demand (it loads terrain far out). */
+function skylineButton(slot, v) {
+  if (!state.imageSource || !v) {
+    slot.remove();
+    return;
+  }
+  let sky;
+  try {
+    sky = photoSkyline(state.imageSource);
+  } catch {
+    slot.remove();
+    return;
+  }
+  if (sky.count < 0.3 * sky.width) {
+    slot.remove(); // hardly any sky/land line in the photo
+    return;
+  }
+  const token = state.resultToken;
+  const button = el("button", { type: "button", class: "ghost small-btn" }, "⛰ Gipfel beschriften (Bergkamm-Abgleich)");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    button.textContent = "Bergkamm wird abgeglichen … (lädt Gelände bis 200 km)";
+    try {
+      const { match } = await runSkyline(state.imageSource, {
+        lat: v.lat, lon: v.lon, eyeHeight: v.eyeHeight, bearingDeg: v.bearingDeg, bearingRange: 20,
+        fovDeg: v.fovDeg, fixFov: v.sources.fov === "Brennweite (EXIF)",
+      });
+      if (token !== state.resultToken) return;
+      if (!match.ok) slot.replaceChildren(el("p", { class: "small muted" }, `⛰ ${match.note}`));
+      else showSkyline(slot, match, state.imageSource);
+    } catch (err) {
+      button.textContent = `Bergkamm-Abgleich nicht möglich (${err.message})`;
+    }
+  });
+  slot.replaceChildren(button);
+}
+
+/**
  * Exact visible area on the map (buildings and terrain block the view, the picture frame bounds it)
  * and a 3D reconstruction from the final standpoint to lay over the photo.
  */
@@ -1351,6 +1459,14 @@ async function refineView(r) {
   } catch (err) {
     if (current()) topSlot.replaceChildren(el("p", { class: "small muted" }, `Draufsicht nicht möglich (${err.message}).`));
   }
+}
+
+/** The skyline section: the AI's latest mountain match, or a button to run one for this result. */
+function refineSkyline(r) {
+  const slot = $("#skyline-slot");
+  if (!slot) return;
+  if (state.skyline?.match?.ok) showSkyline(slot, state.skyline.match, state.skyline.bitmap);
+  else skylineButton(slot, bestView(r));
 }
 
 /** Photo laid flat onto the map (Leaflet image overlay) plus the side-by-side comparison with the aerial image. */
@@ -1513,8 +1629,10 @@ function renderResult(r) {
       box.append(
         el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")),
         el("div", { id: "topview-slot" }, el("p", { class: "small muted" }, "Draufsicht wird berechnet …")),
+        el("div", { id: "skyline-slot" }),
       );
       refineView(r);
+      refineSkyline(r);
     }
     return;
   }
@@ -1541,6 +1659,7 @@ function renderResult(r) {
     el("p", { class: "summary" }, a.summary),
     bestView(r) ? el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")) : null,
     bestView(r) ? el("div", { id: "topview-slot" }, el("p", { class: "small muted" }, "Draufsicht wird berechnet …")) : null,
+    bestView(r) || state.skyline?.match?.ok ? el("div", { id: "skyline-slot" }) : null,
   ].filter(Boolean));
 
   if (r.truth) {
@@ -1576,6 +1695,7 @@ function renderResult(r) {
     drawResultMap(a);
     if (!exif) setOsmLink(cam.lat, cam.lon);
     refineView(r);
+    refineSkyline(r);
   }
 }
 

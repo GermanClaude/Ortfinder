@@ -126,9 +126,11 @@ export function pointGeometry(points, lat, lon) {
  */
 export function solveCamera({
   points, width, height, lat, lon, eyeHeight = 1.6, fovDeg = null, fixFov = false, solvePosition = null, solveHeight = null,
-  positionSigmaM = 25, heightSigmaM = 15, rollSigmaDeg = 1.5, terrain = null,
+  positionSigmaM = 25, heightSigmaM = 15, rollSigmaDeg = 1.5, terrain = null, skyline = null,
 }) {
   if (points.length < 3) throw new Error("Mindestens 3 Punkte nötig (besser 4–8, gut über das Bild verteilt).");
+  // skyline: { terms(lat, lon, eyeZ, pose), pose } from the mountain-skyline match. Far ridges fix the
+  // orientation; then the ground points only have to fix standpoint and height.
   const geometry = pointGeometry(points, lat, lon);
   const project = makeProjector({ lat, lon, terrain, width, height, points });
   const g0 = groundModel({ lat, lon, eyeHeight: 0, terrain });
@@ -159,23 +161,37 @@ export function solveCamera({
       // A given field of view (e.g. the typical phone value) is a good guess; without one anything goes.
       if (!(fixFov && fovDeg)) r.push(fovDeg ? ((v[3] - fovDeg) / 8) * 3 : ((v[3] - 60) / 60) * 2);
       // Photos are almost always held nearly level; a few points alone cannot tell roll from a wrong standpoint.
-      r.push((v[2] / rollSigmaDeg) * 5);
+      r.push((v[2] / (skyline ? 4 : rollSigmaDeg)) * 5);
+      if (skyline) {
+        // Skyline terms are in units of their expected error; ×7 puts them on the scale of a typical point error.
+        const [la, lo] = g0.proj.toLatLon(pose.e, pose.n);
+        const eyeZ = groundModel({ lat: la, lon: lo, eyeHeight: pose.eyeHeight, terrain }).eyeZ;
+        for (const t of skyline.terms(la, lo, eyeZ, pose)) r.push(7 * t);
+      }
       return r;
     };
     let best = null;
-    for (const fov0 of fovStarts) {
-      for (const pitch0 of [-5, -20, 5]) {
-        const start = [meanAz, pitch0, 0, fov0, ...(moveHeight ? [eyeHeight] : []), ...(movePosition ? [0, 0] : [])];
-        const steps = [0.02, 0.02, 0.02, 0.02, ...(moveHeight ? [0.05] : []), ...(movePosition ? [0.05, 0.05] : [])];
-        const f = levenbergMarquardt(residuals, start, { steps });
-        if (!best || f.cost < best.cost) best = f;
-      }
+    const starts = [];
+    for (const fov0 of fovStarts) for (const pitch0 of [-5, -20, 5]) starts.push([meanAz, pitch0, 0, fov0]);
+    if (skyline?.pose) starts.unshift([skyline.pose.bearing, skyline.pose.pitch, skyline.pose.roll, fixFov && fovDeg ? fovDeg : skyline.pose.fov]);
+    for (const [az0, pitch0, roll0, fov0] of starts) {
+      const start = [az0, pitch0, roll0, fov0, ...(moveHeight ? [eyeHeight] : []), ...(movePosition ? [0, 0] : [])];
+      const steps = [0.02, 0.02, 0.02, 0.02, ...(moveHeight ? [0.05] : []), ...(movePosition ? [0.05, 0.05] : [])];
+      const f = levenbergMarquardt(residuals, start, { steps });
+      if (!best || f.cost < best.cost) best = f;
     }
     const pose = unpack(best.x);
     const pred = project(pose);
     const errors = pred.map((p, i) => (p ? Math.hypot(p[0] - obs[i][0], p[1] - obs[i][1]) : Infinity));
     const rms = Math.sqrt(errors.reduce((s, e) => s + (Number.isFinite(e) ? e * e : 1e8), 0) / errors.length);
     const [camLat, camLon] = g0.proj.toLatLon(pose.e, pose.n);
+    let skylineShare = null;
+    if (skyline?.residuals) {
+      // Share of the photo's skyline columns that lie on the terrain skyline for this pose.
+      const eyeZ = groundModel({ lat: camLat, lon: camLon, eyeHeight: pose.eyeHeight, terrain }).eyeZ;
+      const u = skyline.residuals(camLat, camLon, eyeZ, pose);
+      skylineShare = u.length ? u.filter((v) => Math.abs(v) < 3).length / u.length : null;
+    }
     return {
       camera: { lat: camLat, lon: camLon, eye_height_m: pose.eyeHeight, moved_m: Math.hypot(pose.e, pose.n), east_m: pose.e, north_m: pose.n },
       view: { bearing_deg: ((pose.bearing % 360) + 360) % 360, pitch_deg: pose.pitch, roll_deg: pose.roll, fov_deg: pose.fov },
@@ -190,10 +206,12 @@ export function solveCamera({
       solved_position: movePosition,
       solved_height: moveHeight,
       geometry,
+      skyline_share: skylineShare,
     };
   };
 
-  const movePosition = solvePosition ?? geometry.strong;
+  // With the orientation held by the skyline, three spread points are enough for the standpoint.
+  const movePosition = solvePosition ?? (geometry.strong || Boolean(skyline && points.length >= 3 && geometry.spreadDeg >= 8));
   const result = fit(movePosition, movePosition || (solveHeight ?? points.length >= 4));
   // Points in a narrow cluster cannot pin the standpoint down on their own – but when holding it fixed
   // leaves clearly worse errors, a standpoint within the stated uncertainty explains the photo better.

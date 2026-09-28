@@ -41,6 +41,9 @@ Overpass-Abfrage kombinieren.
 5. Feinortung (unten), sobald Stadt/Straße/Ortsteil belegt sind. 6. Abgeben, sobald Suchen nichts mehr verbessert.
 
 ## Feinortung auf ~20–50 m
+- Berge vor Himmel: früh \`skyline_match\` (\`search_radius_m\` = Unsicherheit). Gibt Richtung/Neigung/Bildwinkel \
+(±) und Gipfelnamen; \`match_confidence\` ≥ 0,9 + rote Linie auf der Himmelslinie = Blick und Gegend belegt, Standpunkt \
+nur grob. Danach \`solve_camera\` (nutzt den Kamm mit): 3–5 Bodenpunkte → Haus.
 - \`street_geometry\`: Straßenrichtung im Foto (Flucht, Bordsteine) mit \`street_bearing_deg\` vergleichen → Abschnitt und \
 Blickrichtung. \`nearby_features\`: passen Objekte, Abstände, Richtungen am Kandidaten? \`map_view\` (Zoom 18–19): \
 Grundrisse, Dächer, Bäume, Markierungen vergleichen; \`layer: "karte"\` für Namen/Hausnummern.
@@ -52,13 +55,13 @@ Foto auf den Boden geklappt neben dem Luftbild – Wege, Feldgrenzen, Gebäudef�
 Bäume erscheinen nach hinten verlängert). Nachstellen mit \`top_view\`; \`render_view\` (\`texture: "satellit"\` = Luftbild-3D) \
 zum Vergleich der Perspektive. Werte aus \`solve_camera\` in \`view\` übernehmen.
 - \`render_view\`: Kanten, Lücken, Straßenflucht, Horizont/Bergkamm mit dem Foto vergleichen, Standpunkt/Blick nachstellen; \
-aus Fenster/Turm/Drohne \`eye_height_m\`, \`pitch_deg\` setzen. Bergpanoramen: Silhouette ist sehr eindeutig.
+aus Fenster/Turm/Drohne \`eye_height_m\`, \`pitch_deg\` setzen. Bergpanoramen: \`skyline_match\`.
 - Zurückrechnen: Entfernung zu bekannten Objekten (Fahrspur ≈ 3 m, Stockwerk ≈ 3 m, Auto ≈ 4,5 m, Schild 60–90 cm) \
 und Richtung (Bildrand ≈ ± halber Bildwinkel) → \`destination_point\`. Mehrere Kandidaten parallel prüfen.
 
 ## Radius ehrlich
 ≤ 20 m nur, wenn \`render_view\`/\`top_view\` deckungsgleich sind (ideal \`solve_camera\` < 1,5 %). ≤ 50 m nur mit zwei \
-unabhängigen bestätigten Merkmalen am Punkt. 0,05–0,3 km: Straße/Platz belegt. 0,3–3 km: Ortsteil/Stadt. Größer: \
+unabhängigen bestätigten Merkmalen am Punkt. Nur Bergkamm: Radius ≥ seine Standpunkt-Unsicherheit. 0,05–0,3 km: Straße/Platz belegt. 0,3–3 km: Ortsteil/Stadt. Größer: \
 Region/Land. Ein zu kleiner Radius um einen falschen Punkt ist schlechter als ein ehrlich größerer. \`view\` so genau wie \
 möglich (Richtung, Bildwinkel, Höhe, Neigung) – daraus entsteht der exakte Sichtbereich.
 
