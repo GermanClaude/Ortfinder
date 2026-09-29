@@ -217,6 +217,66 @@ export function zoomCrop(source, box, enhance = false) {
 }
 
 /**
+ * A zoom crop sharpened by the AI upscaler (sharpen.js), when it may: `sharpen(rgb, w, h)` returns the
+ * checked result. Falls back to the plain crop (with the reason) when the check fails or the crop is large.
+ * Returns what zoomCrop returns plus { ai: { applied, reason, stats }, aiImage (data URL, when applied) }.
+ */
+export async function sharpenedZoomCrop(source, box, enhance, sharpen) {
+  const [left, top, right, bottom] = pixelBox(box, source.width, source.height);
+  const sw = right - left;
+  const sh = bottom - top;
+  const plain = () => zoomCrop(source, box, enhance);
+  let res;
+  try {
+    const px = drawScaled(source, left, top, sw, sh, sw, sh).getContext("2d").getImageData(0, 0, sw, sh).data;
+    const rgb = new Uint8ClampedArray(sw * sh * 3);
+    for (let i = 0, j = 0; i < px.length; i += 4, j += 3) {
+      rgb[j] = px[i];
+      rgb[j + 1] = px[i + 1];
+      rgb[j + 2] = px[i + 2];
+    }
+    res = await sharpen(rgb, sw, sh);
+  } catch (err) {
+    return { ...plain(), ai: { applied: false, reason: `KI-Schärfung nicht möglich (${err.message})` } };
+  }
+  if (!res.ok) return { ...plain(), ai: { applied: false, reason: res.reason, stats: res.stats } };
+  const big = canvas(res.width, res.height);
+  const data = new ImageData(res.width, res.height);
+  for (let i = 0, j = 0; j < res.rgb.length; i += 4, j += 3) {
+    data.data[i] = res.rgb[j];
+    data.data[i + 1] = res.rgb[j + 1];
+    data.data[i + 2] = res.rgb[j + 2];
+    data.data[i + 3] = 255;
+  }
+  big.getContext("2d").putImageData(data, 0, 0);
+  // Same size as a plain crop; contrast only (the upscaler already sharpened – no unsharp mask on top).
+  let scale = Math.max(1, ZOOM_MIN_SIDE / Math.max(sw, sh));
+  scale = Math.min(scale, ZOOM_MAX_SIDE / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  const c = drawScaled(big, 0, 0, res.width, res.height, w, h);
+  if (enhance) {
+    const ctx = c.getContext("2d");
+    const tmp = drawScaled(c, 0, 0, w, h, w, h);
+    ctx.filter = "contrast(1.3) saturate(1.1)";
+    ctx.drawImage(tmp, 0, 0);
+    ctx.filter = "none";
+  }
+  const [tw, th] = fitSize(w, h, 360);
+  const [vw, vh] = fitSize(w, h, 900);
+  return {
+    data: toBase64(c, 0.85),
+    width: w,
+    height: h,
+    sourceWidth: sw,
+    sourceHeight: sh,
+    thumbnail: drawScaled(c, 0, 0, w, h, tw, th).toDataURL("image/jpeg", 0.8),
+    aiImage: drawScaled(c, 0, 0, w, h, vw, vh).toDataURL("image/jpeg", 0.85),
+    ai: { applied: true, reason: "", stats: res.stats },
+  };
+}
+
+/**
  * High-resolution 2×2 tiles of a large photo, sent with the first request so small details are
  * readable without extra zoom rounds. Returns [] when the overview already shows nearly everything.
  */

@@ -488,6 +488,36 @@ export function extractSkyline({ width: W, height: H, data }) {
   return { width: W, height: H, count: xs.length, x: Float32Array.from(xs), y: Float32Array.from(ys), w: Float32Array.from(ws), skyPct: (100 * skyPix) / N };
 }
 
+// ---------- the background, before the place is known ----------
+
+/**
+ * What the photo's sky line says about the background without knowing the place: how much of the width has
+ * a clear line (coverage 0–1), how far it rises and falls (reliefDeg, 5–95 % range), how jagged it is
+ * (roughDeg, mean step between neighbouring columns) and where it lies (meanRow 0–1). null without a line.
+ */
+export function backgroundRelief(sky, fovDeg) {
+  if (!sky || sky.count < 8) return null;
+  const ppd = pxPerDeg(sky, fovDeg);
+  const ys = Array.from(sky.y).sort((a, b) => a - b);
+  const q = (p) => ys[Math.min(ys.length - 1, Math.floor(p * (ys.length - 1)))];
+  let rough = 0;
+  let n = 0;
+  for (let i = 1; i < sky.count; i++) {
+    if (sky.x[i] - sky.x[i - 1] > 1.5) continue;
+    rough += Math.abs(sky.y[i] - sky.y[i - 1]);
+    n += 1;
+  }
+  return {
+    coverage: sky.count / sky.width,
+    reliefDeg: (q(0.95) - q(0.05)) / ppd,
+    roughDeg: n ? rough / n / ppd : 0,
+    meanRow: ys.reduce((s, v) => s + v, 0) / ys.length / sky.height,
+  };
+}
+
+/** A line of hills or mountains worth matching with the terrain: wide enough, with real rise and fall. */
+export const reliefWorthMatching = (r) => Boolean(r && r.coverage >= 0.35 && r.reliefDeg >= 0.6 && r.meanRow < 0.8);
+
 // ---------- matching ----------
 
 /** Robust loss: quadratic for small residuals, logarithmic for outliers (foreground, clouds). */

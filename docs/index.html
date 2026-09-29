@@ -327,6 +327,23 @@
           <div id="mark-preview" class="mark-preview" aria-hidden="true"></div>
           <div class="row"><button id="mark-reset" type="button" class="ghost small-btn">Auf Standard zurücksetzen</button></div>
         </details>
+        <details id="analysis-settings" class="ollama-box">
+          <summary>🔬 Bildauswertung</summary>
+          <label class="check"><input id="ai-sharpen" type="checkbox" checked> KI-Schärfung von Ausschnitten – nur wenn die KI sicher ist</label>
+          <p class="small muted">
+            Ein KI-Modell (ESRGAN, läuft in deinem Browser, beim ersten Mal etwa 2 MB) vergrößert kleine Ausschnitte schärfer.
+            Es kommt nur zum Einsatz, wenn die analysierende KI angibt, sicher zu wissen, was der Ausschnitt zeigt (mindestens 90 %),
+            und das Ergebnis wird geprüft: verkleinert muss es sich mit dem Original decken – überall, auch im Detail. Sonst wird es
+            verworfen. Geschärfte Ausschnitte tragen ein „KI“; in der Großansicht lässt sich das Original daneben ansehen.
+          </p>
+          <label class="check"><input id="background-check" type="checkbox" checked> Hintergrund prüfen: Berge und Hügel vor dem Himmel mit dem Gelände abgleichen</label>
+          <label class="check"><input id="surface-first" type="checkbox" checked> Oberflächen zuerst: Draufsicht aus dem Foto (optional)</label>
+          <p class="small muted">
+            Als erster Schritt bestimmt die KI die Bodenflächen (Asphalt, Pflaster, Wiese, Wasser …) und legt das Foto daraus flach
+            als Draufsicht mit Meter-Raster – zum Vergleich mit Luftbildern, noch bevor der Ort bekannt ist. Nur wenn Boden zu sehen
+            ist. Verlässlich ist sie bis zu einer berechneten Entfernung (gelb markiert). Kostet etwas mehr Tokens.
+          </p>
+        </details>
         <details id="guide" class="guide">
           <summary id="guide-title">📖 Anleitung Schritt für Schritt</summary>
           <div id="guide-tabs" class="tabs" role="tablist" aria-label="Gerät"></div>
@@ -359,6 +376,7 @@
           </select>
         </label>
         <label class="check"><input id="confirm-ai-on" type="checkbox"> KI-Bildanalyse</label>
+        <label class="check"><input id="confirm-surface" type="checkbox"> Oberflächen zuerst (Draufsicht)</label>
       </div>
       <div id="confirm-summary" class="confirm-summary"></div>
       <details id="confirm-plan" open>
@@ -411,7 +429,25 @@
           </div>
           <p id="lens-hint" class="small muted" role="status"></p>
           <h3>Genauer angesehen <span id="zoom-count" class="muted"></span></h3>
-          <div id="zooms" class="zooms"><p class="muted small">Noch keine Ausschnitte.</p></div>
+          <div id="gallery" class="gallery">
+            <p id="gallery-empty" class="muted small">Noch keine Ausschnitte. Tippe später auf ein Bild, um es groß zu sehen.</p>
+            <section id="sec-zooms" class="gallery-sec" hidden>
+              <h4>🔍 Ausschnitte aus dem Foto <span class="muted sec-count"></span></h4>
+              <div id="zooms" class="zooms"></div>
+            </section>
+            <section id="sec-aerial" class="gallery-sec" hidden>
+              <h4>🛰 Luftbilder &amp; Draufsichten <span class="muted sec-count"></span></h4>
+              <div id="aerials" class="zooms"></div>
+            </section>
+            <section id="sec-models" class="gallery-sec" hidden>
+              <h4>🧊 3D-Modelle &amp; Bergkamm <span class="muted sec-count"></span></h4>
+              <div id="models" class="zooms"></div>
+            </section>
+            <section id="sec-other" class="gallery-sec" hidden>
+              <h4>🖼 Fotos anderer <span class="muted sec-count"></span></h4>
+              <div id="others" class="zooms"></div>
+            </section>
+          </div>
         </div>
 
         <div class="col">
@@ -438,6 +474,24 @@
       </div>
     </section>
   </main>
+
+  <dialog id="lightbox" class="lightbox" aria-labelledby="lb-title">
+    <div class="lb-bar">
+      <strong id="lb-title"></strong>
+      <span class="lb-actions">
+        <button id="lb-ai" type="button" class="ghost small-btn" hidden>Original zeigen</button>
+        <button id="lb-show" type="button" class="ghost small-btn" hidden>📍 Im Foto zeigen</button>
+        <button id="lb-zoom" type="button" class="ghost small-btn" title="Vergrößern">🔍 +</button>
+        <button id="lb-close" type="button" class="ghost small-btn" aria-label="Schließen">✕</button>
+      </span>
+    </div>
+    <div id="lb-stage" class="lb-stage">
+      <img id="lb-img" alt="">
+      <button id="lb-prev" type="button" class="lb-nav prev" aria-label="Vorheriges Bild">‹</button>
+      <button id="lb-next" type="button" class="lb-nav next" aria-label="Nächstes Bild">›</button>
+    </div>
+    <p id="lb-caption" class="lb-caption small"></p>
+  </dialog>
 
   <footer>
     Ortfinder zeigt, wie viel ein einzelnes Foto über seinen Aufnahmeort verrät. Alles läuft in deinem Browser;

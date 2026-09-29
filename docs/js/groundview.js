@@ -8,6 +8,7 @@
 
 import { TILE_SOURCES, latLonFromWorldPixel, loadTileImage, worldPixel } from "./mapview.js";
 import { groundModel, makeCamera } from "./scene3d.js";
+import { SURFACES, flatTopView, surfaceMask, surfaceStats } from "./surfaceview.js";
 
 const DEG = Math.PI / 180;
 const TILE = 256;
@@ -107,7 +108,7 @@ function sampleRgb(data, W, H, x, y) {
  * (not hidden behind a hill), lies between minDistM and maxDistM and inside `region` ([x0, y0, x1, y1] in
  * 0–1 photo coordinates). Returns RGBA pixels (transparent where the photo shows nothing of the ground).
  */
-export function projectPhotoToMap({ photo, cam, rays, g, box, minDistM = 10, maxDistM = 1500, region = null }) {
+export function projectPhotoToMap({ photo, cam, rays, g, box, minDistM = 10, maxDistM = 1500, region = null, surfaceAt = null }) {
   const { width: W, height: H, data: src } = photo;
   const out = new Uint8ClampedArray(box.width * box.height * 4);
   const kx = rays.width / W;
@@ -132,7 +133,9 @@ export function projectPhotoToMap({ photo, cam, rays, g, box, minDistM = 10, max
       const ri = Math.min(rays.height - 1, Math.floor(v * ky)) * rays.width + Math.min(rays.width - 1, Math.floor(u * kx));
       const seen = rays.dist[ri];
       if (s > seen * 1.04 + 3) continue;
-      const [cr, cg, cb] = sampleRgb(src, W, H, u, v);
+      let [cr, cg, cb] = sampleRgb(src, W, H, u, v);
+      const tint = surfaceAt?.(u / W, v / H);
+      if (tint) [cr, cg, cb] = [0, 1, 2].map((c) => [cr, cg, cb][c] * 0.6 + tint[c] * 0.4);
       const o = (j * box.width + i) * 4;
       out[o] = cr;
       out[o + 1] = cg;
@@ -412,7 +415,7 @@ function drawMapOverlay(ctx, box, { lat, lon, bearingDeg, azFrom, azTo, edges, g
  */
 export async function topViewImage({
   bitmap, terrain, lat, lon, bearingDeg, fovDeg, pitchDeg = 0, rollDeg = 0, eyeHeight = 1.6,
-  minDistM = 10, maxDistM = 1500, region = null, style = "nebeneinander", panel = 640,
+  minDistM = 10, maxDistM = 1500, region = null, style = "nebeneinander", panel = 640, surfaces = [],
 }) {
   const photo = photoPixels(bitmap);
   const aspect = photo.width / photo.height;
@@ -435,7 +438,7 @@ export async function topViewImage({
     [extent.minE - pad, extent.maxN + pad], [extent.maxE + pad, extent.minN - pad], [0, 0],
   ].map(([e, n]) => g.proj.toLatLon(e, n));
   const box = mercatorBox(corners, panel);
-  const flat = projectPhotoToMap({ photo, cam, rays, g, box, minDistM, maxDistM, region });
+  const flat = projectPhotoToMap({ photo, cam, rays, g, box, minDistM, maxDistM, region, surfaceAt: surfaceLookup(surfaces) });
 
   const flatCanvas = document.createElement("canvas");
   flatCanvas.width = box.width;
@@ -552,3 +555,161 @@ export async function drapedTerrain({ terrain, lat, lon, bearingDeg, fovDeg, pit
   return { canvas: small, skyline, tiles: loaded, wanted: keys.length };
 }
 
+
+/** Colour lookup for the outlined surfaces at photo position (0–1), or null. */
+function surfaceLookup(surfaces, w = 480, h = 360) {
+  if (!surfaces?.length) return null;
+  const mask = surfaceMask(surfaces, w, h);
+  return (x, y) => {
+    const k = mask[Math.min(h - 1, Math.max(0, Math.floor(y * h))) * w + Math.min(w - 1, Math.max(0, Math.floor(x * w)))];
+    return k >= 0 ? SURFACES[surfaces[k].art] : null;
+  };
+}
+
+/**
+ * Browser: the top view from the photo alone (no standpoint): the ground laid flat with a metre grid, the
+ * reliable range marked and, next to it, the outlined surfaces as a plain map with a legend.
+ */
+export function surfaceTopViewImage({ bitmap, fovDeg, pitchDeg = 0, rollDeg = 0, eyeHeight = 1.6, minDistM = 0, maxDistM = 60, surfaces = [], reliableM = Infinity, panel = 560 }) {
+  const photo = photoPixels(bitmap);
+  const view = flatTopView({ photo, fovDeg, pitchDeg, rollDeg, eyeHeight, minDistM, maxDistM, surfaces, panel });
+  if (!view) return { empty: true, note: "Mit dieser Neigung zeigt das Foto keinen Boden vor der Kamera (Horizont zu tief oder Blick nach oben) – horizon_y prüfen." };
+  const { width: W, height: H, mPerPx: m } = view;
+  const toPx = (e, n) => [(e - view.minE) / m, (view.maxN - n) / m];
+  const [cx, cy] = toPx(0, 0);
+  // Panel A: the photo laid flat, beyond the reliable range dimmed; outlined surfaces tinted, their borders solid.
+  const a = new ImageData(W, H);
+  const b = new ImageData(W, H);
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const p = j * W + i;
+      const o = p * 4;
+      if (!view.data[o + 3]) {
+        a.data.set([46, 50, 56, 255], o);
+        b.data.set([236, 238, 240, 255], o);
+        continue;
+      }
+      const d = Math.hypot(i - cx, j - cy) * m;
+      const dim = d > reliableM ? 0.5 : 1;
+      const k = view.cls[p];
+      const col = k >= 0 ? SURFACES[surfaces[k].art] : null;
+      const edge = k >= 0 && ((i > 0 && view.cls[p - 1] !== k) || (j > 0 && view.cls[p - W] !== k));
+      for (let c = 0; c < 3; c++) {
+        const photoC = view.data[o + c];
+        a.data[o + c] = (edge ? col[c] : col ? photoC * 0.65 + col[c] * 0.35 : photoC) * dim;
+        b.data[o + c] = col ? col[c] * (d > reliableM ? 0.7 : 1) + (d > reliableM ? 255 * 0.3 : 0) : 200 + (photoC - 128) * 0.15;
+      }
+      a.data[o + 3] = 255;
+      b.data[o + 3] = 255;
+    }
+  }
+  const spanM = Math.max(W, H) * m;
+  const gridM = gridSpacing(spanM);
+  const decorate = (ctx) => {
+    ctx.save();
+    ctx.font = "bold 12px sans-serif";
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.setLineDash([4, 4]);
+    for (let e = Math.ceil(view.minE / gridM) * gridM; e <= view.maxE; e += gridM) {
+      const [x] = toPx(e, 0);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let n = Math.ceil(view.minN / gridM) * gridM; n <= view.maxN; n += gridM) {
+      const [, y] = toPx(0, n);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // Distance rings, and the reliable range as a dashed yellow arc.
+    ctx.strokeStyle = "rgba(255,210,0,0.8)";
+    ctx.fillStyle = "rgba(255,210,0,0.95)";
+    const ring = gridSpacing(Math.min(maxDistM, view.farthest), 3);
+    for (let r = ring; r <= view.farthest + 1e-6; r += ring) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r / m, -Math.PI * 0.95, -Math.PI * 0.05);
+      ctx.stroke();
+      ctx.fillText(`${r} m`, cx + 3, cy - r / m - 3);
+    }
+    if (reliableM < view.farthest) {
+      ctx.strokeStyle = "#ffd400";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, reliableM / m, -Math.PI * 0.95, -Math.PI * 0.05);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const text = `verlässlich bis ${Math.round(reliableM)} m`;
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.fillRect(6, 6, ctx.measureText(text).width + 10, 18);
+      ctx.fillStyle = "#ffd400";
+      ctx.textAlign = "left";
+      ctx.fillText(text, 11, 19);
+    }
+    // Camera at the bottom, looking up; scale bar.
+    ctx.fillStyle = "#ff1744";
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 12);
+    ctx.lineTo(cx - 7, cy + 2);
+    ctx.lineTo(cx + 7, cy + 2);
+    ctx.closePath();
+    ctx.fill();
+    const bar = gridM / m;
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(W - bar - 20, H - 26, bar + 14, 20);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(W - bar - 13, H - 12, bar, 3);
+    ctx.textAlign = "left";
+    ctx.fillText(`${gridM} m`, W - bar - 11, H - 15);
+    ctx.restore();
+  };
+  const header = 22;
+  const gap = 8;
+  const withMap = surfaces.length > 0;
+  const legendH = withMap ? 22 : 0;
+  const out = document.createElement("canvas");
+  out.width = withMap ? W * 2 + gap : W;
+  out.height = H + header + legendH;
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#222";
+  ctx.fillRect(0, 0, out.width, out.height);
+  const panelAt = (x, img, title) => {
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const pc = c.getContext("2d");
+    pc.putImageData(img, 0, 0);
+    decorate(pc);
+    ctx.drawImage(c, x, header);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 13px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(title, x + 6, 15);
+  };
+  panelAt(0, a, "Foto → Draufsicht (ebener Boden, Blick nach oben)");
+  const stats = surfaceStats(view, surfaces, reliableM);
+  if (withMap) {
+    panelAt(W + gap, b, "Oberflächen – zum Vergleich mit Luftbildern");
+    // Legend: the kinds that were outlined.
+    let x = 6;
+    ctx.font = "12px sans-serif";
+    for (const art of [...new Set(surfaces.map((s) => s.art))]) {
+      const col = SURFACES[art];
+      ctx.fillStyle = `rgb(${col.join(",")})`;
+      ctx.fillRect(x, H + header + 5, 12, 12);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(art, x + 16, H + header + 15);
+      x += ctx.measureText(art).width + 30;
+    }
+  }
+  const dataUrl = out.toDataURL("image/jpeg", 0.86);
+  const thumb = document.createElement("canvas");
+  thumb.width = 240;
+  thumb.height = Math.round((240 * out.height) / out.width);
+  thumb.getContext("2d").drawImage(out, 0, 0, thumb.width, thumb.height);
+  return {
+    data: dataUrl.split(",")[1], dataUrl, thumbnail: thumb.toDataURL("image/jpeg", 0.8),
+    stats: {
+      width_m: Math.round(W * m), depth_m: Math.round(H * m), m_per_px: Math.round(m * 100) / 100, grid_m: gridM,
+      nearest_m: Math.round(view.nearest * 10) / 10, farthest_m: Math.round(view.farthest), surfaces: stats,
+    },
+  };
+}

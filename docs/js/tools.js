@@ -2,6 +2,8 @@
 
 import { OSMError, bearingDeg, destinationPoint, haversineKm, sunPosition } from "./geo.js";
 import { StallError, watch } from "./watchdog.js";
+import { MIN_CERTAINTY } from "./sharpen.js";
+import { cleanSurfaces } from "./surfaceview.js";
 
 export const SUBMIT_TOOL = "submit_result";
 export const HYPOTHESIS_TOOL = "mark_hypothesis";
@@ -34,6 +36,8 @@ export const FUNCTION_TOOLS = [
       x_min: NUM, y_min: NUM, x_max: NUM, y_max: NUM,
       enhance: { type: "boolean", description: "Kontrast/Schärfe anheben" },
       purpose: { type: "string", description: "was du erkennen willst" },
+      ki_schaerfen: { type: "string", description: "nur wenn sicher, was es zeigt: das nennen → KI-Schärfung" },
+      sicherheit: { type: "number", description: "0-1, ab 0,9" },
     }, ["x_min", "y_min", "x_max", "y_max", "purpose"]),
   },
   {
@@ -94,17 +98,22 @@ export const FUNCTION_TOOLS = [
     name: "top_view",
     description: "Draufsicht: Foto per Sichtstrahlen aufs Gelände geklappt, neben dem Luftbild desselben Ausschnitts. " +
       "Deckungsgleich = Pose stimmt; verdreht → bearing, zu lang/kurz → pitch/eye_height, versetzt → Standpunkt. " +
-      "style \"ueberlagert\" = übereinander.",
+      "style \"ueberlagert\" = übereinander. Ohne camera_lat/lon: nur aus dem Foto (ebener Boden), Meter-Raster, surfaces farbig.",
     parameters: obj({
       camera_lat: NUM, camera_lon: NUM, bearing_deg: NUM, fov_deg: NUM,
       pitch_deg: NUM, roll_deg: NUM,
+      horizon_y: { type: "number", description: "Horizonthöhe im Foto 0-1, statt pitch_deg" },
+      surfaces: {
+        type: "array", description: "Bodenflächen, art z.B. asphalt, pflaster, wiese, acker, wald, wasser, schotter; punkte = Umriss im Foto",
+        items: obj({ art: { type: "string" }, punkte: { type: "array", items: { type: "array", items: NUM } } }),
+      },
       eye_height_m: { type: "number", description: "Kamerahöhe über Boden" },
       min_distance_m: { type: "number", description: "Vordergrund ausblenden (Fensterbank, eigenes Dach)" },
       max_distance_m: { type: "number", description: "Standard 1500; kleiner = schärfer" },
       photo_region: { type: "array", items: NUM, description: "optional: nur dieser Bildteil [x_min,y_min,x_max,y_max]" },
       style: { type: "string", enum: ["nebeneinander", "ueberlagert"] },
       purpose: { type: "string" },
-    }, ["camera_lat", "camera_lon", "bearing_deg", "fov_deg"]),
+    }, ["fov_deg"]),
   },
   {
     type: "function",
@@ -368,7 +377,7 @@ function parseUtc(value) {
 export class ToolExecutor {
   // Stateless requests resend every crop, so the total is capped to stay well below request size limits.
   constructor({
-    zoom, mapView, renderView, topView, solveCamera, skylineMatch, web = null, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12,
+    zoom, mapView, renderView, topView, surfaceView = null, solveCamera, skylineMatch, web = null, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12,
     maxRenders = 12, maxTopViews = 10, maxSkylines = 6, maxWeb = 16, toolTimeoutMs = 120000,
   }) {
     this.zoom = zoom;
@@ -383,6 +392,7 @@ export class ToolExecutor {
     this.mapView = mapView;
     this.renderView = renderView;
     this.topView = topView;
+    this.surfaceView = surfaceView; // top view from the photo alone (no standpoint yet)
     this.solveCamera = solveCamera;
     this.maxTopViews = maxTopViews;
     this.topViewCount = 0;
@@ -435,12 +445,31 @@ export class ToolExecutor {
     const box = normalizeBox(num(args, "x_min"), num(args, "y_min"), num(args, "x_max"), num(args, "y_max"));
     if (box[2] - box[0] <= 0 || box[3] - box[1] <= 0) throw new ToolInputError("Der Bereich hat keine Fläche (x_max > x_min und y_max > y_min nötig)");
     if (this.zoomCount >= this.maxZooms) throw new ToolInputError(`Zoom-Limit (${this.maxZooms}) erreicht – arbeite mit den bisherigen Ausschnitten weiter`);
-    const crop = await this.zoom(box, Boolean(args.enhance));
+    // AI sharpening only when the AI says what the detail is and that it is sure (it can invent details).
+    const what = String(args.ki_schaerfen || "").trim().slice(0, 200);
+    const certainty = Number(args.sicherheit);
+    const wantsAi = what !== "" && certainty >= MIN_CERTAINTY;
+    const crop = await this.zoom(box, Boolean(args.enhance), wantsAi ? { what, certainty } : null);
     this.zoomCount += 1;
-    this.emit("zoom", { index: this.zoomCount, box, purpose: String(args.purpose || ""), thumbnail: crop.thumbnail });
+    const sharpened = Boolean(crop.ai?.applied);
+    this.emit("zoom", {
+      index: this.zoomCount, box, purpose: String(args.purpose || ""), thumbnail: crop.thumbnail,
+      ...(sharpened ? { sharpened: true, sharpened_as: what, sharpened_image: crop.aiImage } : {}),
+    });
+    let aiNote = "";
+    if (what && !wantsAi) {
+      aiNote = ` KI-Schärfung nicht angewandt: nur wenn du dir sicher bist (sicherheit ≥ 0,9, angegeben: ${Number.isFinite(certainty) ? certainty : "nichts"}).`;
+    } else if (sharpened) {
+      const st = crop.ai.stats || {};
+      aiNote = ` KI-geschärft (ESRGAN ×4, angefragt als „${what}“). Prüfung bestanden: verkleinert deckt es sich mit dem Original ` +
+        `(${st.psnr} dB, normale Vergrößerung ${st.plain_psnr} dB). Nur Kanten sind klarer – was im Original nicht erkennbar war ` +
+        "(Buchstaben, Ziffern), nicht als Beleg werten.";
+    } else if (crop.ai) {
+      aiNote = ` KI-Schärfung nicht angewandt: ${crop.ai.reason}.`;
+    }
     const info =
       `Ausschnitt x ${box[0].toFixed(3)}-${box[2].toFixed(3)}, y ${box[1].toFixed(3)}-${box[3].toFixed(3)} ` +
-      `= ${crop.sourceWidth}x${crop.sourceHeight} Originalpixel, vergrößert auf ${crop.width}x${crop.height}.`;
+      `= ${crop.sourceWidth}x${crop.sourceHeight} Originalpixel, vergrößert auf ${crop.width}x${crop.height}.${aiNote}`;
     return [
       { type: "text", text: info },
       { type: "image", mime_type: "image/jpeg", data: crop.data, resolution: "high" },
@@ -476,7 +505,7 @@ export class ToolExecutor {
     }
     const view = await this.mapView(opts);
     this.mapViewCount += 1;
-    this.emit("mapview", { lat, lon, zoom, layer, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    this.emit("mapview", { lat, lon, zoom, layer, purpose: String(args.purpose || ""), thumbnail: view.thumbnail, ...(view.preview ? { image: view.preview } : {}) });
     // Exact position of anything visible in the image, e.g. for solve_camera.
     const degN = view.metersPerPixel / 111195;
     const degE = view.metersPerPixel / (111195 * Math.cos((lat * Math.PI) / 180));
@@ -507,7 +536,7 @@ export class ToolExecutor {
     };
     const view = await this.renderView(opts);
     this.renderCount += 1;
-    this.emit("render", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    this.emit("render", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail, ...(view.preview ? { image: view.preview } : {}) });
     const s = view.stats;
     const parts = [
       `${s.texture === "satellit" ? "Luftbild-3D (Luftbild über dem Gelände, Gebäude als gelbe Drahtgitter)" : "3D-Nachbau"} ` +
@@ -522,8 +551,9 @@ export class ToolExecutor {
   }
 
   async tool_top_view(args) {
-    if (!this.topView) throw new ToolInputError("Die Draufsicht ist in dieser Umgebung nicht verfügbar");
     if (this.topViewCount >= this.maxTopViews) throw new ToolInputError(`Limit für Draufsichten (${this.maxTopViews}) erreicht`);
+    if (!Number.isFinite(args.camera_lat) && !Number.isFinite(args.camera_lon)) return this.photoTopView(args);
+    if (!this.topView) throw new ToolInputError("Die Draufsicht ist in dieser Umgebung nicht verfügbar");
     const opt = (key, lo, hi, fallback) => (Number.isFinite(args[key]) ? Math.min(Math.max(args[key], lo), hi) : fallback);
     const eyeHeight = opt("eye_height_m", 0.3, 3000, 1.6);
     const opts = {
@@ -540,6 +570,8 @@ export class ToolExecutor {
       region: Array.isArray(args.photo_region) && args.photo_region.length === 4 ? normalizeBox(...args.photo_region) : null,
       style: args.style === "ueberlagert" ? "ueberlagert" : "nebeneinander",
     };
+    const surfaces = cleanSurfaces(args.surfaces);
+    if (surfaces.length) opts.surfaces = surfaces;
     if (opts.maxDistM <= opts.minDistM + 5) throw new ToolInputError("max_distance_m muss deutlich größer als min_distance_m sein");
     if (opts.region && (opts.region[2] - opts.region[0] < 0.02 || opts.region[3] - opts.region[1] < 0.02)) {
       throw new ToolInputError("photo_region ist zu klein");
@@ -547,7 +579,7 @@ export class ToolExecutor {
     const view = await this.topView(opts);
     if (view.empty) return view.note;
     this.topViewCount += 1;
-    this.emit("topview", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail });
+    this.emit("topview", { lat: opts.lat, lon: opts.lon, bearing_deg: opts.bearingDeg, fov_deg: opts.fovDeg, purpose: String(args.purpose || ""), thumbnail: view.thumbnail, ...(view.preview ? { image: view.preview } : {}) });
     const s = view.stats;
     const text = [
       `Draufsicht vom Standpunkt ${opts.lat.toFixed(6)}, ${opts.lon.toFixed(6)} (Augenhöhe ${opts.eyeHeight} m), Blick ${Math.round(opts.bearingDeg * 10) / 10}°, ` +
@@ -557,6 +589,38 @@ export class ToolExecutor {
       opts.style === "ueberlagert" ? "Luftbild mit dem Foto zu 60 % darüber." : "Links: das Foto auf den Boden projiziert; rechts: Luftbild desselben Ausschnitts.",
       s.terrain ? `Geländemodell: Boden am Standpunkt ${s.ground_m} m ü. NN.` : "Geländemodell nicht verfügbar – Boden flach angenommen.",
       s.imagery_tiles ? "" : "Luftbild nicht erreichbar.",
+    ];
+    return [{ type: "text", text: text.filter(Boolean).join(" ") }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
+  }
+
+  /** top_view without a standpoint: the photo laid on level ground, with the outlined surfaces. */
+  async photoTopView(args) {
+    if (!this.surfaceView) throw new ToolInputError("Die Draufsicht aus dem Foto ist in dieser Umgebung nicht verfügbar");
+    const opt = (key, lo, hi, fallback) => (Number.isFinite(args[key]) ? Math.min(Math.max(args[key], lo), hi) : fallback);
+    const fovDeg = Math.min(Math.max(num(args, "fov_deg"), 5), 150);
+    const rollDeg = opt("roll_deg", -45, 45, 0);
+    const eyeHeight = opt("eye_height_m", 0.3, 500, 1.6);
+    const horizonY = opt("horizon_y", -2, 3, null);
+    const surfaces = cleanSurfaces(args.surfaces);
+    const view = await this.surfaceView({
+      fovDeg, rollDeg, eyeHeight, horizonY, pitchDeg: opt("pitch_deg", -89, 30, null), surfaces,
+      minDistM: opt("min_distance_m", 0, 500, 0), maxDistM: opt("max_distance_m", 5, 1000, null),
+    });
+    if (view.empty) return view.note;
+    this.topViewCount += 1;
+    this.emit("surfaceview", { purpose: String(args.purpose || ""), thumbnail: view.thumbnail, ...(view.preview ? { image: view.preview } : {}), reliable_m: Math.round(view.reliableM), surfaces: surfaces.length });
+    const s = view.stats;
+    const from = view.source === "horizont" ? `aus horizon_y ${horizonY}` : view.source === "neigung" ? "aus pitch_deg" : "geschätzt 0° (ohne horizon_y/pitch_deg – sehr unsicher)";
+    const kinds = s.surfaces.filter((x) => x.area_m2 > 0)
+      .map((x) => `${x.art}${x.width_m ? ` ${x.width_m} m breit` : ""} (${x.near_m}–${x.far_m} m)`);
+    const text = [
+      `Draufsicht NUR aus dem Foto: ebener Boden angenommen, Augenhöhe ${eyeHeight} m, Neigung ${Math.round(view.pitchDeg * 10) / 10}° ${from}, ` +
+        `Bildwinkel ${fovDeg}°${rollDeg ? `, Schieflage ${rollDeg}°` : ""}. Kamera unten Mitte, Blick nach oben (Norden unbekannt).`,
+      `Ausschnitt ${s.width_m} × ${s.depth_m} m, Raster ${s.grid_m} m, Boden von ${s.nearest_m} bis ${s.farthest_m} m. ` +
+        `Verlässlich bis ca. ${Math.round(view.reliableM)} m (gelb gestrichelt); dahinter Maßstab unsicher (Neigung, Auflösung).`,
+      kinds.length ? `Oberflächen: ${kinds.join("; ")}.` : "",
+      "Prüfen: parallele Ränder (Straße, Gehweg) müssen parallel sein – laufen sie auseinander, horizon_y anpassen. " +
+        "Dann mit map_view (Zoom 18–19) vergleichen: Formen, Breiten, Winkel, Abfolge der Flächen; mit Standpunkt top_view erneut.",
     ];
     return [{ type: "text", text: text.filter(Boolean).join(" ") }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
   }
@@ -620,7 +684,7 @@ export class ToolExecutor {
       }).catch(() => null);
       if (view && !view.empty) {
         this.topViewCount += 1;
-        this.emit("topview", { lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, purpose: "Pose aus dem Rückwärtsschnitt", thumbnail: view.thumbnail });
+        this.emit("topview", { lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, purpose: "Pose aus dem Rückwärtsschnitt", thumbnail: view.thumbnail, ...(view.preview ? { image: view.preview } : {}) });
         out.note += ` Dazu die Draufsicht mit dieser Pose (links Foto auf den Boden geklappt, rechts Luftbild, Raster ${view.stats.grid_m} m): ` +
           "liegen Wege, Feldgrenzen und Gebäudefüße deckungsgleich, stimmt die Pose; sonst mit top_view nachstellen.";
         return [{ type: "text", text: JSON.stringify(out) }, { type: "image", mime_type: "image/jpeg", data: view.data, resolution: "high" }];
@@ -683,7 +747,7 @@ export class ToolExecutor {
     };
     this.emit("skyline", {
       lat: out.camera.lat, lon: out.camera.lon, bearing_deg: out.view.bearing_deg, fov_deg: out.view.fov_deg, confidence: m.confidence,
-      peaks: named.slice(0, 8).map((p) => p.name), purpose: String(args.purpose || ""), thumbnail: image.thumbnail,
+      peaks: named.slice(0, 8).map((p) => p.name), purpose: String(args.purpose || ""), thumbnail: image.thumbnail, ...(image.preview ? { image: image.preview } : {}),
     });
     return [{ type: "text", text: JSON.stringify(out) }, { type: "image", mime_type: "image/jpeg", data: image.data, resolution: "high" }];
   }
@@ -702,7 +766,7 @@ export class ToolExecutor {
     const res = await this.web.photosNearby(lat, lon, radius);
     const note = res.problems.length ? ` (${res.problems.join("; ")})` : "";
     if (!res.items.length) return `Keine frei verfügbaren Fotos im Umkreis von ${radius} m${note}. Radius vergrößern oder anderen Punkt prüfen.`;
-    this.emit("photos", { lat, lon, radius_m: radius, count: res.items.length, purpose: String(args.purpose || ""), thumbnail: res.sheet?.thumbnail });
+    this.emit("photos", { lat, lon, radius_m: radius, count: res.items.length, purpose: String(args.purpose || ""), thumbnail: res.sheet?.thumbnail, ...(res.sheet?.preview ? { image: res.sheet.preview } : {}) });
     const list = res.items.map((p, i) => `${i + 1}. ${p.source}: ${p.title || "Foto"}${p.description ? ` – ${p.description}` : ""} · ${p.distance_m} m, ` +
       `Richtung ${p.bearing_deg}°${p.heading != null ? `, Blick ${Math.round(p.heading)}°` : ""}${p.date ? `, ${p.date}` : ""} · ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`);
     const text = `Fotos anderer im Umkreis von ${radius} m um ${lat.toFixed(6)}, ${lon.toFixed(6)} (${res.found} gefunden, ${res.items.length} gezeigt)${note}:\n` +

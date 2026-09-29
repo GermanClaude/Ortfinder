@@ -4,12 +4,13 @@
 // keeps these numbers in step with it); the pictures are counted for the actual photo.
 
 import { fitSize, MODEL_MAX_SIDE, ZOOM_MAX_SIDE } from "./imaging.js";
+import { SURFACE_FIRST_HINT } from "./prompt.js";
 
 /** Text tokens each request sends in the typical analysis (system prompt, tools, history, results). */
 export const TEXT_PROFILE = {
-  gemini: [5220, 5741, 13435, 8026, 7504, 7906, 8166],
-  chat: [5247, 5985, 13750, 8606, 8316, 9004, 9373], // OpenAI style: Puter, OpenRouter, the other services, own PC
-  claude: [5289, 5908, 13560, 15122, 15492, 15902, 16144], // Claude keeps its history unchanged (prompt cache)
+  gemini: [5391, 5912, 13606, 8197, 7675, 8077, 8337],
+  chat: [5419, 6157, 13922, 8778, 8488, 9176, 9545], // OpenAI style: Puter, OpenRouter, the other services, own PC
+  claude: [5461, 6080, 13732, 15294, 15664, 16074, 16316], // Claude keeps its history unchanged (prompt cache)
 };
 
 /**
@@ -28,6 +29,10 @@ export const PLAN = [
 export const TYPICAL_ROUNDS = PLAN.length;
 const RESERVE = { steps: "Reserve für weitere Prüfungen (nur falls nötig)", images: [[768, 768]] };
 const VISIBLE_OUTPUT = 250; // tool calls and notes per round
+// "Oberflächen zuerst": its instruction goes along with every request, its top view (two panels) with round 2.
+const SURFACE_TEXT = Math.ceil(SURFACE_FIRST_HINT.length / 3.6);
+const SURFACE_IMAGE = [1128, 604];
+const SURFACE_OUTPUT = 250; // the outlines of the surfaces
 const SUBMISSION_OUTPUT = 900; // the result itself
 
 // ---------- pictures ----------
@@ -113,7 +118,7 @@ export function planFor(rounds) {
  * typical analysis needs about seven, rounds beyond are a reserve (shown, counted only in the maximum).
  * Claude's cached repeats cost a tenth: the costs count its input at a third (measured over a whole run).
  */
-export function estimateAnalysis({ provider, model = "", thinking = "medium", width, height, rounds, prices = null }) {
+export function estimateAnalysis({ provider, model = "", thinking = "medium", width, height, rounds, prices = null, surfaceFirst = false }) {
   const imageTokens = imageTokensFor(provider, model);
   const profile = provider === "gemini" ? TEXT_PROFILE.gemini : provider === "claude" ? TEXT_PROFILE.claude : TEXT_PROFILE.chat;
   const growth = profile.at(-1) - profile.at(-2);
@@ -126,15 +131,20 @@ export function estimateAnalysis({ provider, model = "", thinking = "medium", wi
   let kept = 0; // Claude sends every earlier picture again
   const plan = steps.map((step, i) => {
     const k = i + 1;
-    const text = profile[i] ?? profile.at(-1) + growth * (k - profile.length);
+    const text = (profile[i] ?? profile.at(-1) + growth * (k - profile.length)) + (surfaceFirst ? SURFACE_TEXT : 0);
     // Pictures in this request: the photo, and the detail tiles (round 1) or what the last round brought back.
     let pictures = k === 1 ? tiles.map((t) => imageTokens(...t)) : steps[i - 1].images.map((p) => imageTokens(...p));
+    if (surfaceFirst && k === 2) pictures.push(imageTokens(...SURFACE_IMAGE));
     if (pictures.length + 1 > maxImages) pictures = pictures.slice(-(maxImages - 1));
     const fresh = pictures.reduce((s, v) => s + v, 0);
     kept += fresh;
     const input = text + photo + (provider === "claude" ? kept : fresh);
     const final = step === PLAN.at(-1);
-    return { round: k, steps: step.steps, input, output: VISIBLE_OUTPUT + think + (final ? SUBMISSION_OUTPUT : 0), reserve: step === RESERVE };
+    const first = surfaceFirst && k === 1;
+    return {
+      round: k, steps: first ? `Oberflächen → Draufsicht aus dem Foto; ${step.steps}` : step.steps, input,
+      output: VISIBLE_OUTPUT + think + (final ? SUBMISSION_OUTPUT : 0) + (first ? SURFACE_OUTPUT : 0), reserve: step === RESERVE,
+    };
   });
   const totals = (rows) => ({ rounds: rows.length, input: rows.reduce((s, r) => s + r.input, 0), output: rows.reduce((s, r) => s + r.output, 0) });
   const typical = totals(plan.filter((r) => !r.reserve));

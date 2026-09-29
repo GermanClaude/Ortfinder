@@ -19,6 +19,9 @@ test("tools in plain words; the typical plan as the fallback", () => {
   assert.equal(toolActivity("geocode", { query: "Bahnhofstraße Freiburg" }), "sucht den Ort „Bahnhofstraße Freiburg“");
   assert.equal(toolActivity("map_view", { layer: "satellit", purpose: "Kreuzung vergleichen" }), "lädt ein Luftbild: Kreuzung vergleichen");
   assert.equal(toolActivity("zoom_image", {}), "zoomt auf ein Detail");
+  assert.equal(toolActivity("zoom_image", { purpose: "Schild", ki_schaerfen: "Schild", sicherheit: 0.95 }), "zoomt und schärft (KI, mit Prüfung): Schild");
+  assert.equal(toolActivity("top_view", { fov_deg: 60, horizon_y: 0.4 }), "legt das Foto als Draufsicht flach (Oberflächen, Meter-Raster)");
+  assert.match(toolActivity("top_view", { camera_lat: 47.9, camera_lon: 7.8 }), /Luftbild/);
   assert.equal(toolActivity("new_tool"), "nutzt new_tool");
   assert.match(typicalStep(1, 10), /Zooms auf Schrift/);
   assert.equal(typicalStep(7, 10), "Ergebnis abgeben");

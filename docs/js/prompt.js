@@ -40,7 +40,7 @@ Overpass-Abfrage kombinieren. \`photos_nearby\`: Fotos anderer am Kandidaten \
 5. Feinortung (unten), sobald Stadt/Straße/Ortsteil belegt sind, dann abgeben.
 
 ## Feinortung auf ~20–50 m
-- Berge vor Himmel: früh \`skyline_match\` (\`search_radius_m\` = Unsicherheit). Gibt Richtung/Neigung/Bildwinkel \
+- Berge/Hügel vor Himmel: früh \`skyline_match\` (\`search_radius_m\` = Unsicherheit). Gibt Richtung/Neigung/Bildwinkel \
 (±) und Gipfelnamen; \`match_confidence\` ≥ 0,9 + rote Linie auf der Himmelslinie = Blick und Gegend belegt, Standpunkt \
 nur grob. Danach \`solve_camera\` (nutzt den Kamm mit): 3–5 Bodenpunkte → Haus.
 - \`street_geometry\`: Straßenrichtung im Foto (Flucht, Bordsteine) mit \`street_bearing_deg\` vergleichen → Abschnitt und \
@@ -71,3 +71,14 @@ Körpermerkmalen – nur Kleidung, Uniformen, Beschriftungen, Verhalten.
 - \`camera\`/\`subject\` auf den genauesten BELEGTEN Ort; sonst Mittelpunkt der Region mit passendem Radius.
 - Jeder sichtbare Hinweis in \`clues\` mit enger \`box\` [x_min, y_min, x_max, y_max] (0–1).
 - Alle Texte auf Deutsch.`;
+
+
+/** First step when "Oberflächen zuerst" is on (goes into the first message of an analysis). */
+export const SURFACE_FIRST_HINT = "Zuerst, falls Boden zu sehen ist: Oberflächen bestimmen (Asphalt, Pflaster, Wiese, Acker, Wasser, Wege …) und " +
+  "top_view OHNE Standpunkt aufrufen – mit horizon_y, fov_deg und surfaces (Umrisse im Foto). Die Draufsicht später mit Luftbildern " +
+  "(map_view) vergleichen. Ohne sichtbaren Boden überspringen.";
+
+/** The sky line found in the photo before the analysis (hills or mountains in the background). */
+export const backgroundHint = ({ coverage, reliefDeg }) =>
+  `Hintergrund geprüft: Himmelslinie über ${Math.round(coverage * 100)} % der Bildbreite, ${reliefDeg.toFixed(1)}° Höhenunterschied ` +
+  "(Berge/Hügel?). Sobald die Gegend grob feststeht: früh skyline_match (Kamm, Gipfelnamen, Blickrichtung).";

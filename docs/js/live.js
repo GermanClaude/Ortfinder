@@ -24,7 +24,7 @@ const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 const quoted = (s) => `„${clip(String(s), 60)}“`;
 
 const TOOLS = {
-  zoom_image: (i) => (i.purpose ? `zoomt: ${clip(i.purpose, 70)}` : "zoomt auf ein Detail"),
+  zoom_image: (i) => `${i.ki_schaerfen && i.sicherheit >= 0.9 ? "zoomt und schärft (KI, mit Prüfung)" : "zoomt"}${i.purpose ? `: ${clip(i.purpose, 70)}` : " auf ein Detail"}`,
   geocode: (i) => `sucht den Ort ${quoted(i.query || "")}`,
   reverse_geocode: () => "schlägt die Adresse zu Koordinaten nach",
   overpass_query: (i) => (i.purpose ? `fragt OpenStreetMap ab: ${clip(i.purpose, 70)}` : "fragt OpenStreetMap ab"),
@@ -34,7 +34,8 @@ const TOOLS = {
   photos_nearby: () => "sucht Fotos anderer in der Nähe",
   map_view: (i) => `lädt ${i.layer === "karte" ? "einen Kartenausschnitt" : "ein Luftbild"}${i.purpose ? `: ${clip(i.purpose, 60)}` : ""}`,
   render_view: () => "baut die Szene in 3D nach und vergleicht sie mit dem Foto",
-  top_view: () => "klappt das Foto aufs Gelände und vergleicht es mit dem Luftbild",
+  top_view: (i) => (Number.isFinite(i.camera_lat) ? "klappt das Foto aufs Gelände und vergleicht es mit dem Luftbild"
+    : "legt das Foto als Draufsicht flach (Oberflächen, Meter-Raster)"),
   solve_camera: () => "berechnet den genauen Standpunkt (Rückwärtsschnitt)",
   skyline_match: () => "gleicht den Bergkamm mit dem Gelände ab",
   mark_hypothesis: (i) => (i.label ? `trägt den Zwischenstand ein: ${clip(i.label, 60)}` : "trägt einen Zwischenstand ein"),

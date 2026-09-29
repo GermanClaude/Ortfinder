@@ -242,8 +242,8 @@ def test_website_end_to_end(browser, site_url, tmp_path):
     # photo zoom, aerial view, 3D reconstruction, top view, top view from solve_camera, aerial 3D
     assert page.locator(".zooms figure").count() == 6
     assert "Luftbild: Kreuzung vergleichen" in page.text_content(".zooms figure.mapview")
-    assert "3D-Nachbau: Straßenflucht prüfen" in page.text_content(".zooms figure.render")
-    assert "Draufsicht: Straße von oben" in page.text_content(".zooms")
+    assert "3D-Nachbau: Straßenflucht prüfen" in page.text_content("#sec-models")
+    assert "Draufsicht: Straße von oben" in page.text_content("#sec-aerial")
     log_now = page.text_content("#log")
     assert "Draufsicht: Foto auf das Gelände geklappt, Blick 352°" in log_now
     assert "Rückwärtsschnitt aus 4 Punkten" in log_now
@@ -1223,7 +1223,7 @@ def test_mountain_skyline_names_the_peaks(browser, site_url, tmp_path):
     # The user sees it too: log line, snapshot, and the peaks section in the result.
     log = page.text_content("#log")
     assert "Bergkamm-Abgleich: Blick 8" in log and "Grosser Probestock" in log
-    assert "Bergkamm: Bergkette benennen" in page.text_content(".zooms")
+    assert "Bergkamm: Bergkette benennen" in page.text_content("#sec-models")
     page.wait_for_selector("#skyline-slot table.peaks", timeout=30000)
     table = page.text_content("#skyline-slot table.peaks")
     assert "Grosser Probestock" in table and "9,0 km" in table
@@ -1403,7 +1403,15 @@ def test_estimate_before_the_analysis_and_explained_errors(browser, site_url, tm
     assert "Heute noch ca. 40 von 40 kostenlosen Anfragen" in summary and "reicht für ca. 5 Analyse(n)" in summary
     rows = page.eval_on_selector_all("#confirm-rows tr", "rs => rs.map(r => [r.className, r.cells[1].textContent])")
     assert len(rows) == 10 and rows[6][1] == "Ergebnis abgeben" and all(c == "reserve" for c, _ in rows[7:])
-    assert rows[0][1].startswith("Überblick")
+    # "Oberflächen zuerst" is on: round 1 starts with the top view from the photo; switched off, it is gone.
+    assert rows[0][1].startswith("Oberflächen → Draufsicht aus dem Foto; Überblick")
+    assert page.is_checked("#confirm-surface")
+    with_surface = page.text_content("#confirm-summary")
+    page.uncheck("#confirm-surface")
+    assert page.eval_on_selector("#confirm-rows tr", "r => r.cells[1].textContent").startswith("Überblick")
+    assert page.text_content("#confirm-summary") != with_surface, "fewer tokens without it"
+    assert page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1')).surfaceFirst") is False
+    page.check("#confirm-surface")
 
     # Fewer rounds: the plan ends with the result earlier; more thinking: more tokens received.
     page.fill("#confirm-steps", "5")
@@ -1492,11 +1500,19 @@ def test_zoom_in_the_log_highlights_it_in_the_photo_with_its_own_color(browser, 
     assert page.eval_on_selector('#overlay .box.zoom[data-zoom="2"]', "n => getComputedStyle(n).borderTopStyle") == "solid"
     page.screenshot(path=str(tmp_path / "zoom-highlight.png"))
     # Another one moves the highlight; tapping the same one again ends it.
-    page.click('.zooms figure[data-zoom="3"] img')
+    page.click('#log li[data-zoom="3"]')
     assert page.eval_on_selector_all("[data-zoom].active", "ns => ns.map(n => n.dataset.zoom)") == ["3", "3", "3"]
-    page.click('.zooms figure[data-zoom="3"] img')
+    page.click('#log li[data-zoom="3"]')
     assert page.eval_on_selector_all("[data-zoom].active", "ns => ns.length") == 0
     assert "zoomfocus" not in page.get_attribute("#overlay", "class")
+    # Tapping a crop shows it large; "Im Foto zeigen" highlights it in the photo.
+    page.click('.zooms figure[data-zoom="3"] img')
+    page.wait_for_selector("#lightbox[open]")
+    assert page.text_content("#lb-title").startswith("Zoom #3 · Hausnummer")
+    page.click("#lb-show")
+    assert not page.is_visible("#lightbox")
+    assert page.eval_on_selector_all("[data-zoom].active", "ns => ns.map(n => n.dataset.zoom)") == ["3", "3", "3"]
+    page.click('#log li[data-zoom="3"]')
     page.focus('#log li[data-zoom="1"]')
     page.keyboard.press("Enter")
     assert "active" in page.get_attribute('#overlay .box.zoom[data-zoom="1"]', "class"), "works with the keyboard too"
@@ -1584,5 +1600,94 @@ def test_while_it_searches_the_page_shows_what_happens_now_and_next(browser, sit
     page.wait_for_selector(".answer", timeout=30000)
     assert not page.is_visible("#live"), "gone once the result is there"
     assert "Nächster Schritt: Straße per Luftbild prüfen." in page.text_content("#log")
+    assert errors == []
+    context.close()
+
+
+def test_sections_large_view_ai_sharpening_and_top_view_from_the_photo(browser, site_url, tmp_path):
+    """Crops, aerial images/top views and 3D are shown apart and open large; a sure AI gets a checked AI-sharpened
+    crop (real ESRGAN in the browser); top_view without a standpoint lays the photo flat; the background is checked."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    call = lambda i, name, args: {"id": i, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+    script = [
+        {"message": {"role": "assistant", "content": "Schild und Straße.\nNächster Schritt: Luftbild vergleichen.", "tool_calls": [
+            call("c1", "zoom_image", {"x_min": 0.70, "y_min": 0.64, "x_max": 0.80, "y_max": 0.72, "purpose": "Straßenschild",
+                                      "ki_schaerfen": "Straßenschild mit weißer Schrift", "sicherheit": 0.95}),
+            call("c2", "zoom_image", {"x_min": 0.1, "y_min": 0.3, "x_max": 0.4, "y_max": 0.6, "purpose": "Fassade"}),
+            call("c3", "top_view", {"fov_deg": 65, "horizon_y": 0.45, "purpose": "Straßenverlauf",
+                                    "surfaces": [{"art": "Straße", "punkte": [[0.25, 1.0], [0.75, 1.0], [0.52, 0.5], [0.48, 0.5]]}]}),
+            call("c4", "map_view", {"lat": 47.99, "lon": 7.85, "zoom": 18, "layer": "satellit", "purpose": "Kreuzung"}),
+        ]}, "finish_reason": "tool_calls", "usage": {"prompt_tokens": 3000, "completion_tokens": 200}},
+        {"message": {"role": "assistant", "content": None, "tool_calls": [call("c5", "submit_result", SUBMISSION)]},
+         "finish_reason": "tool_calls", "usage": {"prompt_tokens": 4000, "completion_tokens": 300}},
+    ]
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(f"window.__puterScript = {json.dumps(script)};")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.route("https://js.puter.com/v2/", lambda r: r.fulfill(status=200, content_type="application/javascript", body=FAKE_PUTER))
+    page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
+    page.route("https://server.arcgisonline.com/**", lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=PNG_1X1))
+    _mock_scene(page)
+    page.goto(site_url)
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector(".answer", timeout=120000)
+
+    log = page.text_content("#log")
+    assert "Hintergrund geprüft" in log
+    assert "Draufsicht aus dem Foto (noch ohne Standpunkt): 1 Oberflächen eingezeichnet" in log
+    # Separate sections.
+    assert page.locator("#zooms figure").count() == 2
+    assert page.locator("#aerials figure").count() == 2
+    assert page.is_hidden("#sec-models") and page.is_hidden("#sec-other") and page.is_hidden("#gallery-empty")
+    assert "(2)" in page.text_content("#sec-aerial h4")
+    # What the AI got back: the checked, AI-sharpened crop and the top view from the photo.
+    calls = page.evaluate("window.__puterCalls")
+    results = " ".join(m["content"] for m in calls[1]["messages"] if m["role"] == "tool" and isinstance(m["content"], str))
+    sharpened = "KI-geschärft (ESRGAN ×4" in results
+    assert sharpened or "KI-Schärfung nicht angewandt" in results, results[:500]
+    assert "Prüfung bestanden" in results, "ESRGAN keeps a clear sign faithful to the original"
+    assert "Draufsicht NUR aus dem Foto" in results and "asphalt" in results and "Verlässlich bis ca." in results
+    # The plain zoom is ready first (sharpening takes longer), so the sharpened one is the second.
+    assert page.locator("#zooms figure .ai-badge").count() == 1
+    n = page.eval_on_selector("#zooms figure:has(.ai-badge)", "n => n.dataset.zoom")
+    assert "(KI-geschärft)" in page.text_content(f'#log li[data-zoom="{n}"]')
+
+    # Large view: an aerial image, then the next one in the same section, zoom in, close.
+    page.click("#aerials figure:nth-child(1) img")
+    page.wait_for_selector("#lightbox[open]")
+    first = page.text_content("#lb-title")
+    assert page.get_attribute("#lb-img", "src").startswith("data:image/jpeg")
+    page.click("#lb-next")
+    second = page.text_content("#lb-title")
+    assert {first.split("  (")[0], second.split("  (")[0]} == {"🛰 Luftbild", "📐 Draufsicht aus dem Foto"}
+    assert first.endswith("(1/2)") and second.endswith("(2/2)")
+    assert not page.is_visible("#lb-show"), "only zooms have a place in the photo"
+    small = page.eval_on_selector("#lb-img", "n => n.getBoundingClientRect().width")
+    page.click("#lb-zoom")
+    assert page.eval_on_selector("#lb-img", "n => n.getBoundingClientRect().width") > small * 1.8
+    page.keyboard.press("Escape")
+    assert not page.is_visible("#lightbox")
+    # The sharpened crop: original side by side on request; cut from the photo at full size.
+    page.click(f'#zooms figure[data-zoom="{n}"] img')
+    assert page.is_visible("#lb-ai") and page.text_content("#lb-ai") == "Original zeigen"
+    assert "KI-geschärft" in page.text_content("#lb-caption")
+    sharp_src = page.get_attribute("#lb-img", "src")
+    page.click("#lb-ai")
+    assert page.text_content("#lb-caption") == "Original (ohne KI-Schärfung)."
+    assert page.get_attribute("#lb-img", "src") != sharp_src
+    assert page.eval_on_selector("#lb-img", "n => n.naturalWidth") >= 1024, "the original crop at full size"
+    page.screenshot(path=str(tmp_path / "lightbox.png"))
+    page.click("#lb-close")
+    # Settings: AI sharpening, background check and "surfaces first" can be switched off.
+    page.click("#settings-toggle")
+    page.click("#analysis-settings summary")
+    for box in ["#ai-sharpen", "#background-check", "#surface-first"]:
+        assert page.is_checked(box)
+        page.uncheck(box)
+    stored = json.loads(page.evaluate("localStorage.getItem('ortfinder.settings.v1')"))
+    assert (stored["aiSharpen"], stored["backgroundCheck"], stored["surfaceFirst"]) == (False, False, False)
     assert errors == []
     context.close()
