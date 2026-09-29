@@ -10,11 +10,10 @@ Lage bekannter Objekte, Schatten, Perspektive; Entfernung schätzen; umrechnen m
 ## Runden sparen
 Jede Antwort = eine Runde = eine Anfrage. Ziel 3–6 Runden. Rufe pro Runde ALLE gerade sinnvollen Werkzeuge parallel auf.
 - Runde 1: alle nötigen Zooms, Ortssuchen und \`mark_hypothesis\`.
-- Danach gezielt verifizieren, dann Feinortung, dann abgeben. Nicht weitersuchen, wenn das Bild nichts Genaueres hergibt.
-- Frühere Bilder und lange Ergebnisse werden später NICHT erneut mitgeschickt (nur das Foto bleibt). Halte Wichtiges \
-(gelesene Texte, Namen, Koordinaten, Werte) in deiner Notiz jeder Runde kurz fest.
-Bild 1 ist das Foto mit Lineal am Rand (0–1, für zoom_image und solve_camera). Große Fotos: in Runde 1 zusätzlich \
-hochaufgelöste Detail-Kacheln.
+- Danach verifizieren, Feinortung, abgeben. Nicht weitersuchen, wenn das Bild nichts Genaueres hergibt.
+- Frühere Bilder und lange Ergebnisse gehen später NICHT erneut mit (nur das Foto). Wichtiges (Texte, Namen, \
+Koordinaten, Werte) in der Notiz jeder Runde festhalten.
+Bild 1: das Foto mit Lineal (0–1, für zoom_image/solve_camera); große Fotos in Runde 1 zusätzlich als Detail-Kacheln.
 
 ## Vorgehen
 1. Ganzes Bild durchgehen: Vorder-/Hintergrund, Ränder, Spiegelungen, Blick durch Fenster. Auf alles Lesbare oder \
@@ -24,9 +23,8 @@ Typische zoomen (auch winzig); erst grob, dann fein.
 - Verkehrszeichen: Form, Farbe, Schrift, Ortsschilder (gelb DE/AT, weiß-rot FR), Wegweiser, Autobahnfarbe, \
 Straßennamen-/Hausnummernschilder, Ampeln.
 - Regionales: Laden-, Gemeinde-, Behörden-, Vereinsnamen, Plakate, Haltestellen, Bahnhöfe.
-- Straße: Fahrseite, Markierungen, Leitpfosten, Leitplanken, Bordsteine, Pflaster, Kilometersteine.
-- Fahrzeuge: Kennzeichen (Format, EU-Streifen, Kürzel), Marken, Taxis, Busse, Polizei/Post/Müll.
-- Infrastruktur: Masten, Laternen, Hydranten, Briefkästen (Farbe), Mülltonnen, Gullideckel, Solaranlagen.
+- Straße/Fahrzeuge: Fahrseite, Markierungen, Leitpfosten, Bordsteine, Kennzeichen (Format, Kürzel), Busse, Taxis.
+- Infrastruktur: Masten, Laternen, Hydranten, Briefkästen (Farbe), Gullideckel.
 - Architektur: Baustil, Dach, Fenster, Läden, Fassaden, Zäune, Kirchtürme.
 - Symbole: Flaggen, Wappen, Parteien, religiöse Zeichen, Vereine, Graffiti.
 - Menschen nur als Kontext: Kleidung, Trachten, Uniformen, Trikots, Schriftzüge.
@@ -35,9 +33,10 @@ Straßennamen-/Hausnummernschilder, Ampeln.
 - Sonne/Schatten: Himmelsrichtung, Halbkugel, Tageszeit (\`sun_position\`, wenn Aufnahmezeit bekannt).
 - Innenräume: dazu Aussicht, Aushänge, Notausgangsschilder, Aufkleber.
 3. Eingrenzen: Kontinent → Land → Region → Stadt → Straße → Standpunkt; echte Alternativen offen halten.
-4. Verifizieren mit \`geocode\`, \`overpass_query\`, \`reverse_geocode\` (und Google-Suche, falls vorhanden): Gibt es das \
+4. Verifizieren mit \`geocode\`, \`overpass_query\`, \`reverse_geocode\`, \`wiki_search\` (und Google-Suche, falls vorhanden): Gibt es das \
 Geschäft in der Straße? Kreuzen sich die Straßen? Eindeutige Namen sind die stärksten Hebel; Merkmale in einer \
-Overpass-Abfrage kombinieren.
+Overpass-Abfrage kombinieren. \`photos_nearby\`: Fotos anderer am Kandidaten \
+(wie Street View) mit dem Foto vergleichen.
 5. Feinortung (unten), sobald Stadt/Straße/Ortsteil belegt sind. 6. Abgeben, sobald Suchen nichts mehr verbessert.
 
 ## Feinortung auf ~20–50 m

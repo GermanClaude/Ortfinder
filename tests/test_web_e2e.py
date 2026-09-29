@@ -425,7 +425,7 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     assert "Zwischenstand: Südbaden" in page.text_content("#log")
     calls = page.evaluate("window.__puterCalls")
     assert len(calls) == 2
-    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 16}
+    assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 18}
     first_user = calls[0]["messages"][1]["content"]
     assert first_user[1]["type"] == "image_url" and first_user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     roles = [m["role"] for m in calls[1]["messages"]]
@@ -818,7 +818,7 @@ def test_claude_provider_with_own_api_key(browser, site_url, tmp_path):
     body = first["body"]
     assert body["model"] == "claude-opus-5" and body["stream"] is True and body["fallbacks"] == "default"
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
-    assert len(body["tools"]) == 16 and all(t["eager_input_streaming"] for t in body["tools"])
+    assert len(body["tools"]) == 18 and all(t["eager_input_streaming"] for t in body["tools"])
     first_user = body["messages"][0]["content"]
     assert [b["type"] for b in first_user][:2] == ["text", "image"]
     assert first_user[1]["source"]["media_type"] == "image/jpeg"
@@ -1119,5 +1119,76 @@ def test_mountain_skyline_names_the_peaks(browser, site_url, tmp_path):
     if os.environ.get("ORTFINDER_SHOTS"):
         page.wait_for_timeout(1500)
         page.locator("#skyline-slot").screenshot(path=os.path.join(os.environ["ORTFINDER_SHOTS"], "e2e-skyline.png"))
+    assert errors == []
+    context.close()
+
+
+def test_hints_image_search_and_feedback_teach_the_next_analysis(browser, site_url, tmp_path):
+    """Extra info goes to the AI; the true location measures the error; the AI's lessons go along next time."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(GEMINI_SETTINGS)
+    context.add_init_script("window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; };")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    bodies: list[dict] = []
+    lesson = "Straßennamensschilder immer zuerst per zoom_image lesen und mit geocode prüfen, bevor Gebäude verglichen werden."
+
+    def gemini(route):
+        body = json.loads(route.request.post_data)
+        bodies.append(body)
+        if "tools" not in body:  # the lesson question: no tools, answer as JSON
+            answer = {"id": "", "status": "completed", "steps": [{"type": "model_output", "content": [{"type": "text", "text": json.dumps({"lessons": [lesson]})}]}]}
+            return route.fulfill(status=200, content_type="application/json", body=json.dumps(answer))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(_interaction([{"type": "function_call", "id": "x", "name": "submit_result", "arguments": SUBMISSION}])))
+
+    page.route("https://generativelanguage.googleapis.com/**", gemini)
+    page.route("**/lessons.json", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({"lessons": ["Gemeinsame Testlehre für alle Nutzer, lang genug."]})))
+    page.goto(site_url)
+    page.click("#hints-box summary")
+    page.fill("#hints", "Google Lens findet: Martinstor, Freiburg")
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector(".answer", timeout=30000)
+    intro = bodies[0]["input"][0]["content"][0]["text"]
+    assert "Zusatzinfo des Nutzers (ernst nehmen, aber selbst prüfen):\nGoogle Lens findet: Martinstor, Freiburg" in intro
+    assert "Gemeinsame Testlehre für alle Nutzer" in intro
+
+    # Reverse image search by hand: the site opens, the photo is (tried to be) copied.
+    page.click("#lens-bing")
+    assert page.evaluate("window.__opened") == ["https://www.bing.com/visualsearch"]
+    assert "Bing" in page.text_content("#lens-hint")
+    # Street View / Maps links for checking the spot.
+    assert "map_action=pano&viewpoint=47.99,7.85&heading=352" in page.get_attribute("text=🚶 Street View hier", "href")
+
+    # Feedback: the true place as coordinates, a comment, save → error and the AI's lesson.
+    page.click("#feedback summary")
+    page.fill("#feedback input[type=text]", "47.9959, 7.8522")
+    page.click("#feedback >> text=Übernehmen")
+    assert "Abweichung der Analyse: 676 m" in page.text_content("#feedback")
+    page.fill("#feedback textarea", "Das Schild war gut, die Straße aber falsch.")
+    page.click("#feedback >> text=Rückmeldung speichern")
+    page.wait_for_selector("#feedback ul.lessons li", timeout=20000)
+    fb = page.text_content("#feedback")
+    assert "676 m daneben (außerhalb des angegebenen Radius von 300 m)" in fb and lesson in fb
+    question = bodies[-1]["input"][0]["content"]
+    assert "Wahrer Ort: (ohne Adresse) (47.99590, 7.85220). Abweichung: 676 m." in question[0]["text"]
+    assert question[1]["type"] == "image"
+    share = page.get_attribute("#feedback a[href*='github.com']", "href")
+    assert "issues/new" in share and "nicht+mitgeteilt" in share
+    assert len(page.evaluate("JSON.parse(localStorage.getItem('ortfinder.lessons.v1'))")) == 1
+    page.click("#settings-toggle")
+    page.click("#learn-settings summary")
+    assert lesson in page.text_content("#lesson-list") and "1 Rückmeldung" in page.text_content("#lesson-list")
+    page.click("#save-settings")
+
+    # The next analysis carries the lesson.
+    bodies.clear()
+    page.fill("#hints", "")
+    page.set_input_files("#file", str(street))
+    page.wait_for_function("document.querySelector('#log').textContent.includes('Fertig')", timeout=30000)
+    assert f"- {lesson}" in bodies[0]["input"][0]["content"][0]["text"]
     assert errors == []
     context.close()

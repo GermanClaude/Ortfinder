@@ -1,13 +1,13 @@
 // Ortfinder web app: runs entirely in the browser (GitHub Pages friendly).
 
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
-import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent } from "./claude-agent.js";
+import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent, loadSdk as loadClaudeSdk } from "./claude-agent.js";
 import { OSMClient, haversineKm, viewCone } from "./geo.js";
 import { decodeImage, detailTiles, overview, rulerOverview, zoomCrop } from "./imaging.js";
 import { TILES_MARK } from "./compact.js";
 import { drapedTerrain, topViewImage } from "./groundview.js";
 import { DEVICES, GUIDES, detectDevice, guideNodes } from "./guides.js";
-import { renderMapView } from "./mapview.js";
+import { loadTileImage, renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov, typicalPhoneFov } from "./metadata.js";
 import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
 import {
@@ -21,6 +21,11 @@ import { peakLabel, photoSkyline, skylineImage, skylineMatch } from "./skyline.j
 import { Terrain } from "./terrain.js";
 import qrcode from "../vendor/qrcode.mjs";
 import { ToolExecutor } from "./tools.js";
+import { contactSheet, languages, photosNearby, reverseImageSearch, visionSummary, wikiSearch } from "./websearch.js";
+import {
+  SCREENSHOT_PROMPT, askAI, feedbackRecord, feedbackStats, lessonPrompt, lessonsBlock, loadFeedback, loadLessons, mergeLessons, parseLessons,
+  parseLocation, parseScreenshotAnswer, saveFeedback, saveLessons, shareIssueUrl,
+} from "./feedback.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -185,6 +190,8 @@ const settings = {
   openrouterModel: OPENROUTER_DEFAULT_MODEL,
   claudeKey: "",
   claudeModel: CLAUDE_DEFAULT_MODEL,
+  visionKey: "",
+  learn: true,
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -227,6 +234,9 @@ function fillSettingsForm() {
   if (!CLAUDE_MODELS.some((m) => m.id === settings.claudeModel)) claudeSelect.append(el("option", { value: settings.claudeModel }, settings.claudeModel));
   claudeSelect.value = settings.claudeModel;
   $("#claude-key").value = settings.claudeKey;
+  $("#vision-key").value = settings.visionKey;
+  $("#learn").checked = settings.learn !== false;
+  renderLessonList();
   checkKeyFormat();
   checkClaudeKey();
 }
@@ -269,6 +279,7 @@ function checkKeyFormat() {
 /** What is written to storage: API keys only when the visitor wants them remembered. */
 const storedSettings = () => ({
   ...settings, apiKey: settings.remember ? settings.apiKey : "", claudeKey: settings.remember ? settings.claudeKey : "",
+  visionKey: settings.remember ? settings.visionKey : "",
 });
 
 function persist() {
@@ -509,6 +520,8 @@ function saveSettings() {
   settings.openrouterKey = $("#or-key").value.trim();
   settings.claudeModel = $("#claude-model").value || settings.claudeModel;
   settings.claudeKey = $("#claude-key").value.trim();
+  settings.visionKey = $("#vision-key").value.trim();
+  settings.learn = $("#learn").checked;
   settings.model = $("#model").value;
   settings.thinking = $("#thinking").value;
   settings.webSearch = $("#web-search").checked;
@@ -654,6 +667,10 @@ function initMap() {
   state.hypoLayer = L.featureGroup().addTo(state.map);
 }
 
+function setupImageSearch() {
+  for (const site of Object.keys(LENS_SITES)) $(`#lens-${site}`)?.addEventListener("click", () => searchImageOn(site));
+}
+
 function resetWorkspace() {
   state.controller?.abort();
   if (state.running) {
@@ -702,7 +719,7 @@ function pendingBox() {
       "dort weiter, sobald die Seite wieder offen ist – auch wenn der Browser sie neu geladen hat."));
 }
 
-function buildIntro(image, metadata) {
+function buildIntro(image, metadata, { userHints = "", lens = null, lessons = "" } = {}) {
   const hints = hintsForModel(metadata);
   const parts = [
     `Bestimme, wo dieses Foto aufgenommen wurde. Originalauflösung: ${image.width}×${image.height} Pixel (zoom_image arbeitet auf dem Original).`,
@@ -716,6 +733,9 @@ function buildIntro(image, metadata) {
     parts.push(`Bildwinkel unbekannt. Falls Handyfoto (Hauptkamera): bei diesem Seitenverhältnis typisch ≈ ${fov}° horizontal – ` +
       "als Startwert für fov_deg; solve_camera bestimmt ihn genau.");
   }
+  if (lens) parts.push(`Rückwärts-Bildersuche im Web (Google Cloud Vision, wie Google Lens – Hinweise, keine Beweise):\n${visionSummary(lens)}`);
+  if (userHints) parts.push(`Zusatzinfo des Nutzers (ernst nehmen, aber selbst prüfen):\n${userHints}`);
+  if (lessons) parts.push(lessons);
   return parts.join("\n\n");
 }
 
@@ -729,7 +749,7 @@ const runConfig = () => ({
   provider: settings.provider, puterModel: settings.puterModel, model: settings.model, thinking: settings.thinking,
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
   ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx, openrouterModel: settings.openrouterModel,
-  claudeModel: settings.claudeModel,
+  claudeModel: settings.claudeModel, hints: ($("#hints")?.value || "").trim().slice(0, 600),
 });
 
 // Plain JSON copy: what AI services return may carry helper functions that IndexedDB cannot store.
@@ -877,6 +897,11 @@ async function analyze(file, resumed = null) {
 
     const bitmap = await decodeImage(file);
     state.imageSource = bitmap;
+    state.lastFile = file;
+    state.photoPng = photoPng(bitmap).then((blob) => {
+      state.photoFile = blob ? new File([blob], "ortfinder-foto.png", { type: "image/png" }) : null;
+      return blob;
+    });
     state.aspect = bitmap.width / bitmap.height;
     const ov = overview(bitmap);
     $("#photo").src = ov.dataUrl;
@@ -915,6 +940,7 @@ async function analyze(file, resumed = null) {
         topView: (opts) => topViewImage({ ...opts, bitmap, terrain }),
         solveCamera: (opts) => solveCameraWithTerrain({ ...opts, terrain, width: bitmap.width, height: bitmap.height }),
         skylineMatch: (opts) => runSkyline(bitmap, opts, { crop: true }),
+        web: webTools,
         osm, emit,
       });
       executor.restoreCounts(resumed?.counts);
@@ -926,9 +952,20 @@ async function analyze(file, resumed = null) {
       };
       if (!resumed?.agentState) await checkpoint(null);
       const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden() };
+      // With the user's own Cloud Vision key: a reverse image search (like Google Lens) before the first round.
+      let lens = null;
+      if (settings.visionKey && !resumed?.agentState) {
+        emit("status", { message: "Rückwärts-Bildersuche im Web (Google Cloud Vision) …" });
+        try {
+          lens = await reverseImageSearch(fetch, settings.visionKey, overview(bitmap, 1600).data);
+          emit("lens", lens);
+        } catch (err) {
+          emit("warning", { message: `Bildersuche nicht möglich: ${err.message} Die Analyse läuft ohne sie weiter.` });
+        }
+      }
       const agent = createAgent(cfg, { ...common, fallbacks });
       ({ analysis, usage } = await agent.run({
-        intro: buildIntro(bitmap, metadata),
+        intro: buildIntro(bitmap, metadata, { userHints: cfg.hints || "", lens, lessons: currentLessons() }),
         images: resumed?.agentState ? [] : firstImages(bitmap),
         executor,
         resume: resumed?.agentState ?? null,
@@ -1050,7 +1087,7 @@ async function runDemo() {
 
 const ICONS = {
   status: "•", warning: "⚠", error: "✖", step: "▸", thinking: "💭", note: "📝", zoom: "🔍", mapview: "🛰", render: "🧊", viewshed: "👁",
-  topview: "🗺", solve: "📐", skyline: "⛰",
+  topview: "🗺", solve: "📐", skyline: "⛰", photos: "🖼", lens: "🔎",
   tool_call: "🗺", tool_result: "↳", web_search: "🌐", web_results: "↳", metadata: "🏷", exif_location: "📍", result: "✔", hypothesis: "📌",
 };
 
@@ -1106,6 +1143,23 @@ function handle(type, data) {
       log("topview", `Draufsicht: Foto auf das Gelände geklappt, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)}), ` +
         `mit dem Luftbild verglichen${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
+    case "photos":
+      if (data.thumbnail) addSnapshot(data, "🖼 Fotos anderer");
+      log("photos", `${data.count} Fotos anderer im Umkreis von ${data.radius_m} m zum Vergleich geholt${data.purpose ? `: ${data.purpose}` : ""}`);
+      break;
+    case "lens":
+      log("lens", `Bildersuche im Web: ${[
+        data.landmarks.length ? `Wahrzeichen ${data.landmarks.map((l) => l.name).join(", ")}` : "",
+        data.labels.length ? `Vermutung „${data.labels.join(", ")}“` : "",
+        data.pages.length ? `${data.pages.length} Seiten mit demselben Bild` : "",
+      ].filter(Boolean).join(" · ") || "keine Treffer"}`);
+      for (const l of data.landmarks) {
+        if (l.lat != null && state.hypoLayer) {
+          L.circleMarker([l.lat, l.lon], { radius: 6, color: "#fff", weight: 2, fillColor: "#e8590c", fillOpacity: 1 })
+            .bindTooltip(`🔎 Bildersuche: ${escapeHtml(l.name)}`).addTo(state.hypoLayer);
+        }
+      }
+      break;
     case "skyline":
       addSnapshot(data, "⛰ Bergkamm");
       log("skyline", `Bergkamm-Abgleich: Blick ${fmt1(data.bearing_deg)}° (${compass(data.bearing_deg)}), Bildwinkel ${fmt1(data.fov_deg)}°, ` +
@@ -1146,13 +1200,13 @@ function handle(type, data) {
 }
 
 // Tools whose effect is shown elsewhere (zoom gallery, map) instead of as log lines.
-const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view", "top_view", "solve_camera", "skyline_match"]);
+const QUIET_TOOLS = new Set(["zoom_image", "mark_hypothesis", "map_view", "render_view", "top_view", "solve_camera", "skyline_match", "photos_nearby"]);
 
 function toolLabel(name) {
   return {
     geocode: "Ortssuche", reverse_geocode: "Adresse zu Koordinaten", overpass_query: "OSM-Abfrage", sun_position: "Sonnenstand",
     bearing_distance: "Richtung/Entfernung", destination_point: "Punkt berechnen",
-    nearby_features: "Umgebung prüfen", street_geometry: "Straßenverlauf",
+    nearby_features: "Umgebung prüfen", street_geometry: "Straßenverlauf", wiki_search: "Wikipedia-Suche",
   }[name] || name;
 }
 
@@ -1163,6 +1217,7 @@ function toolInput({ tool, input }) {
   if (tool === "sun_position") return `${input.lat}, ${input.lon} @ ${input.datetime_utc}`;
   if (tool === "nearby_features") return `${input.lat}, ${input.lon} (±${input.radius_m ?? 150} m)`;
   if (tool === "street_geometry") return `„${input.name}“ bei ${input.lat}, ${input.lon}`;
+  if (tool === "wiki_search") return `„${input.query}“${input.languages ? ` (${input.languages})` : ""}`;
   return JSON.stringify(input);
 }
 
@@ -1310,6 +1365,63 @@ function bestView(r) {
       fov: m.fov_deg != null ? "Brennweite (EXIF)" : "Schätzung",
     },
   };
+}
+
+/** Internet lookups for the AI (keyless): photos of others near a point, Wikipedia. */
+const webTools = {
+  photosNearby: async (lat, lon, radiusM) => {
+    const res = await photosNearby(fetch, lat, lon, radiusM);
+    if (res.items.length) res.sheet = await contactSheet(res.items, loadTileImage);
+    return res;
+  },
+  wikiSearch: (query, langs) => wikiSearch(fetch, query, languages(langs)),
+};
+
+/** The photo as PNG (≤1600 px) for pasting into Google Lens & Co.; prepared right after loading. */
+function photoPng(bitmap, maxSide = 1600) {
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bitmap.width * scale);
+  c.height = Math.round(bitmap.height * scale);
+  c.getContext("2d").drawImage(bitmap, 0, 0, c.width, c.height);
+  return new Promise((resolve) => c.toBlob((b) => resolve(b), "image/png"));
+}
+
+const LENS_SITES = {
+  google: { name: "Google Lens", url: "https://lens.google.com/" },
+  bing: { name: "Bing", url: "https://www.bing.com/visualsearch" },
+  yandex: { name: "Yandex", url: "https://yandex.com/images/" },
+};
+
+/**
+ * Reverse image search by hand (Google Lens has no free interface for websites): on phones the share
+ * sheet (choose Google Lens / the Google app), elsewhere the photo goes to the clipboard and the site opens.
+ */
+function searchImageOn(site) {
+  const hint = $("#lens-hint");
+  const target = LENS_SITES[site];
+  if (!state.photoPng) {
+    hint.textContent = "Erst ein Foto laden.";
+    return;
+  }
+  const after = " Was du findest (Ort, Name, Seite), oben unter „Zusatzinfo für die KI“ eintragen und neu analysieren.";
+  const blobPromise = state.photoPng;
+  if (matchMedia("(pointer: coarse)").matches && state.photoFile && navigator.canShare?.({ files: [state.photoFile] })) {
+    navigator.share({ files: [state.photoFile], title: "Foto" }).catch(() => {});
+    hint.textContent = `Im Teilen-Menü „Google Lens“ (bzw. die Google-App) wählen.${after}`;
+    return;
+  }
+  // The clipboard write starts inside the click, so the browser allows it; the promise fills it.
+  let copied = true;
+  try {
+    navigator.clipboard.write([new ClipboardItem({ "image/png": blobPromise })]).catch(() => { copied = false; });
+  } catch {
+    copied = false;
+  }
+  window.open(target.url, "_blank", "noopener");
+  hint.textContent = copied
+    ? `Foto ist in der Zwischenablage – bei ${target.name} Strg+V (Mac: ⌘V) drücken.${after}`
+    : `Bei ${target.name} das Foto hochladen (Kamera-Symbol).${after}`;
 }
 
 /**
@@ -1606,6 +1718,240 @@ function renderClueGallery(clues) {
   });
 }
 
+// ---------- feedback and learning ----------
+
+/** Lessons shared with everyone (docs/lessons.json, curated with new versions). */
+async function loadSharedLessons() {
+  try {
+    const resp = await fetch("lessons.json", { cache: "no-cache" });
+    state.sharedLessons = resp.ok ? ((await resp.json()).lessons || []).filter((t) => typeof t === "string").slice(0, 5) : [];
+  } catch {
+    state.sharedLessons = [];
+  }
+}
+
+/** The lessons that go along with the next analysis (none when learning is switched off). */
+function currentLessons() {
+  if (settings.learn === false) return "";
+  return lessonsBlock(loadLessons(localStorage), state.sharedLessons || []);
+}
+
+/** Settings: the lessons Ortfinder remembers, each deletable, plus what the feedback so far says. */
+function renderLessonList() {
+  const box = $("#lesson-list");
+  if (!box) return;
+  const lessons = loadLessons(localStorage);
+  const stats = feedbackStats(loadFeedback(localStorage));
+  const clear = el("button", { type: "button", class: "ghost small-btn" }, "Alle eigenen Lehren löschen");
+  clear.addEventListener("click", () => {
+    saveLessons(localStorage, []);
+    renderLessonList();
+  });
+  box.replaceChildren(
+    el("p", { class: "small muted" }, stats.count
+      ? `Bisher ${stats.count} Rückmeldung(en): ${stats.within} im angegebenen Radius${stats.median_km != null ? `, mittlere Abweichung ${formatKm(stats.median_km)}` : ""}.`
+      : "Noch keine Rückmeldungen auf diesem Gerät."),
+    lessons.length
+      ? el("ul", { class: "lessons" }, lessons.map((l, i) => {
+        const del = el("button", { type: "button", class: "ghost small-btn", title: "Diese Lehre löschen" }, "✕");
+        del.addEventListener("click", () => {
+          saveLessons(localStorage, lessons.filter((_, j) => j !== i));
+          renderLessonList();
+        });
+        return el("li", {}, el("span", {}, l.text), " ", el("span", { class: "muted" }, `(${l.date})`), " ", del);
+      }))
+      : el("p", { class: "small muted" }, "Noch keine eigenen Lehren."),
+    (state.sharedLessons || []).length
+      ? el("details", {}, el("summary", { class: "small" }, `Gemeinsame Lehren aller Nutzer (${state.sharedLessons.length})`),
+        el("ul", { class: "lessons small" }, state.sharedLessons.map((t) => el("li", {}, t))))
+      : null,
+    lessons.length ? clear : null,
+  );
+}
+
+/** The AI settings for a single question (reading a screenshot, writing lessons). */
+function askConfig() {
+  return {
+    provider: settings.provider, apiKey: settings.apiKey, model: geminiModels(settings.model)[0], claudeKey: settings.claudeKey,
+    claudeModel: settings.claudeModel, puterModel: settings.puterModel, openrouterKey: settings.openrouterKey,
+    openrouterModel: settings.openrouterModel, ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel,
+  };
+}
+
+const ask = (question) => askAI(askConfig(), { ...question, loadClaude: loadClaudeSdk });
+
+/**
+ * "Where was it really?" – mark it on the map, paste coordinates or a maps link, or let the AI read a
+ * screenshot of the photo's details. Then the error is measured and, if wanted, the AI writes general
+ * lessons that go along with later analyses.
+ */
+function feedbackSection(r) {
+  const a = r.analysis;
+  const box = el("details", { class: "feedback", id: "feedback" });
+  const status = el("p", { class: "small", role: "status" });
+  const where = el("input", { type: "text", placeholder: "Koordinaten, Karten-Link oder Adresse", "aria-label": "Tatsächlicher Aufnahmeort" });
+  const comment = el("textarea", { rows: "2", maxlength: "1000", placeholder: "Was sollte Ortfinder besser machen? (optional)", "aria-label": "Verbesserungsvorschlag" });
+  const learn = el("input", { type: "checkbox", checked: settings.learn !== false });
+  const shareExact = el("input", { type: "checkbox" });
+  const result = el("div", {});
+  let truth = r.exif_location ? { lat: r.exif_location.lat, lon: r.exif_location.lon, name: r.exif_location.address || "GPS aus den Metadaten" } : null;
+  let marker = null;
+  let line = null;
+  const setTruth = (t, why) => {
+    truth = t;
+    status.textContent = `Tatsächlicher Ort: ${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}${t.name ? ` (${t.name})` : ""}${why ? ` – ${why}` : ""}. ` +
+      `Abweichung der Analyse: ${formatKm(haversineKm(a.camera.lat, a.camera.lon, t.lat, t.lon))}.`;
+    if (!state.layer) return;
+    marker?.remove();
+    line?.remove();
+    marker = L.marker([t.lat, t.lon], { icon: pin("✔", "pin-truth", "Tatsächlicher Ort"), draggable: true, zIndexOffset: 1200 }).addTo(state.layer);
+    marker.on("dragend", () => {
+      const p = marker.getLatLng();
+      setTruth({ lat: p.lat, lon: p.lng, name: "" }, "auf der Karte verschoben");
+    });
+    line = L.polyline([[a.camera.lat, a.camera.lon], [t.lat, t.lon]], { color: "#12805c", weight: 2, dashArray: "6 6" })
+      .bindTooltip(`Abweichung ${formatKm(haversineKm(a.camera.lat, a.camera.lon, t.lat, t.lon))}`).addTo(state.layer);
+  };
+  if (truth) setTimeout(() => setTruth(truth, "aus den GPS-Metadaten"), 0);
+
+  const markBtn = el("button", { type: "button", class: "ghost small-btn" }, "📍 Auf der Karte markieren");
+  markBtn.addEventListener("click", () => {
+    if (!state.map) return;
+    status.textContent = "Jetzt auf der Karte auf den Aufnahmeort tippen (Luftbild hilft beim Finden) …";
+    const mapEl = $("#map");
+    mapEl.classList.add("picking");
+    mapEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    state.map.once("click", (e) => {
+      mapEl.classList.remove("picking");
+      setTruth({ lat: e.latlng.lat, lon: e.latlng.lng, name: "" }, "auf der Karte markiert (verschiebbar)");
+    });
+  });
+  const useBtn = el("button", { type: "button", class: "ghost small-btn" }, "Übernehmen");
+  useBtn.addEventListener("click", async () => {
+    const parsed = parseLocation(where.value);
+    if (!parsed) {
+      status.textContent = "Nicht erkannt – z.B. „46.4012, 9.1045“, einen Google-Maps-Link oder eine Adresse eingeben.";
+      return;
+    }
+    if (parsed.query) {
+      status.textContent = "Adresse wird gesucht …";
+      try {
+        const [hit] = await osm.geocode(parsed.query, "", 1);
+        if (!hit) throw new Error("nichts gefunden");
+        setTruth({ lat: hit.lat, lon: hit.lon, name: hit.name }, "aus der Adresse");
+      } catch (err) {
+        status.textContent = `Adresse nicht gefunden (${err.message}). Lieber auf der Karte markieren.`;
+      }
+      return;
+    }
+    setTruth({ ...parsed, name: "" }, "eingegeben");
+  });
+  const shot = el("input", { type: "file", accept: "image/*", hidden: true });
+  const shotBtn = el("button", { type: "button", class: "ghost small-btn" }, "🖼 Screenshot der Foto-Details");
+  shotBtn.addEventListener("click", () => shot.click());
+  shot.addEventListener("change", async () => {
+    const file = shot.files?.[0];
+    if (!file) return;
+    status.textContent = "Die KI liest den Ort aus dem Screenshot …";
+    try {
+      const img = overview(await decodeImage(file), 1400);
+      const found = parseScreenshotAnswer(await ask({ text: SCREENSHOT_PROMPT, image: img.data }));
+      if (!found) throw new Error("kein Ort erkennbar");
+      if (found.query) {
+        const [hit] = await osm.geocode(found.query, "", 1);
+        if (!hit) throw new Error(`„${found.query}“ nicht gefunden`);
+        setTruth({ lat: hit.lat, lon: hit.lon, name: found.query }, "aus dem Screenshot gelesen");
+      } else {
+        setTruth({ lat: found.lat, lon: found.lon, name: found.address }, "aus dem Screenshot gelesen");
+      }
+    } catch (err) {
+      status.textContent = `Screenshot nicht auswertbar (${err.message}). Lieber auf der Karte markieren oder die Adresse eintippen.`;
+    }
+  });
+
+  const save = el("button", { type: "button", class: "primary small-btn" }, "Rückmeldung speichern");
+  save.addEventListener("click", async () => {
+    if (!truth && !comment.value.trim()) {
+      status.textContent = "Erst den tatsächlichen Ort angeben oder etwas ins Textfeld schreiben.";
+      return;
+    }
+    save.disabled = true;
+    const record = truth ? feedbackRecord({ analysis: a, truth, comment: comment.value.trim() }) : { date: new Date().toISOString(), comment: comment.value.trim(), error_km: null };
+    saveFeedback(localStorage, [...loadFeedback(localStorage), record]);
+    let lessons = [];
+    const parts = [el("p", { class: "small" }, truth
+      ? `Gespeichert: Die Analyse lag ${formatKm(record.error_km)} daneben (${record.within_radius ? "innerhalb" : "außerhalb"} des angegebenen Radius von ${formatKm(record.radius_km)}).`
+      : "Gespeichert.")];
+    if (learn.checked && truth) {
+      result.replaceChildren(el("p", { class: "small muted" }, "Die KI überlegt, was sie daraus für künftige Fotos lernt …"));
+      try {
+        const answer = await ask({
+          text: lessonPrompt({ analysis: a, truth, truthName: truth.name, errorKm: record.error_km, comment: comment.value.trim() }),
+          image: state.imageSource ? overview(state.imageSource, 768).data : null,
+        });
+        lessons = parseLessons(answer);
+        saveLessons(localStorage, mergeLessons(loadLessons(localStorage), lessons, { errorKm: record.error_km }));
+        parts.push(lessons.length
+          ? el("div", {}, el("p", { class: "small" }, "Gelernt – geht ab jetzt bei jeder Analyse auf diesem Gerät mit (unter ⚙ ansehen oder löschen):"),
+            el("ul", { class: "lessons small" }, lessons.map((t) => el("li", {}, t))))
+          : el("p", { class: "small muted" }, "Die KI hat keine neue allgemeine Lehre gefunden."));
+      } catch (err) {
+        parts.push(el("p", { class: "small warn" }, `Lehren konnten nicht erstellt werden (${err.message}). Die Rückmeldung ist trotzdem gespeichert.`));
+      }
+    } else if (comment.value.trim() && learn.checked) {
+      // Without a place the comment itself is the lesson (the person's own words).
+      const own = parseLessons(`- ${comment.value.trim()}`);
+      if (own.length) saveLessons(localStorage, mergeLessons(loadLessons(localStorage), own, { own: true }));
+      if (own.length) parts.push(el("p", { class: "small" }, "Dein Hinweis geht ab jetzt bei jeder Analyse auf diesem Gerät mit."));
+    }
+    const share = el("a", { class: "small", target: "_blank", rel: "noopener" }, "🌍 Mit allen teilen (GitHub, vor dem Absenden prüfbar)");
+    const updateShare = () => {
+      share.href = shareIssueUrl({ record, lessons, comment: comment.value.trim(), truth: shareExact.checked ? truth : null });
+    };
+    updateShare();
+    shareExact.addEventListener("change", updateShare);
+    parts.push(el("p", { class: "small" }, share, " · ", el("label", { class: "check small" }, shareExact, " genauen Ort mitschicken")));
+    result.replaceChildren(...parts);
+    renderLessonList();
+    save.disabled = false;
+  });
+
+  box.append(
+    el("summary", {}, "✏️ Stimmt das? Richtigen Ort angeben & Ortfinder verbessern"),
+    el("p", { class: "small muted" }, "Freiwillig. Weißt du, wo das Foto entstand (z.B. aus den Details in deiner Galerie)? Dann gib es hier an: " +
+      "Ortfinder misst die Abweichung, und die KI leitet daraus allgemeine Lehren für künftige Analysen ab."),
+    el("div", { class: "row wrap" }, markBtn, shotBtn, shot),
+    el("div", { class: "row" }, where, useBtn),
+    status,
+    comment,
+    el("label", { class: "check small" }, learn, " Daraus lernen (Lehren gehen bei künftigen Analysen auf diesem Gerät mit)"),
+    el("div", { class: "row end" }, save),
+    result,
+  );
+  return box;
+}
+
+/** Check the spot yourself: Google Street View looking the same way, Google Maps, and a new run with extra info. */
+function externalLinks(cam, view) {
+  const heading = view ? `&heading=${Math.round(view.bearing_deg)}` : "";
+  const rerun = el("button", { type: "button", class: "ghost small-btn" }, "↻ Mit Zusatzinfo neu analysieren");
+  rerun.addEventListener("click", () => {
+    const box = $("#hints-box");
+    if (box) box.open = true;
+    if (!$("#hints").value.trim()) {
+      $("#hints").focus();
+      $("#hints").placeholder = "Erst hier eintragen, was du weißt oder gefunden hast – dann nochmal klicken.";
+      return;
+    }
+    if (state.lastFile) analyze(state.lastFile);
+  });
+  return el("p", { class: "links small" },
+    el("a", { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${cam.lat},${cam.lon}${heading}`, target: "_blank", rel: "noopener" }, "🚶 Street View hier"),
+    " · ",
+    el("a", { href: `https://www.google.com/maps/search/?api=1&query=${cam.lat},${cam.lon}`, target: "_blank", rel: "noopener" }, "Google Maps"),
+    " · ", rerun);
+}
+
 function renderResult(r) {
   const box = $("#result");
   box.replaceChildren();
@@ -1648,6 +1994,7 @@ function renderResult(r) {
     el("p", { class: "label" }, "📷 Standpunkt (von hier wurde fotografiert)"),
     el("p", { class: "answer" }, cam.name),
     el("p", { class: "coords" }, `${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}`),
+    externalLinks(cam, a.view),
     el("div", { class: "small muted" }, `Konfidenz ${Math.round(cam.confidence * 100)} %`),
     el("div", { class: "meter" }, el("div", { style: `width:${cam.confidence * 100}%` })),
     a.subject ? el("p", { class: "label" }, "🎯 Motiv (das ist zu sehen)") : null,
@@ -1678,6 +2025,7 @@ function renderResult(r) {
   if (a.verification) {
     box.append(el("details", {}, el("summary", {}, "Überprüfung"), el("p", { class: "small" }, a.verification)));
   }
+  box.append(feedbackSection(r));
   if (r.usage) {
     const u = r.usage;
     box.append(el("p", { class: "small muted" },
@@ -1710,8 +2058,10 @@ async function detectDemo() {
 }
 
 applyLinkSettings();
+loadSharedLessons().then(renderLessonList);
 setupSettings();
 setupDropzone();
+setupImageSearch();
 detectDemo();
 // Back from the OpenRouter sign-in first, so an analysis waiting for it can continue right away.
 finishSignInFromUrl().then(resumeInterrupted);

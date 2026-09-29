@@ -125,6 +125,26 @@ function executor({ withMapView = true } = {}) {
         };
       }
       : undefined,
+    web: withMapView
+      ? {
+        photosNearby: async (lat, lon, r) => {
+          mapCalls.push({ photos: [lat, lon, r] });
+          if (lat > 60) return { items: [], found: 0, problems: ["Panoramax: HTTP 503"] };
+          return {
+            found: 5, problems: [],
+            items: [
+              { source: "Commons", title: "Hof", description: "Bauernhof mit Silo", date: "2021-08-01", lat: 46.6202, lon: 7.9031, distance_m: 240, bearing_deg: 84, heading: null },
+              { source: "Panoramax", title: "Straßenbild", description: "", date: "", lat: 46.6201, lon: 7.9029, distance_m: 225, bearing_deg: 82, heading: 91.4 },
+            ],
+            sheet: { data: "UEhP", thumbnail: "data:image/jpeg;base64,UEhP" },
+          };
+        },
+        wikiSearch: async (query, langs) => {
+          mapCalls.push({ wiki: [query, langs] });
+          return query === "nichts" ? { results: [], problems: [] } : { results: [{ lang: "de", title: "Harder", url: "https://de.wikipedia.org/wiki/Harder", extract: "Berg.", lat: 46.7, lon: 7.86 }], problems: [] };
+        },
+      }
+      : null,
     osm,
     emit: (t, d) => events.push([t, d]),
   });
@@ -267,12 +287,12 @@ test("bearing_distance and destination_point are inverse", async () => {
 
 test("usage counters survive a resume, so limits still hold", async () => {
   const { ex } = executor();
-  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1, topView: 2, skyline: 1 });
-  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1, topView: 2, skyline: 1 });
+  ex.restoreCounts({ zoom: 24, mapView: 3, render: 1, topView: 2, skyline: 1, web: 4 });
+  assert.deepEqual(ex.counts, { zoom: 24, mapView: 3, render: 1, topView: 2, skyline: 1, web: 4 });
   const r = await ex.run("zoom_image", { x_min: 0, y_min: 0, x_max: 0.5, y_max: 0.5, purpose: "" });
   assert.match(r.result, /Zoom-Limit/);
   ex.restoreCounts(undefined);
-  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0, topView: 0, skyline: 0 });
+  assert.deepEqual(ex.counts, { zoom: 0, mapView: 0, render: 0, topView: 0, skyline: 0, web: 0 });
 });
 
 test("top_view: pose normalised, foreground hidden by default, result described for the AI", async () => {
@@ -369,4 +389,26 @@ test("skyline_match: pose with error bars, named peaks, labelled image; solve_ca
   // No skyline in the photo: a short note, no image.
   const none = await ex.run("skyline_match", { camera_lat: 70, camera_lon: 20 });
   assert.match(none.result, /kein klarer Übergang/);
+});
+
+test("photos_nearby and wiki_search: photos of others as one contact sheet, Wikipedia with coordinates", async () => {
+  const { ex, mapCalls, events } = executor();
+  const { result, isError } = await ex.run("photos_nearby", { lat: 46.62, lon: 7.9, radius_m: 20000, purpose: "Hof vergleichen" });
+  assert.equal(isError, false);
+  assert.deepEqual(mapCalls[0].photos, [46.62, 7.9, 5000]);
+  assert.match(result[0].text, /Fotos anderer im Umkreis von 5000 m .*\(5 gefunden, 2 gezeigt\)/);
+  assert.match(result[0].text, /1\. Commons: Hof – Bauernhof mit Silo · 240 m, Richtung 84°, 2021-08-01/);
+  assert.match(result[0].text, /2\. Panoramax: Straßenbild · 225 m, Richtung 82°, Blick 91°/);
+  assert.equal(result[1].data, "UEhP");
+  assert.deepEqual(events.at(-1)[0], "photos");
+  assert.match((await ex.run("photos_nearby", { lat: 70, lon: 7.9 })).result, /Keine frei verfügbaren Fotos .*Panoramax: HTTP 503/);
+  const wiki = await ex.run("wiki_search", { query: "Harder Kulm", languages: "de,en" });
+  assert.deepEqual(JSON.parse(wiki.result).results[0], { lang: "de", title: "Harder", url: "https://de.wikipedia.org/wiki/Harder", extract: "Berg.", lat: 46.7, lon: 7.86 });
+  assert.deepEqual(mapCalls.at(-1).wiki, ["Harder Kulm", "de,en"]);
+  assert.match((await ex.run("wiki_search", { query: "nichts" })).result, /Keine Wikipedia-Treffer/);
+  // Limit on internet lookups.
+  ex.restoreCounts({ web: 16 });
+  assert.match((await ex.run("wiki_search", { query: "x" })).result, /Limit für Internetsuchen/);
+  const { ex: bare } = executor({ withMapView: false });
+  assert.match((await bare.run("photos_nearby", { lat: 1, lon: 2 })).result, /nicht verfügbar/);
 });

@@ -322,3 +322,22 @@ code.copy.copied::after { content: " ✔ kopiert"; color: var(--good); font-fami
 .guide-page { max-width: 860px; display: flex; flex-direction: column; gap: 16px; }
 .guide-page .card { padding-bottom: 12px; }
 .guide-card .guide-steps li { font-size: 1.02rem; }
+
+.hints-box { margin: 10px auto 0; max-width: 720px; font-size: 0.85rem; }
+.hints-box summary { cursor: pointer; color: var(--muted); }
+.hints-box textarea { width: 100%; box-sizing: border-box; margin-top: 6px; font: inherit; padding: 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card); color: inherit; resize: vertical; }
+.photo-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; color: var(--muted); }
+#lens-hint:empty { display: none; }
+.links a { white-space: nowrap; }
+.feedback { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.feedback summary { cursor: pointer; font-weight: 600; }
+.feedback input[type=text], .feedback textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card); color: inherit; }
+.feedback .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.feedback .row.wrap { flex-wrap: wrap; }
+.feedback .row.end { justify-content: flex-end; }
+ul.lessons { margin: 6px 0; padding-left: 18px; }
+ul.lessons li { margin: 3px 0; }
+.pin-truth span { background: #12805c; }
+#map.picking, #map.picking .leaflet-interactive { cursor: crosshair; }
