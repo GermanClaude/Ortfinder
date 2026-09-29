@@ -1448,3 +1448,141 @@ def test_estimate_before_the_analysis_and_explained_errors(browser, site_url, tm
     assert page.is_visible("#log li.error .explain")
     assert errors == []
     context.close()
+
+
+def test_zoom_in_the_log_highlights_it_in_the_photo_with_its_own_color(browser, site_url, tmp_path):
+    """Each zoom has its own color and number; tapping it in the log (or its crop) highlights the frame in the photo."""
+    photo = tmp_path / "beispiel.jpg"
+    _street_jpeg(photo)
+    recording = _synthetic_recording()
+    thumb = recording["events"][3]["data"]["thumbnail"]
+    recording["events"][4:4] = [
+        {"t": 6.0, "type": "zoom", "data": {"index": 2, "box": [0.1, 0.02, 0.3, 0.2], "purpose": "Firmenschild oben", "thumbnail": thumb}},
+        {"t": 7.0, "type": "zoom", "data": {"index": 3, "box": [0.4, 0.4, 0.6, 0.6], "purpose": "Hausnummer", "thumbnail": thumb}},
+    ]
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.route("**/demo/beispiel.json", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(recording)))
+    page.route("**/demo/beispiel.jpg", lambda r: r.fulfill(status=200, content_type="image/jpeg", body=photo.read_bytes()))
+    page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
+    _mock_scene(page)
+    page.goto(site_url)
+    page.click("#demo")
+    page.wait_for_selector(".answer", timeout=60000)
+
+    color = lambda sel: page.eval_on_selector(sel, "n => getComputedStyle(n).getPropertyValue('--c').trim()")
+    boxes = [color(f'#overlay .box.zoom[data-zoom="{n}"]') for n in (1, 2, 3)]
+    assert len(set(boxes)) == 3, f"every zoom has its own color: {boxes}"
+    assert color('.zooms figure[data-zoom="2"]') == boxes[1] and color('#log li[data-zoom="2"]') == boxes[1]
+    assert page.text_content('#overlay .box.zoom[data-zoom="2"] .tag') == "#2"
+    assert "tag-inside" in page.get_attribute('#overlay .box.zoom[data-zoom="2"]', "class"), "tag stays inside the photo"
+    assert page.text_content('.zooms figure[data-zoom="3"] .zoom-badge') == "#3"
+
+    # Tapping the log entry highlights the frame, its crop and the entry; the other frames step back.
+    page.click('#log li[data-zoom="2"]')
+    assert "zoomfocus" in page.get_attribute("#overlay", "class")
+    active = page.eval_on_selector_all("[data-zoom].active", "ns => ns.map(n => n.tagName + n.dataset.zoom)")
+    assert sorted(active) == ["DIV2", "FIGURE2", "LI2"]
+    assert page.get_attribute('#log li[data-zoom="2"]', "aria-pressed") == "true"
+    opacity = lambda n: float(page.eval_on_selector(f'#overlay .box.zoom[data-zoom="{n}"]', "n => getComputedStyle(n).opacity"))
+    page.wait_for_timeout(250)
+    assert opacity(2) == 1 and opacity(1) < 0.5
+    assert page.eval_on_selector('#overlay .box.zoom[data-zoom="2"]', "n => getComputedStyle(n).borderTopStyle") == "solid"
+    page.screenshot(path=str(tmp_path / "zoom-highlight.png"))
+    # Another one moves the highlight; tapping the same one again ends it.
+    page.click('.zooms figure[data-zoom="3"] img')
+    assert page.eval_on_selector_all("[data-zoom].active", "ns => ns.map(n => n.dataset.zoom)") == ["3", "3", "3"]
+    page.click('.zooms figure[data-zoom="3"] img')
+    assert page.eval_on_selector_all("[data-zoom].active", "ns => ns.length") == 0
+    assert "zoomfocus" not in page.get_attribute("#overlay", "class")
+    page.focus('#log li[data-zoom="1"]')
+    page.keyboard.press("Enter")
+    assert "active" in page.get_attribute('#overlay .box.zoom[data-zoom="1"]', "class"), "works with the keyboard too"
+
+    # One zoom recolored through the dot on its crop: frame, crop and log dot follow.
+    page.eval_on_selector('.zooms figure[data-zoom="1"] .swatch-input', "n => { n.value = '#123456'; n.dispatchEvent(new Event('input', { bubbles: true })); }")
+    assert color('#overlay .box.zoom[data-zoom="1"]') == "#123456" and color('#log li[data-zoom="1"]') == "#123456"
+    assert page.eval_on_selector('.zooms figure[data-zoom="1"]', "n => n.style.getPropertyValue('--on')") == "#fff", "light text on dark"
+    page.eval_on_selector('.zooms figure[data-zoom="1"] .swatch', "n => n.dispatchEvent(new MouseEvent('click', { bubbles: true }))")
+    assert "active" in page.get_attribute('.zooms figure[data-zoom="1"]', "class").split(), "tapping the color dot does not toggle"
+
+    # Settings: one color for all, circles, thick lines – applied at once and kept.
+    page.click("#settings-toggle")
+    page.click("#mark-settings summary")
+    assert not page.is_visible("#mark-color-cell")
+    page.select_option("#mark-colors", "einfarbig")
+    assert page.is_visible("#mark-color-cell")
+    page.eval_on_selector("#mark-color", "n => { n.value = '#00ff00'; n.dispatchEvent(new Event('input', { bubbles: true })); }")
+    assert color('#overlay .box.zoom[data-zoom="2"]') == "#00ff00" and color('#overlay .box.zoom[data-zoom="3"]') == "#00ff00"
+    assert color('#overlay .box.zoom[data-zoom="1"]') == "#123456", "a color picked for one zoom stays"
+    page.select_option("#mark-shape", "kreis")
+    page.select_option("#mark-width", "dick")
+    assert "round" in page.get_attribute("#overlay", "class")
+    assert page.eval_on_selector('#overlay .box.zoom[data-zoom="3"]', "n => getComputedStyle(n).borderTopLeftRadius") == "50%"
+    page.wait_for_timeout(300)  # the line width changes smoothly
+    assert page.eval_on_selector('#overlay .box.zoom[data-zoom="3"]', "n => getComputedStyle(n).borderTopWidth") == "4px"
+    assert page.locator("#mark-preview.round .sample").count() == 3
+    assert json.loads(page.evaluate("localStorage.getItem('ortfinder.settings.v1')"))["marks"] == {
+        "colors": "einfarbig", "color": "#00ff00", "shape": "kreis", "width": "dick"}
+    page.reload()
+    page.click("#settings-toggle")
+    assert page.input_value("#mark-shape") == "kreis" and page.input_value("#mark-color") == "#00ff00"
+    assert "round" in page.get_attribute("#overlay", "class")
+    page.click("#mark-settings summary")
+    page.click("#mark-reset")
+    assert page.input_value("#mark-colors") == "bunt" and "round" not in page.get_attribute("#overlay", "class")
+    assert errors == []
+    context.close()
+
+
+def test_while_it_searches_the_page_shows_what_happens_now_and_next(browser, site_url, tmp_path):
+    """A bar above the results shows the current activity and the next step (the AI's own plan, else the typical one)."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    first = {"message": {"role": "assistant", "content": "Deutsches Straßenschild.\nNächster Schritt: Straße per Luftbild prüfen.", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "geocode", "arguments": json.dumps({"query": "Bahnhofstraße Freiburg"})}},
+    ]}, "finish_reason": "tool_calls", "usage": {"prompt_tokens": 3000, "completion_tokens": 200}}
+    last = {"message": {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c2", "type": "function", "function": {"name": "submit_result", "arguments": json.dumps(SUBMISSION)}},
+    ]}, "finish_reason": "tool_calls", "usage": {"prompt_tokens": 4000, "completion_tokens": 300}}
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    # The second answer waits until the test releases it, so the page can be watched while the AI "thinks".
+    context.add_init_script(f"window.__puterScript = [{json.dumps(first)}, new Promise((r) => {{ window.__release = () => r({json.dumps(last)}); }})];")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    held = []
+    page.route("https://js.puter.com/v2/", lambda r: r.fulfill(status=200, content_type="application/javascript", body=FAKE_PUTER))
+    page.route("https://nominatim.openstreetmap.org/**", lambda r: held.append(r))  # answered later
+    page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
+    _mock_scene(page)
+    page.goto(site_url)
+    assert not page.is_visible("#live")
+    page.set_input_files("#file", str(street))
+
+    # Round 1 asked for a place search: that is what happens now; next is the AI's own plan.
+    page.wait_for_function("document.querySelector('#live-now')?.textContent.includes('sucht den Ort')", timeout=30000)
+    assert page.text_content("#live-now") == "Ortfinder sucht den Ort „Bahnhofstraße Freiburg“"
+    assert page.text_content("#live-next") == "Straße per Luftbild prüfen."
+    assert page.text_content("#live-source") == "Plan der KI"
+    # It stays in view while scrolling down to the log.
+    page.locator("#log").scroll_into_view_if_needed()
+    top = page.eval_on_selector("#live", "n => n.getBoundingClientRect().top")
+    assert 0 <= top <= 20, f"sticky bar at {top}"
+
+    held[0].fulfill(status=200, content_type="application/json", headers={"Access-Control-Allow-Origin": "*"},
+                    body=json.dumps([{"display_name": "Bahnhofstraße, Freiburg im Breisgau", "lat": "47.99", "lon": "7.85", "category": "highway", "type": "residential", "importance": 0.3}]))
+    page.wait_for_function("document.querySelector('#live-now').textContent.includes('Runde 2')", timeout=30000)
+    assert page.text_content("#live-now") == "Die KI denkt nach (Runde 2/10) …"
+    assert page.text_content("#live-source") == "Plan der KI", "the plan of round 1 is what the AI works on now"
+    page.wait_for_function("document.querySelector('#live-since').textContent.startsWith('seit ')", timeout=10000)
+    page.screenshot(path=str(tmp_path / "live.png"))
+
+    page.evaluate("window.__release()")
+    page.wait_for_selector(".answer", timeout=30000)
+    assert not page.is_visible("#live"), "gone once the result is there"
+    assert "Nächster Schritt: Straße per Luftbild prüfen." in page.text_content("#log")
+    assert errors == []
+    context.close()

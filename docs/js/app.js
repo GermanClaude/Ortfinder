@@ -9,6 +9,7 @@ import { decodeImage, detailTiles, overview, rulerOverview, zoomCrop } from "./i
 import { TILES_MARK } from "./compact.js";
 import { drapedTerrain, topViewImage } from "./groundview.js";
 import { DEVICES, GUIDES, detectDevice, guideNodes } from "./guides.js";
+import { LiveStatus } from "./live.js";
 import { loadTileImage, renderMapView } from "./mapview.js";
 import { extractMetadata, hintsForModel, horizontalFov, typicalPhoneFov } from "./metadata.js";
 import { OLLAMA_DEFAULT_MODEL, OLLAMA_DEFAULT_URL, OLLAMA_SUGGESTIONS, OllamaAgent, listOllamaModels, normalizeOllamaUrl } from "./ollama-agent.js";
@@ -57,7 +58,7 @@ const KEY_PATTERN = /^(AQ\.[0-9A-Za-z_.-]{20,}|AIza[0-9A-Za-z_-]{35})$/;
 const STORAGE_KEY = "ortfinder.settings.v1";
 
 const state = {
-  controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null,
+  controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, zoomNumber: 0, zoomColors: {}, activeZoom: null, replayT: null, run: null,
   aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0, running: false, wakeLock: null, skyline: null, truth: null,
 };
 const osm = new OSMClient();
@@ -179,6 +180,11 @@ function storageSet(value) {
   }
 }
 
+// Zoom markers in the photo: a color per zoom (or one for all), frame or circle, line width.
+const ZOOM_COLORS = ["#ff4d6d", "#ffb020", "#3ddc97", "#4dabf7", "#b197fc", "#ff922b", "#20c997", "#f06595", "#ffd43b", "#74c0fc"];
+const MARK_WIDTH = { duenn: "1.5px", normal: "2.5px", dick: "4px" };
+const MARK_DEFAULTS = { colors: "bunt", color: "#ffd54a", shape: "rahmen", width: "normal" };
+
 const settings = {
   // "puter": free, no key (user signs in at Puter) · "gemini": own Gemini API key ·
   // "ollama": open model on the user's own PC (unlimited; phones reach it through a tunnel) ·
@@ -196,6 +202,7 @@ const settings = {
   compat: {}, // more services with an OpenAI-style API (providers.js): { [id]: { key, model, url } }
   visionKey: "",
   learn: true,
+  marks: {}, // how the zooms are marked in the photo (merged with MARK_DEFAULTS below)
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -204,6 +211,7 @@ const settings = {
   remember: true,
   ...storageGet(),
 };
+settings.marks = { ...MARK_DEFAULTS, ...settings.marks };
 // 8 was the stored default before the fine-location step existed, which needs about two more rounds.
 if (settings.maxSteps === 8) settings.maxSteps = 10;
 // The first OpenRouter default (Gemma 4 31B, free) is almost always overloaded; it stays a fallback.
@@ -249,6 +257,7 @@ function fillSettingsForm() {
   $("#claude-key").value = settings.claudeKey;
   $("#vision-key").value = settings.visionKey;
   $("#learn").checked = settings.learn !== false;
+  fillMarkForm();
   renderLessonList();
   checkKeyFormat();
   checkClaudeKey();
@@ -775,6 +784,10 @@ function resetWorkspace() {
   }
   clearInterval(state.timer);
   state.zoomCount = 0;
+  state.zoomNumber = 0;
+  state.zoomColors = {};
+  hideLive();
+  state.activeZoom = null;
   state.replayT = null;
   state.run = null;
   state.truth = null;
@@ -785,6 +798,7 @@ function resetWorkspace() {
   $("#drop").classList.add("compact");
   $("#photo").removeAttribute("src");
   $("#overlay").replaceChildren();
+  $("#overlay").classList.remove("zoomfocus");
   $("#zooms").replaceChildren(el("p", { class: "muted small" }, "Noch keine Ausschnitte."));
   $("#zoom-count").textContent = "";
   $("#log").replaceChildren();
@@ -1186,7 +1200,10 @@ async function analyze(file, resumed = null) {
   state.controller = controller;
   state.running = true;
   state.startedAt = resumed?.startedAt ?? Date.now();
-  state.timer = setInterval(() => { $("#elapsed").textContent = `${Math.round((Date.now() - state.startedAt) / 1000)} s`; }, 1000);
+  state.timer = setInterval(() => {
+    $("#elapsed").textContent = `${Math.round((Date.now() - state.startedAt) / 1000)} s`;
+    renderLive();
+  }, 1000);
   $("#cancel").hidden = false;
   $("#notify").hidden = !("Notification" in window) || Notification.permission !== "default";
   keepAwake(true);
@@ -1342,6 +1359,7 @@ async function analyze(file, resumed = null) {
       $("#cancel").hidden = true;
       $("#notify").hidden = true;
       $("#progress").textContent = "";
+      hideLive();
       keepAwake(false);
       if (ownsSavedRun) clearRun();
     }
@@ -1455,8 +1473,10 @@ function log(type, text) {
     });
     body.append(btn, box);
   }
-  list.append(el("li", { class: type }, el("span", { class: "t" }, t), el("span", {}, ICONS[type] || "•"), body));
+  const entry = el("li", { class: type }, el("span", { class: "t" }, t), el("span", {}, ICONS[type] || "•"), body);
+  list.append(entry);
   if (stick) list.scrollTop = list.scrollHeight;
+  return entry;
 }
 
 /** The explanation of a message, with its fixes as buttons. */
@@ -1497,7 +1517,40 @@ function fail(message) {
   $("#result").replaceChildren(el("p", { class: "error" }, message), help ? explanation(help, message) : null);
 }
 
+// ---------- now and next (live.js) ----------
+
+function live(type, data) {
+  if (type === "result" || type === "error") {
+    hideLive();
+    return;
+  }
+  state.live ??= new LiveStatus();
+  state.live.on(type, data);
+  renderLive();
+}
+
+function renderLive() {
+  const status = state.live;
+  if (!status) return;
+  $("#live").hidden = false;
+  $("#live-now").textContent = status.now();
+  const next = status.next();
+  $("#live-next").textContent = next.text;
+  $("#live-source").textContent = next.source === "ki" ? "Plan der KI" : "typischer Ablauf";
+  $("#live-source").className = `live-source ${next.source}`;
+  $("#live-source").title = next.source === "ki" ? "So hat die KI ihren nächsten Schritt selbst beschrieben." : "Die KI hat (noch) keinen Plan genannt – so geht eine typische Analyse an dieser Stelle weiter.";
+  // Seconds of the current activity: shows that it goes on (not in replays, whose times are compressed).
+  const s = status.seconds();
+  $("#live-since").textContent = state.running && state.replayT == null && s >= 3 ? `seit ${s} s` : "";
+}
+
+function hideLive() {
+  state.live = null;
+  $("#live").hidden = true;
+}
+
 function handle(type, data) {
+  live(type, data);
   switch (type) {
     case "status":
     case "warning":
@@ -1521,7 +1574,6 @@ function handle(type, data) {
       break;
     case "zoom":
       addZoom(data);
-      log("zoom", `Zoom #${data.index}: ${data.purpose || "Detail"}`);
       break;
     case "mapview":
       addSnapshot(data, data.layer === "karte" ? "🗺 Karte" : "🛰 Luftbild");
@@ -1634,12 +1686,153 @@ function addBox(box, cls, label) {
   return node;
 }
 
+/**
+ * A zoom of the AI: its frame in the photo, the enlarged crop and the log entry share a number and a color.
+ * Tapping the log entry or the crop highlights the frame in the photo.
+ */
 function addZoom(z) {
   state.zoomCount += 1;
+  state.zoomNumber = (state.zoomNumber || 0) + 1;
+  const n = state.zoomNumber; // counted here: a resumed analysis starts its own count again
   if (state.zoomCount === 1) $("#zooms").replaceChildren();
   $("#zoom-count").textContent = `(${state.zoomCount})`;
-  addBox(z.box, "zoom", null);
-  $("#zooms").append(el("figure", {}, el("img", { src: z.thumbnail, alt: z.purpose || "Ausschnitt", title: z.purpose }), el("figcaption", {}, z.purpose)));
+  const box = addBox(z.box, "zoom", `#${n}`);
+  box.dataset.zoom = n;
+  if (z.box[1] < 0.06) box.classList.add("tag-inside"); // a tag above the photo's top edge would be cut off
+  const picker = el("input", { type: "color", class: "swatch-input", "aria-label": `Farbe von Zoom #${n}`, title: "Farbe ändern" });
+  picker.addEventListener("input", () => {
+    state.zoomColors = { ...state.zoomColors, [n]: picker.value };
+    paintZoom(n);
+  });
+  const figure = el("figure", { class: "zoom-fig", tabindex: "0", role: "button", "aria-pressed": "false", title: "Im Foto zeigen" },
+    el("div", { class: "fig-wrap" },
+      el("img", { src: z.thumbnail, alt: z.purpose || "Ausschnitt" }),
+      el("span", { class: "zoom-badge" }, `#${n}`),
+      el("label", { class: "swatch", title: "Farbe ändern" }, picker)),
+    el("figcaption", {}, z.purpose));
+  figure.dataset.zoom = n;
+  figure.addEventListener("click", (e) => {
+    if (!e.target.closest(".swatch")) highlightZoom(n);
+  });
+  figure.addEventListener("keydown", (e) => {
+    if (e.target === figure && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      highlightZoom(n);
+    }
+  });
+  $("#zooms").append(figure);
+  const entry = log("zoom", `Zoom #${n}: ${z.purpose || "Detail"}`);
+  entry.dataset.zoom = n;
+  entry.classList.add("zoom-link");
+  entry.setAttribute("tabindex", "0");
+  entry.setAttribute("role", "button");
+  entry.setAttribute("aria-pressed", "false");
+  entry.title = "Im Foto zeigen";
+  entry.querySelector(".body").prepend(el("span", { class: "zoom-dot", "aria-hidden": "true" }));
+  entry.addEventListener("click", () => highlightZoom(n));
+  entry.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      highlightZoom(n);
+    }
+  });
+  paintZoom(n);
+}
+
+/** The color of zoom n: picked for it, the one color for all, or the next of the palette. */
+function zoomColor(n) {
+  return state.zoomColors?.[n] || (settings.marks.colors === "einfarbig" ? settings.marks.color : ZOOM_COLORS[(n - 1) % ZOOM_COLORS.length]);
+}
+
+/** Black or white text, whichever reads better on the color (#rrggbb). */
+function textOn(color) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.45 ? "#111" : "#fff";
+}
+
+function paintZoom(n) {
+  const color = zoomColor(n);
+  for (const node of document.querySelectorAll(`[data-zoom="${n}"]`)) {
+    node.style.setProperty("--c", color);
+    node.style.setProperty("--on", textOn(color));
+  }
+  const picker = document.querySelector(`figure[data-zoom="${n}"] .swatch-input`);
+  if (picker) picker.value = color;
+}
+
+/** Frame or circle, line width and colors of all zoom markers, from the settings. */
+function applyMarkStyle() {
+  const overlay = $("#overlay");
+  overlay.classList.toggle("round", settings.marks.shape === "kreis");
+  overlay.style.setProperty("--mark-w", MARK_WIDTH[settings.marks.width] || MARK_WIDTH.normal);
+  for (let n = 1; n <= (state.zoomNumber || 0); n += 1) paintZoom(n);
+  renderMarkPreview();
+}
+
+/** Highlight zoom n in the photo, on its crop and in the log (tapping it again ends that). */
+function highlightZoom(n) {
+  const same = state.activeZoom === n;
+  state.activeZoom = same ? null : n;
+  for (const node of document.querySelectorAll("[data-zoom].active")) {
+    node.classList.remove("active");
+    if (node.hasAttribute("aria-pressed")) node.setAttribute("aria-pressed", "false");
+  }
+  $("#overlay").classList.toggle("zoomfocus", !same);
+  if (same) return;
+  for (const node of document.querySelectorAll(`[data-zoom="${n}"]`)) {
+    node.classList.add("active");
+    if (node.hasAttribute("aria-pressed")) node.setAttribute("aria-pressed", "true");
+  }
+  // Bring the photo into view when it is off screen (the log sits far below it on phones).
+  const wrap = $("#image-wrap").getBoundingClientRect();
+  if (wrap.bottom < 40 || wrap.top > innerHeight - 40) $("#image-wrap").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// ---------- marker settings ----------
+
+function fillMarkForm() {
+  $("#mark-colors").value = settings.marks.colors;
+  $("#mark-color").value = settings.marks.color;
+  $("#mark-shape").value = settings.marks.shape;
+  $("#mark-width").value = settings.marks.width;
+  $("#mark-color-cell").hidden = settings.marks.colors !== "einfarbig";
+  renderMarkPreview();
+}
+
+/** Three sample markers in the settings, as they will look in the photo. */
+function renderMarkPreview() {
+  const preview = $("#mark-preview");
+  if (!preview) return;
+  preview.classList.toggle("round", settings.marks.shape === "kreis");
+  preview.style.setProperty("--mark-w", MARK_WIDTH[settings.marks.width] || MARK_WIDTH.normal);
+  preview.replaceChildren(...[1, 2, 3].map((n) => {
+    const color = settings.marks.colors === "einfarbig" ? settings.marks.color : ZOOM_COLORS[n - 1];
+    return el("span", { class: "sample", style: `--c:${color};--on:${textOn(color)}` }, el("span", { class: "tag" }, `#${n}`));
+  }));
+}
+
+function setupMarkSettings() {
+  const update = () => {
+    settings.marks = {
+      colors: $("#mark-colors").value,
+      color: $("#mark-color").value,
+      shape: $("#mark-shape").value,
+      width: $("#mark-width").value,
+    };
+    $("#mark-color-cell").hidden = settings.marks.colors !== "einfarbig";
+    persist();
+    applyMarkStyle();
+  };
+  for (const id of ["#mark-colors", "#mark-shape", "#mark-width"]) $(id).addEventListener("change", update);
+  $("#mark-color").addEventListener("input", update);
+  $("#mark-reset").addEventListener("click", () => {
+    state.zoomColors = {};
+    settings.marks = { ...MARK_DEFAULTS };
+    fillMarkForm();
+    persist();
+    applyMarkStyle();
+  });
+  applyMarkStyle();
 }
 
 /** Aerial view or 3D reconstruction the AI compared with the photo: shown next to the zooms, marked on the map. */
@@ -2582,6 +2775,7 @@ async function detectDemo() {
 applyLinkSettings();
 loadSharedLessons().then(renderLessonList);
 setupSettings();
+setupMarkSettings();
 setupDropzone();
 setupConfirm();
 setupImageSearch();

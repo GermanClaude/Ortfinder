@@ -289,6 +289,44 @@
           <label class="check"><input id="learn" type="checkbox" checked> Lehren bei Analysen mitgeben</label>
           <div id="lesson-list"></div>
         </details>
+        <details id="mark-settings" class="ollama-box">
+          <summary>🎨 Markierungen im Foto</summary>
+          <p class="small">
+            Jeder Zoom der KI bekommt im Foto eine eigene Farbe und Nummer – dieselbe steht beim Ausschnitt und im Protokoll.
+            Tippe im Protokoll auf einen Zoom (oder auf den Ausschnitt), um ihn im Foto hervorzuheben; noch einmal tippen hebt es auf.
+            Eine einzelne Markierung färbst du über den Farbpunkt am Ausschnitt um. Änderungen gelten sofort.
+          </p>
+          <div class="grid2">
+            <div>
+              <label for="mark-colors">Farben</label>
+              <select id="mark-colors">
+                <option value="bunt">bunt – jeder Zoom eine eigene Farbe</option>
+                <option value="einfarbig">eine Farbe für alle</option>
+              </select>
+            </div>
+            <div id="mark-color-cell">
+              <label for="mark-color">Farbe</label>
+              <input id="mark-color" type="color" value="#ffd54a">
+            </div>
+            <div>
+              <label for="mark-shape">Form</label>
+              <select id="mark-shape">
+                <option value="rahmen">Rahmen (genau der Ausschnitt)</option>
+                <option value="kreis">Kreis</option>
+              </select>
+            </div>
+            <div>
+              <label for="mark-width">Linie</label>
+              <select id="mark-width">
+                <option value="duenn">dünn</option>
+                <option value="normal">normal</option>
+                <option value="dick">dick</option>
+              </select>
+            </div>
+          </div>
+          <div id="mark-preview" class="mark-preview" aria-hidden="true"></div>
+          <div class="row"><button id="mark-reset" type="button" class="ghost small-btn">Auf Standard zurücksetzen</button></div>
+        </details>
         <details id="guide" class="guide">
           <summary id="guide-title">📖 Anleitung Schritt für Schritt</summary>
           <div id="guide-tabs" class="tabs" role="tablist" aria-label="Gerät"></div>
@@ -341,6 +379,16 @@
     <div id="demo-banner" class="banner" hidden></div>
 
     <section id="workspace" hidden>
+      <div id="live" class="live" role="status" hidden>
+        <div class="live-row">
+          <span class="live-spin" aria-hidden="true"></span><span class="live-label">Jetzt</span>
+          <span id="live-now" class="live-text"></span><span id="live-since" class="live-since muted" aria-hidden="true"></span>
+        </div>
+        <div class="live-row">
+          <span class="live-arrow" aria-hidden="true">➜</span><span class="live-label">Als Nächstes</span>
+          <span id="live-next" class="live-text"></span><span id="live-source" class="live-source"></span>
+        </div>
+      </div>
       <div class="grid">
         <div class="card">
           <div class="card-head">
