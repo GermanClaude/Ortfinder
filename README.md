@@ -44,6 +44,12 @@ und zum erkannten Gerät).
   - Bricht eine Anfrage ab, während die Seite im Hintergrund ist, wartet Ortfinder und wiederholt sie,
     sobald die Seite wieder sichtbar ist, statt mit Fehler abzubrechen.
   - Während der Analyse bleibt der Bildschirm an (Wake Lock), damit das Handy nicht sperrt.
+- **Hängt die KI**, weil eine Anfrage ohne Fehler einfach nie beantwortet wird (kommt bei Puter vor), fragt
+  Ortfinder nach **50 s ohne Antwort** dieselbe Runde neu an. War das Modell vorher schon langsam, wartet es
+  entsprechend länger. Jeder weitere Versuch bekommt 50 s mehr; nach vier Versuchen kommt ein klarer Hinweis.
+  Bei Claude und Ollama zählt die Zeit ohne neue Daten (120 s bzw. 180 s, weil der eigene PC für ein großes
+  Foto eine Weile rechnet, bevor das erste Wort kommt). Ein Werkzeug, dessen Dienst hängt, gibt nach 120 s
+  auf, und die KI arbeitet ohne dieses Ergebnis weiter.
 - **Benachrichtigung:** Mit „🔔 Bescheid geben“ meldet sich Ortfinder, sobald das Ergebnis da ist,
   solange der Browser die Seite im Hintergrund laufen lässt (Computer, oft auch Android). Auf dem iPhone
   gehen Benachrichtigungen nur, wenn Ortfinder zum Home-Bildschirm hinzugefügt wurde.
@@ -466,6 +472,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/resection.js     Rückwärtsschnitt: Kamerapose aus Punktpaaren Foto ↔ Karte (Levenberg–Marquardt), optional mit Bergkamm
   js/skyline.js       Bergkamm-Abgleich (wie PeakFinder): Himmelslinie im Foto, Geländehorizont bis 200 km, Pose, Gipfelnamen
   js/compact.js       kleine Anfragen: frühere Bilder/Ergebnisse als kurze Hinweise, Kacheln nur in Runde 1
+  js/watchdog.js      fragt neu an, wenn die KI oder ein Werkzeug hängt
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data), korrigierbar durch exakte Höhen
   js/swiss.js         Schweiz: amtliche Höhen und Höhenprofile von swisstopo, LV95-Koordinaten
   js/websearch.js     Fotos anderer (Commons, Panoramax), Wikipedia, Bildersuche (Lens-Knöpfe, Cloud Vision)

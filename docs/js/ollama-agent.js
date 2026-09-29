@@ -7,6 +7,7 @@ import { compactOllama, splitTiles } from "./compact.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { OPENAI_TOOLS } from "./puter-agent.js";
 import { SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
+import { MAX_STALLS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const OLLAMA_DEFAULT_URL = "http://localhost:11434";
 export const OLLAMA_DEFAULT_MODEL = "gemma4:12b";
@@ -92,9 +93,11 @@ export class OllamaAgent {
    */
   constructor({
     baseUrl = OLLAMA_DEFAULT_URL, model = OLLAMA_DEFAULT_MODEL, numCtx = 32768, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
-    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
+    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, stallMs = 180000,
   } = {}) {
     this.baseUrl = normalizeOllamaUrl(baseUrl);
+    // A PC may think for a while about a big photo before the first word; after that words keep coming.
+    this.stallMs = stallMs;
     this.model = model;
     this.numCtx = numCtx;
     this.maxSteps = maxSteps;
@@ -115,7 +118,7 @@ export class OllamaAgent {
   }
 
   /** One streamed chat turn; streaming keeps tunnels (Cloudflare) from timing out on long answers. */
-  async chatOnce(messages) {
+  async chatOnce(messages, signal = this.signal, alive = () => {}) {
     const resp = await this.fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -127,7 +130,7 @@ export class OllamaAgent {
         keep_alive: "30m",
         options: { num_ctx: this.numCtx },
       }),
-      signal: this.signal,
+      signal,
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -163,6 +166,7 @@ export class OllamaAgent {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
+        alive();
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop();
@@ -179,12 +183,22 @@ export class OllamaAgent {
   }
 
   async request(messages) {
+    let stalls = 0;
     for (let attempt = 0; ; attempt++) {
       this.signal?.throwIfAborted();
       try {
-        return await this.chatOnce(messages);
+        return await watch((signal, alive) => this.chatOnce(messages, signal, alive), stallLimit(0, stalls, this.stallMs), this.signal);
       } catch (raw) {
         if (raw?.name === "AbortError") throw raw;
+        if (raw instanceof StallError) {
+          if (!(await this.waitIfBackground())) {
+            stalls += 1;
+            if (stalls > MAX_STALLS) throw new OllamaError(stallGiveUp(stalls), { code: "STALLED" });
+            this.emit("warning", { message: stallNote(raw, stalls) });
+          }
+          attempt -= 1;
+          continue;
+        }
         const err = raw instanceof OllamaError ? raw : new OllamaError(unreachableMessage(this.baseUrl), { code: "UNREACHABLE", retryable: true });
         if (err.retryable && (await this.waitIfBackground())) {
           attempt = -1;

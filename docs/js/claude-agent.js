@@ -5,6 +5,7 @@
 import { preview } from "./agent.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
+import { MAX_STALLS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const CLAUDE_MODELS = [
   { id: "claude-opus-5", label: "Claude Opus 5 (am genauesten, empfohlen)" },
@@ -136,9 +137,11 @@ export class ClaudeAgent {
    */
   constructor({
     apiKey = "", model = CLAUDE_DEFAULT_MODEL, maxSteps = 10, client = null, fetch = undefined,
-    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
+    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, stallMs = 120000,
   } = {}) {
     this.apiKey = apiKey;
+    // The stream carries thinking summaries, text and tool input as they are written; a long silence means stuck.
+    this.stallMs = stallMs;
     this.model = model;
     this.maxSteps = maxSteps;
     this.client = client;
@@ -185,19 +188,31 @@ export class ClaudeAgent {
   /** One streamed request (streaming avoids timeouts on long answers); returns the complete message. */
   async request(messages) {
     const client = await this.getClient();
+    let stalls = 0;
     for (let attempt = 0; ; attempt++) {
       this.signal?.throwIfAborted();
       try {
         const params = this.params(messages);
-        const options = this.signal ? { signal: this.signal } : undefined;
-        const stream = FALLBACK_MODELS.has(this.model)
-          ? client.beta.messages.stream({ ...params, betas: [FALLBACK_BETA], fallbacks: "default" }, options)
-          : client.messages.stream(params, options);
-        const message = await stream.finalMessage();
+        const message = await watch((signal, alive) => {
+          const stream = FALLBACK_MODELS.has(this.model)
+            ? client.beta.messages.stream({ ...params, betas: [FALLBACK_BETA], fallbacks: "default" }, { signal })
+            : client.messages.stream(params, { signal });
+          stream.on?.("streamEvent", () => alive());
+          return stream.finalMessage();
+        }, stallLimit(0, stalls, this.stallMs), this.signal);
         this.usage.requests += 1;
         return message;
       } catch (raw) {
         if (this.signal?.aborted) throw this.signal.reason ?? new DOMException("Abgebrochen", "AbortError");
+        if (raw instanceof StallError) {
+          if (!(await this.waitIfBackground())) {
+            stalls += 1;
+            if (stalls > MAX_STALLS) throw new ClaudeError(stallGiveUp(stalls), { code: "STALLED" });
+            this.emit("warning", { message: stallNote(raw, stalls) });
+          }
+          attempt -= 1;
+          continue;
+        }
         const err = describeClaudeError(raw);
         if (err.reissue && attempt < MAX_REISSUES) {
           this.emit("status", { message: `${err.message} Frage erneut …` });

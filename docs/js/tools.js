@@ -1,6 +1,7 @@
 // Tools the geolocation agent can call: declarations for Gemini, input validation and execution.
 
 import { OSMError, bearingDeg, destinationPoint, haversineKm, sunPosition } from "./geo.js";
+import { StallError, watch } from "./watchdog.js";
 
 export const SUBMIT_TOOL = "submit_result";
 export const HYPOTHESIS_TOOL = "mark_hypothesis";
@@ -368,9 +369,10 @@ export class ToolExecutor {
   // Stateless requests resend every crop, so the total is capped to stay well below request size limits.
   constructor({
     zoom, mapView, renderView, topView, solveCamera, skylineMatch, web = null, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12,
-    maxRenders = 12, maxTopViews = 10, maxSkylines = 6, maxWeb = 16,
+    maxRenders = 12, maxTopViews = 10, maxSkylines = 6, maxWeb = 16, toolTimeoutMs = 120000,
   }) {
     this.zoom = zoom;
+    this.toolTimeoutMs = toolTimeoutMs; // a tool whose service hangs must not stall the analysis
     this.web = web; // { photosNearby(lat, lon, radiusM), wikiSearch(query, langs) }
     this.maxWeb = maxWeb;
     this.webCount = 0;
@@ -418,8 +420,11 @@ export class ToolExecutor {
     const handler = this[`tool_${name}`];
     if (typeof handler !== "function") return { result: `Unbekanntes Werkzeug: ${name}`, isError: true };
     try {
-      return { result: await handler.call(this, args), isError: false };
+      return { result: await watch(() => handler.call(this, args), this.toolTimeoutMs), isError: false };
     } catch (err) {
+      if (err instanceof StallError) {
+        return { result: `${name} hat nach ${Math.round(err.ms / 1000)} s nicht geantwortet (Dienst hängt) – arbeite ohne dieses Ergebnis weiter.`, isError: true };
+      }
       if (err instanceof ToolInputError) return { result: `Ungültige Eingabe: ${err.message}`, isError: true };
       if (err instanceof OSMError) return { result: err.message, isError: true };
       return { result: `Fehler bei ${name}: ${err.name}: ${err.message}`, isError: true };

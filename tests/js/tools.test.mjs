@@ -412,3 +412,12 @@ test("photos_nearby and wiki_search: photos of others as one contact sheet, Wiki
   const { ex: bare } = executor({ withMapView: false });
   assert.match((await bare.run("photos_nearby", { lat: 1, lon: 2 })).result, /nicht verfügbar/);
 });
+
+test("a tool whose service hangs returns an error after its time limit instead of stalling the analysis", async () => {
+  const executor = new ToolExecutor({ zoom: () => new Promise(() => {}), osm: {}, toolTimeoutMs: 30 });
+  const started = Date.now();
+  const { result, isError } = await executor.run("zoom_image", { x_min: 0.1, y_min: 0.1, x_max: 0.5, y_max: 0.5, purpose: "x" });
+  assert.equal(isError, true);
+  assert.match(result, /^zoom_image hat nach 0 s nicht geantwortet \(Dienst hängt\)/);
+  assert.ok(Date.now() - started < 1000);
+});

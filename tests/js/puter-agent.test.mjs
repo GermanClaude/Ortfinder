@@ -151,3 +151,22 @@ test("Puter: a connection dropped in the background is retried once the page is 
   assert.equal(calls.length, 6);
   assert.ok(Date.now() - started < 1500);
 });
+
+test("a request that hangs without an answer is asked again after the stall limit", async () => {
+  const { run, calls, events } = setup([
+    () => new Promise(() => {}), // Puter never answers this one
+    reply({ tool_calls: [toolCall("c1", "submit_result", VALID_SUBMISSION)] }),
+  ], { stallMs: 40 });
+  const { analysis } = await run();
+  assert.equal(analysis.subject.name, "Martinstor");
+  assert.equal(calls.length, 2, "the same round asked again");
+  assert.deepEqual(calls[1].messages, calls[0].messages);
+  const warning = events.find(([t]) => t === "warning");
+  assert.match(warning[1].message, /kein Lebenszeichen – Ortfinder fragt dieselbe Runde neu an \(Versuch 2 von 4\)/);
+});
+
+test("a service that keeps hanging gives up after four attempts with a clear message", async () => {
+  const { run, calls } = setup(Array.from({ length: 6 }, () => () => new Promise(() => {})), { stallMs: 15 });
+  await assert.rejects(run(), /Die KI hat 4× nicht geantwortet.*anderen Anbieter/);
+  assert.equal(calls.length, 4);
+});
