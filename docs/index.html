@@ -68,11 +68,17 @@
           <div>
             <label for="provider">KI-Anbieter</label>
             <select id="provider">
-              <option value="puter">Puter – kostenlos, ohne API-Key (empfohlen)</option>
-              <option value="gemini">Google Gemini – eigener API-Key</option>
-              <option value="openrouter">OpenRouter – kostenlos, 50 Anfragen am Tag, Anmeldung z.B. mit Google</option>
-              <option value="ollama">Eigener PC (Ollama) – unbegrenzt &amp; kostenlos, auch fürs Handy</option>
-              <option value="claude">Claude (Anthropic) – eigener API-Key, kostenpflichtig</option>
+              <optgroup label="Kostenlos" data-group="free">
+                <option value="puter">Puter – kostenlos, ohne API-Key (empfohlen)</option>
+                <option value="gemini">Google Gemini – eigener API-Key, kostenloser Tarif</option>
+                <option value="openrouter">OpenRouter – kostenlos, 50 Anfragen am Tag, Anmeldung z.B. mit Google</option>
+                <option value="ollama">Eigener PC (Ollama) – unbegrenzt &amp; kostenlos, auch fürs Handy</option>
+              </optgroup>
+              <optgroup label="Einmaliges Startguthaben, danach bezahlen" data-group="trial"></optgroup>
+              <optgroup label="Bezahlen – auch mit PayPal" data-group="paypal"></optgroup>
+              <optgroup label="Bezahlen mit Kreditkarte" data-group="card">
+                <option value="claude">Claude (Anthropic) – eigener API-Key, kostenpflichtig</option>
+              </optgroup>
             </select>
           </div>
           <div class="claude-only">
@@ -87,6 +93,33 @@
             </div>
             <p id="claude-key-hint" class="small muted"></p>
           </div>
+          <div class="compat-only wide">
+            <ul id="compat-info" class="small compat-info"></ul>
+            <ol id="compat-steps" class="small"></ol>
+          </div>
+          <div class="compat-only custom-only wide">
+            <label for="compat-url">Adresse der Schnittstelle (endet meist auf /v1)</label>
+            <input id="compat-url" type="url" spellcheck="false" autocomplete="off" placeholder="https://api.beispiel.com/v1">
+          </div>
+          <div class="compat-only wide">
+            <label for="compat-key">API-Key</label>
+            <div class="row nowrap">
+              <input id="compat-key" type="password" autocomplete="off" spellcheck="false" aria-label="API-Key des Anbieters">
+              <button id="compat-key-visibility" type="button" class="ghost">Zeigen</button>
+            </div>
+          </div>
+          <div class="compat-only">
+            <label for="compat-model">Modell</label>
+            <select id="compat-model"></select>
+          </div>
+          <div class="compat-only">
+            <label for="compat-model-own">… oder Modellname eintragen</label>
+            <div class="row nowrap">
+              <input id="compat-model-own" type="text" spellcheck="false" autocomplete="off" placeholder="optional">
+              <button id="compat-load" type="button" class="ghost">Modelle laden</button>
+            </div>
+          </div>
+          <p id="compat-status" class="compat-only wide small muted" role="status"></p>
           <div class="openrouter-only">
             <label for="or-model">Modell (kostenlos)</label>
             <select id="or-model"></select>

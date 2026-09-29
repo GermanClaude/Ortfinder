@@ -6,8 +6,9 @@ herauszufinden, wo es entstanden ist, bis hin zur Straße oder zum Standpunkt.
 
 Ortfinder ist eine **reine Website** (HTML/JavaScript im Ordner [`docs/`](docs)) und läuft direkt auf
 **GitHub Pages**, ganz ohne Server. Die KI-Analyse läuft **kostenlos und ohne API-Key über
-[Puter](https://puter.com)** (Standard: Gemini 3.8 Flash); wer möchte, nutzt stattdessen OpenRouter
-(kostenlos), einen eigenen Google-Gemini- oder Claude-Key oder die KI auf dem eigenen PC.
+[Puter](https://puter.com)** (Standard: Gemini 3.8 Flash); wer möchte, nutzt stattdessen einen von vielen
+weiteren Anbietern – kostenlos (OpenRouter, Gemini, Mistral, Groq, eigener PC), mit Startguthaben (DeepSeek,
+Qwen), mit PayPal bezahlt (Poe, DeepSeek) oder per Karte (Claude, OpenAI, xAI), siehe [KI-Anbieter](#ki-anbieter).
 
 **Anleitungen zum Abtippen** für jede KI-Option, jeweils für Windows, macOS, Android und iPhone:
 <https://germanclaude.github.io/Ortfinder/anleitung.html> (auch in Ortfinder unter ⚙, passend zur gewählten Option
@@ -286,6 +287,29 @@ der JavaScript-Module nicht.
 
 ## KI-Anbieter
 
+Unter ⚙ sind die Anbieter danach sortiert, wie man sie nutzen kann (Stand September 2026; die Anbieter
+ändern ihre Angebote oft, deshalb steht bei jedem, was man im eigenen Konto nachsehen sollte). Alle können
+Bilder und Werkzeuge und werden direkt aus dem Browser angesprochen; jeder Key bleibt im eigenen Browser.
+
+| | Anbieter | Was man wissen muss |
+|---|---|---|
+| **Kostenlos** | Puter (Standard) | ohne Key, eigenes Monatskontingent |
+| | Google Gemini | eigener Key, kostenloser Tarif: 20 Anfragen am Tag je Modell |
+| | OpenRouter | Anmeldung per Tipp, 50 Anfragen am Tag |
+| | Eigener PC (Ollama) | unbegrenzt, braucht einen PC mit 16 GB |
+| | Mistral | eigener Key, kostenloser Plan ohne Kreditkarte (Eingaben dürfen zum Training dienen) |
+| | Groq | eigener Key, kostenlos mit Tageslimit, sehr schnell, kleineres Modell, höchstens 3 Bilder pro Anfrage |
+| **Startguthaben, danach bezahlen** | DeepSeek | Startguthaben für neue Konten, danach etwa 1–3 Cent pro Analyse, aufladen **auch mit PayPal** (je nach Land) |
+| | Qwen (Alibaba Cloud) | 1 Mio. Tokens je Modell gratis für 90 Tage; „Free quota only“ verhindert Kosten |
+| **Bezahlen mit PayPal** | Poe | ein Key für Gemini, Claude, GPT und Grok; das Abo in der Poe-App über Google Play oder den App Store abschließen, dort geht PayPal |
+| **Bezahlen mit Kreditkarte** | Claude, OpenAI (GPT-6), xAI (Grok) | Guthaben beim Anbieter aufladen |
+| | Anderer Anbieter | jeder OpenAI-kompatible Dienst, der Browser-Anfragen erlaubt (z.B. Together, Fireworks, DeepInfra) |
+
+**Gut wie Gemini und mit PayPal:** Poe, denn darüber läuft Gemini selbst (3.8 Flash oder 3.1 Pro), bezahlt
+über ein Abo aus dem App-Store. Oder DeepSeek: eigenes, sehr günstiges Modell mit Bildverständnis, Aufladen
+per PayPal. Google, Anthropic und OpenAI nehmen direkt nur Karten; OpenRouter nennt PayPal „in Arbeit“.
+Bei jedem Anbieter holt „Modelle laden“ die aktuelle Modellliste direkt von dort.
+
 ### Puter (Standard): kostenlos, ohne API-Key
 
 Ortfinder nutzt [Puter.js](https://docs.puter.com/) nach dem „User-Pays“-Prinzip: Jede Person meldet sich
@@ -478,6 +502,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/skyline.js       Bergkamm-Abgleich (wie PeakFinder): Himmelslinie im Foto, Geländehorizont bis 200 km, Pose, Gipfelnamen
   js/compact.js       kleine Anfragen: frühere Bilder/Ergebnisse als kurze Hinweise, Kacheln nur in Runde 1
   js/watchdog.js      fragt neu an, wenn die KI oder ein Werkzeug hängt
+  js/providers.js     weitere Anbieter mit OpenAI-Schnittstelle (Mistral, Groq, DeepSeek, Qwen, Poe, OpenAI, xAI, eigener)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data), korrigierbar durch exakte Höhen
   js/swiss.js         Schweiz: amtliche Höhen und Höhenprofile von swisstopo, LV95-Koordinaten
   js/websearch.js     Fotos anderer (Commons, Panoramax), Wikipedia, Bildersuche (Lens-Knöpfe, Cloud Vision)

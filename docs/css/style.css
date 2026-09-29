@@ -286,7 +286,11 @@ button.chip:hover { border-color: var(--accent); }
 #settings:not([data-provider="ollama"]) .ollama-only,
 #settings:not([data-provider="openrouter"]) .openrouter-only,
 #settings:not([data-provider="claude"]) .claude-only,
-#settings:not([data-provider="gemini"]):not([data-provider="claude"]) .key-only { display: none !important; }
+#settings:not([data-kind="compat"]) .compat-only,
+#settings:not([data-provider="custom"]) .custom-only,
+#settings:not([data-provider="gemini"]):not([data-provider="claude"]):not([data-kind="compat"]) .key-only { display: none !important; }
+.compat-info { margin: 0 0 .4rem; padding-left: 1.2rem; }
+.compat-info li { margin: .15rem 0; }
 .grid2 > .wide { grid-column: 1 / -1; }
 .grid2 > div > p { margin: 0; }
 
