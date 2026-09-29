@@ -842,6 +842,79 @@ def test_claude_provider_with_own_api_key(browser, site_url, tmp_path):
     context.close()
 
 
+def test_more_providers_grouped_by_cost_and_deepseek_with_own_key(browser, site_url, tmp_path):
+    """More services with an OpenAI-style API: grouped into free / one-time credit / PayPal / card; DeepSeek runs."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    requests: list[dict] = []
+    def tool_call(cid, name, args):
+        return {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+    script = [
+        {"choices": [{"message": {"role": "assistant", "content": "", "reasoning_content": "Schild unten rechts.", "tool_calls": [
+            tool_call("c1", "zoom_image", {"x_min": 0.66, "y_min": 0.6, "x_max": 0.95, "y_max": 0.76, "purpose": "Straßenschild lesen"})]},
+            "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 900, "completion_tokens": 40}},
+        {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [tool_call("c2", "submit_result", SUBMISSION)]},
+            "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1100, "completion_tokens": 90}},
+    ]
+    cors = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*"}
+
+    def deepseek(route):
+        if route.request.method == "OPTIONS":
+            route.fulfill(status=200, headers=cors, body="")
+            return
+        requests.append({"url": route.request.url, "headers": route.request.headers, "body": json.loads(route.request.post_data)})
+        route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps(script.pop(0)))
+
+    page.route("https://api.deepseek.com/**", deepseek)
+    page.goto(site_url)
+    page.click("#settings-toggle")
+    groups = page.eval_on_selector_all("#provider optgroup", "gs => gs.map(g => [g.label, [...g.querySelectorAll('option')].map(o => o.value)])")
+    assert groups == [
+        ["Kostenlos", ["puter", "gemini", "openrouter", "ollama", "mistral", "groq"]],
+        ["Einmaliges Startguthaben, danach bezahlen", ["deepseek", "qwen"]],
+        ["Bezahlen – auch mit PayPal", ["poe"]],
+        ["Bezahlen mit Kreditkarte", ["claude", "openai", "xai", "custom"]],
+    ]
+    page.select_option("#provider", "poe")
+    assert page.is_visible("#compat-key") and page.is_visible("#remember-key") and not page.is_visible("#compat-url")
+    assert "PayPal" in page.text_content("#compat-info") and page.get_attribute("#compat-steps a", "href") == "https://poe.com/api/keys"
+    assert page.eval_on_selector_all("#compat-model option", "os => os.map(o => o.value)")[:2] == ["gemini-3.8-flash", "gemini-3.1-pro"]
+    page.select_option("#provider", "custom")
+    assert page.is_visible("#compat-url")
+    page.select_option("#provider", "deepseek")
+    assert "PayPal" in page.text_content("#compat-info") and "Startguthaben" in page.text_content("#compat-info")
+    page.click("#save-settings")
+    assert "DeepSeek: API-Key fehlt" in page.text_content("#settings-toggle")
+    page.click("#settings-toggle")
+    page.fill("#compat-key", "sk-deepseek-test")
+    page.click("#save-settings")
+    assert "deepseek-flash · DeepSeek" in page.text_content("#settings-toggle")
+
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector(".answer", timeout=30000)
+    assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
+    assert "deepseek-flash (DeepSeek)" in page.text_content("#result")
+    assert len(requests) == 2
+    first = requests[0]
+    assert first["url"] == "https://api.deepseek.com/chat/completions"
+    assert first["headers"]["authorization"] == "Bearer sk-deepseek-test"
+    assert first["body"]["model"] == "deepseek-flash" and len(first["body"]["tools"]) == 18
+    assert first["body"]["messages"][1]["content"][1]["type"] == "image_url"
+    second = requests[1]["body"]["messages"]
+    # The answer goes back with the common fields only, plus DeepSeek's own thinking.
+    assert set(second[2]) == {"role", "content", "tool_calls", "reasoning_content"}
+    assert second[2]["reasoning_content"] == "Schild unten rechts." and second[2]["tool_calls"][0]["function"]["name"] == "zoom_image"
+    stored = page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1'))")
+    assert stored["provider"] == "deepseek" and stored["compat"]["deepseek"]["key"] == "sk-deepseek-test"
+    assert errors == []
+    context.close()
+
+
 def test_claude_key_is_forgotten_when_not_remembered(browser, site_url):
     context = browser.new_context()
     page = context.new_page()

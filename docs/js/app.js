@@ -14,6 +14,7 @@ import {
   OPENROUTER_DEFAULT_MODEL, describeOpenRouterError, fallbackModels, finishOpenRouterSignIn, listFreeVisionModels, openRouterChat, openRouterSignInUrl,
 } from "./openrouter.js";
 import { PUTER_MODELS, PuterAgent, describePuterError, loadPuter } from "./puter-agent.js";
+import { COMPAT_PROVIDERS, compatChat, compatSettings, describeCompatError, isCompat, listCompatModels } from "./providers.js";
 import { solveCameraWithTerrain } from "./resection.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
@@ -190,6 +191,7 @@ const settings = {
   openrouterModel: OPENROUTER_DEFAULT_MODEL,
   claudeKey: "",
   claudeModel: CLAUDE_DEFAULT_MODEL,
+  compat: {}, // more services with an OpenAI-style API (providers.js): { [id]: { key, model, url } }
   visionKey: "",
   learn: true,
   apiKey: "",
@@ -206,7 +208,16 @@ if (settings.maxSteps === 8) settings.maxSteps = 10;
 if (settings.openrouterModel === "google/gemma-4-31b-it:free") settings.openrouterModel = OPENROUTER_DEFAULT_MODEL;
 
 function fillSettingsForm() {
+  for (const [id, p] of Object.entries(COMPAT_PROVIDERS)) {
+    if ($(`#provider option[value="${id}"]`)) continue;
+    const group = $(`#provider optgroup[data-group="${p.group}"]`);
+    group.append(el("option", { value: id }, p.label));
+  }
+  // The custom service goes last.
+  const custom = $('#provider option[value="custom"]');
+  custom?.parentElement.append(custom);
   $("#provider").value = settings.provider;
+  state.formProvider = settings.provider;
   const puterSelect = $("#puter-model");
   puterSelect.replaceChildren(...PUTER_MODELS.map((m) => el("option", { value: m.id }, m.label)));
   if (!PUTER_MODELS.some((m) => m.id === settings.puterModel)) puterSelect.append(el("option", { value: settings.puterModel }, settings.puterModel));
@@ -239,6 +250,69 @@ function fillSettingsForm() {
   renderLessonList();
   checkKeyFormat();
   checkClaudeKey();
+  fillCompatForm(settings.provider);
+}
+
+// ---------- more services with an OpenAI-style API (providers.js) ----------
+
+/** The key, model and address typed for a service, kept while switching between services in the form. */
+function stashCompatForm(provider) {
+  if (!isCompat(provider)) return;
+  const own = $("#compat-model-own").value.trim();
+  settings.compat = { ...settings.compat, [provider]: {
+    key: $("#compat-key").value.trim(), model: own || $("#compat-model").value, url: $("#compat-url").value.trim(),
+  } };
+}
+
+function fillCompatModels(provider, models, chosen) {
+  const select = $("#compat-model");
+  const list = models.length ? models : COMPAT_PROVIDERS[provider].models;
+  const options = list.map((m) => el("option", { value: m.id }, m.label || (m.vision ? `${m.id} (Bilder)` : m.id)));
+  if (chosen && !list.some((m) => m.id === chosen)) options.unshift(el("option", { value: chosen }, chosen));
+  select.replaceChildren(...options);
+  if (chosen) select.value = chosen;
+}
+
+function fillCompatForm(provider) {
+  if (!isCompat(provider)) return;
+  const p = COMPAT_PROVIDERS[provider];
+  const c = compatSettings(settings, provider);
+  $("#compat-info").replaceChildren(...p.lines.map((line) => el("li", {}, line)));
+  const steps = p.keyUrl
+    ? [
+      el("li", {}, "Konto anlegen und einen API-Key erstellen: ", el("a", { href: p.keyUrl, target: "_blank", rel: "noopener" }, new URL(p.keyUrl).host), "."),
+      el("li", {}, "Den Key unten einfügen, ein Modell wählen und speichern."),
+      el("li", {}, "Der Key bleibt in deinem Browser und geht nur direkt an ", p.name, "."),
+    ]
+    : [el("li", {}, "Adresse der Schnittstelle, Key und ein Modell mit Bild- und Werkzeug-Unterstützung eintragen."), el("li", {}, "Der Key bleibt in deinem Browser.")];
+  $("#compat-steps").replaceChildren(...steps);
+  $("#compat-url").value = settings.compat?.[provider]?.url || "";
+  $("#compat-key").value = c.key;
+  $("#compat-key").placeholder = p.keyHint;
+  const preset = p.models.some((m) => m.id === c.model);
+  fillCompatModels(provider, [], c.model);
+  $("#compat-model-own").value = preset || !c.model ? "" : c.model;
+  $("#compat-status").textContent = c.key ? "✔ Key eingetragen." : "Noch kein Key eingetragen.";
+}
+
+async function loadCompatModels() {
+  const provider = $("#provider").value;
+  if (!isCompat(provider)) return;
+  stashCompatForm(provider);
+  const c = compatSettings(settings, provider);
+  const status = $("#compat-status");
+  if (!c.baseUrl) {
+    status.textContent = "Erst die Adresse der Schnittstelle eintragen.";
+    return;
+  }
+  status.textContent = "Modelle werden geladen …";
+  try {
+    const models = await listCompatModels(provider, c);
+    fillCompatModels(provider, models, c.model);
+    status.textContent = `${models.length} Modelle gefunden. Nötig ist eines mit Bildverständnis und Werkzeugen (Function Calling).`;
+  } catch (err) {
+    status.textContent = `Modelle konnten nicht geladen werden: ${err.message}${c.key ? "" : " (Key eintragen?)"}`;
+  }
 }
 
 function checkClaudeKey() {
@@ -280,6 +354,7 @@ function checkKeyFormat() {
 const storedSettings = () => ({
   ...settings, apiKey: settings.remember ? settings.apiKey : "", claudeKey: settings.remember ? settings.claudeKey : "",
   visionKey: settings.remember ? settings.visionKey : "",
+  compat: settings.remember ? settings.compat : Object.fromEntries(Object.entries(settings.compat || {}).map(([id, c]) => [id, { ...c, key: "" }])),
 });
 
 function persist() {
@@ -296,6 +371,7 @@ function saveKey() {
 /** Show the settings and hints that belong to the chosen provider. */
 function applyProvider(provider) {
   $("#settings").dataset.provider = provider;
+  $("#settings").dataset.kind = isCompat(provider) ? "compat" : "";
   $("#puter-note").hidden = provider !== "puter";
   const orNote = $("#openrouter-note");
   orNote.hidden = provider !== "openrouter";
@@ -520,6 +596,7 @@ function saveSettings() {
   settings.openrouterKey = $("#or-key").value.trim();
   settings.claudeModel = $("#claude-model").value || settings.claudeModel;
   settings.claudeKey = $("#claude-key").value.trim();
+  stashCompatForm(settings.provider);
   settings.visionKey = $("#vision-key").value.trim();
   settings.learn = $("#learn").checked;
   settings.model = $("#model").value;
@@ -562,6 +639,11 @@ function updateStatusChip() {
   } else if (settings.provider === "claude") {
     chip.textContent = settings.claudeKey ? `⚙ ${settings.claudeModel} · eigener Claude-Key` : "⚙ Claude: API-Key fehlt";
     chip.className = settings.claudeKey ? "chip ok" : "chip";
+  } else if (isCompat(settings.provider)) {
+    const c = compatSettings(settings, settings.provider);
+    const name = COMPAT_PROVIDERS[settings.provider].name;
+    chip.textContent = c.key ? `⚙ ${c.model} · ${name}` : `⚙ ${name}: API-Key fehlt`;
+    chip.className = c.key ? "chip ok" : "chip";
   } else if (settings.apiKey) {
     chip.textContent = `⚙ ${settings.model} · ${settings.webSearch ? "mit Google-Suche" : "ohne Websuche"}`;
     chip.className = "chip ok";
@@ -575,9 +657,18 @@ function setupSettings() {
   fillSettingsForm();
   updateStatusChip();
   $("#provider").addEventListener("change", () => {
+    stashCompatForm(state.formProvider);
+    state.formProvider = $("#provider").value;
+    fillCompatForm($("#provider").value);
     applyProvider($("#provider").value);
     if ($("#provider").value === "ollama") checkOllama();
     if ($("#provider").value === "openrouter") loadOpenRouterModels();
+  });
+  $("#compat-load").addEventListener("click", loadCompatModels);
+  $("#compat-key-visibility").addEventListener("click", () => {
+    const input = $("#compat-key");
+    input.type = input.type === "password" ? "text" : "password";
+    $("#compat-key-visibility").textContent = input.type === "password" ? "Zeigen" : "Verbergen";
   });
   $("#or-signin").addEventListener("click", startOpenRouterSignIn);
   $("#or-signout").addEventListener("click", () => {
@@ -745,8 +836,8 @@ function buildIntro(image, metadata, { userHints = "", lens = null, lessons = ""
 
 const PROVIDER_MODEL = { puter: "puterModel", ollama: "ollamaModel", openrouter: "openrouterModel", claude: "claudeModel", gemini: "model" };
 const PROVIDER_SUFFIX = { puter: " (Puter)", ollama: " (eigener PC)", openrouter: " (OpenRouter)", claude: "", gemini: "" };
-const modelName = (cfg) => cfg[PROVIDER_MODEL[cfg.provider] || "model"];
-const modelLabel = (cfg) => `${modelName(cfg)}${PROVIDER_SUFFIX[cfg.provider] ?? ""}`;
+const modelName = (cfg) => (isCompat(cfg.provider) ? cfg.compatModel : cfg[PROVIDER_MODEL[cfg.provider] || "model"]);
+const modelLabel = (cfg) => `${modelName(cfg)}${isCompat(cfg.provider) ? ` (${COMPAT_PROVIDERS[cfg.provider].name})` : PROVIDER_SUFFIX[cfg.provider] ?? ""}`;
 
 /** Settings a run depends on; saved with it, so a resumed run continues with the same AI. */
 const runConfig = () => ({
@@ -754,12 +845,23 @@ const runConfig = () => ({
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
   ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx, openrouterModel: settings.openrouterModel,
   claudeModel: settings.claudeModel, hints: ($("#hints")?.value || "").trim().slice(0, 600),
+  ...(isCompat(settings.provider) ? (({ model, baseUrl }) => ({ compatModel: model, compatUrl: baseUrl }))(compatSettings(settings, settings.provider)) : {}),
 });
 
 // Plain JSON copy: what AI services return may carry helper functions that IndexedDB cannot store.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function createAgent(cfg, common) {
+  if (isCompat(cfg.provider)) {
+    // Same OpenAI-style loop as Puter; the key is read now (it is not saved with the run).
+    const p = COMPAT_PROVIDERS[cfg.provider];
+    const { key } = compatSettings(settings, cfg.provider);
+    return new PuterAgent({
+      model: cfg.compatModel,
+      chat: compatChat({ baseUrl: cfg.compatUrl, key, signal: common.signal, maxImages: p.maxImages || 0, keep: p.keep || [] }),
+      describeError: describeCompatError(cfg.provider, cfg.compatModel), ...common,
+    });
+  }
   switch (cfg.provider) {
     case "puter":
       return new PuterAgent({ model: cfg.puterModel, ...common });
@@ -919,13 +1021,19 @@ async function analyze(file, resumed = null) {
     if (cfg.useAI && cfg.provider === "gemini" && !settings.apiKey) {
       emit("warning", { message: "Für die KI-Bildanalyse mit Gemini fehlt noch der API-Key (Feld oben). Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet. Tipp: Unter ⚙ „Puter“ wählen – kostenlos und ohne Key." });
       showKeyBar(true, true);
+    } else if (cfg.useAI && isCompat(cfg.provider) && (!compatSettings(settings, cfg.provider).key || !cfg.compatUrl)) {
+      const name = COMPAT_PROVIDERS[cfg.provider].name;
+      emit("warning", { message: `Für ${name} fehlt noch der API-Key${cfg.compatUrl ? "" : " oder die Adresse"}. Unter ⚙ eintragen – dort steht, wo du ihn bekommst. Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet.` });
+      showSettings(true);
+      $("#compat-key").focus();
     } else if (cfg.useAI && cfg.provider === "claude" && !settings.claudeKey) {
       emit("warning", { message: "Für Claude fehlt noch dein API-Key. Unter ⚙ eintragen – die Anleitung dort zeigt, wie du ihn bekommst. Ohne Key wurden nur die GPS-/EXIF-Daten ausgewertet." });
       showSettings(true);
       $("#claude-key").focus();
     } else if (cfg.useAI) {
       const openrouter = cfg.provider === "openrouter";
-      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : cfg.provider === "claude" ? " (Anthropic)" : "";
+      const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : cfg.provider === "claude" ? " (Anthropic)"
+        : isCompat(cfg.provider) ? ` über ${COMPAT_PROVIDERS[cfg.provider].name}` : "";
       if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName(cfg)}${where} …` });
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
       let fallbacks = [];
@@ -1847,6 +1955,7 @@ function askConfig() {
     provider: settings.provider, apiKey: settings.apiKey, model: geminiModels(settings.model)[0], claudeKey: settings.claudeKey,
     claudeModel: settings.claudeModel, puterModel: settings.puterModel, openrouterKey: settings.openrouterKey,
     openrouterModel: settings.openrouterModel, ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel,
+    ...(isCompat(settings.provider) ? (({ key, model, baseUrl }) => ({ compatKey: key, compatModel: model, compatUrl: baseUrl }))(compatSettings(settings, settings.provider)) : {}),
   };
 }
 

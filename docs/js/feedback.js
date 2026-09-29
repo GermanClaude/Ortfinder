@@ -233,6 +233,18 @@ export const saveFeedback = (storage, list) => writeJson(storage, FEEDBACK_KEY, 
  */
 export async function askAI(ai, { text, image = null, fetchImpl = globalThis.fetch?.bind(globalThis), loadClaude = null, puter = globalThis.puter }) {
   const dataUrl = image ? `data:image/jpeg;base64,${image}` : null;
+  if (ai.compatUrl) {
+    // Any service with an OpenAI-style API (providers.js).
+    const content = [...(dataUrl ? [{ type: "image_url", image_url: { url: dataUrl } }] : []), { type: "text", text }];
+    const resp = await fetchImpl(`${ai.compatUrl}/chat/completions`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${ai.compatKey}` },
+      body: JSON.stringify({ model: ai.compatModel, messages: [{ role: "user", content }] }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.error) throw new Error(data.error?.message || `HTTP ${resp.status}`);
+    const c = data.choices?.[0]?.message?.content;
+    return typeof c === "string" ? c : Array.isArray(c) ? c.map((part) => part.text || "").join("") : "";
+  }
   switch (ai.provider) {
     case "claude": {
       const { default: Anthropic } = await loadClaude();
