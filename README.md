@@ -319,6 +319,12 @@ kann. Eine Analyse mit Gemini 3.8 Flash kostet grob 5–10 Cent aus diesem Konti
 Modelle (unter ⚙ wählbar) deutlich weniger. Ist das Kontingent aufgebraucht, bietet Puter an, es
 aufzustocken; Ortfinder zeigt dann einen Hinweis.
 
+Ist das gewählte Modell überlastet oder hängt eine Anfrage 50 s, macht Ortfinder mit dem nächsten Modell
+weiter (bei Gemini 3.8 Flash: 3.1 Flash-Lite, dann GPT-5.4 mini), und zwar mit dem Foto und einer Mitschrift
+des bisherigen Stands statt von vorn. Nach 90 s versucht es wieder das gewählte Modell; ist es immer noch
+überlastet, verdoppelt sich die Pause. Dasselbe gilt für OpenRouter bei hängenden Anfragen (bei Überlastung
+weicht OpenRouter selbst auf andere kostenlose Modelle aus).
+
 Warum kein fest eingebauter Key für alle? Ein Key im öffentlichen Code wird von Bots gefunden und
 missbraucht; Google, OpenAI & Co. sperren solche Keys automatisch. Außerdem teilen sich dann alle Besucher
 ein einziges Limit (bei Gemini kostenlos 20 Anfragen pro Tag), sodass es schon nach einer Analyse für alle
