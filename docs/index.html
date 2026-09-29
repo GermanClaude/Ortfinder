@@ -302,6 +302,42 @@
       </div>
     </section>
 
+    <section id="confirm" class="card confirm" hidden aria-labelledby="confirm-title">
+      <div class="confirm-head">
+        <img id="confirm-photo" alt="Gewähltes Foto">
+        <div>
+          <h2 id="confirm-title">Bereit zur Analyse</h2>
+          <p id="confirm-file" class="small muted"></p>
+          <p class="small"><span id="confirm-ai"></span> <button id="confirm-change" type="button" class="ghost small-btn">KI ändern</button></p>
+        </div>
+      </div>
+      <div class="confirm-params">
+        <label>Max. Runden <input id="confirm-steps" type="number" min="3" max="60"></label>
+        <label id="confirm-thinking-box">Denktiefe
+          <select id="confirm-thinking">
+            <option value="low">niedrig</option>
+            <option value="medium">mittel</option>
+            <option value="high">hoch</option>
+          </select>
+        </label>
+        <label class="check"><input id="confirm-ai-on" type="checkbox"> KI-Bildanalyse</label>
+      </div>
+      <div id="confirm-summary" class="confirm-summary"></div>
+      <details id="confirm-plan" open>
+        <summary>Geplante Schritte je Runde</summary>
+        <table class="plan">
+          <thead><tr><th>Runde</th><th>Was die KI tut</th><th>Tokens senden / empfangen</th></tr></thead>
+          <tbody id="confirm-rows"></tbody>
+        </table>
+        <p class="small muted">Schätzung aus einer typischen Analyse; je nach Foto braucht die KI weniger oder mehr Runden. Reserve-Runden werden nur bei Bedarf genutzt.</p>
+      </details>
+      <label class="check small"><input id="confirm-skip" type="checkbox"> Künftig ohne diese Nachfrage direkt starten</label>
+      <div class="row">
+        <button id="confirm-start" type="button" class="primary">▶ Analyse starten</button>
+        <button id="confirm-cancel" type="button" class="ghost">Abbrechen</button>
+      </div>
+    </section>
+
     <div id="demo-banner" class="banner" hidden></div>
 
     <section id="workspace" hidden>

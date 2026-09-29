@@ -2,7 +2,9 @@
 
 import { GeminiAgent, MODELS, assembleResult } from "./agent.js";
 import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent, loadSdk as loadClaudeSdk } from "./claude-agent.js";
-import { OSMClient, haversineKm, viewCone } from "./geo.js";
+import { OSMClient, haversineKm, timeoutSignal, viewCone } from "./geo.js";
+import { PRICES, TYPICAL_ROUNDS, actualAverage, estimateAnalysis, formatMoney, formatTokens, recordActual, recordUse, usedToday } from "./estimate.js";
+import { explainMessage, reportUrl } from "./explain.js";
 import { decodeImage, detailTiles, overview, rulerOverview, zoomCrop } from "./imaging.js";
 import { TILES_MARK } from "./compact.js";
 import { drapedTerrain, topViewImage } from "./groundview.js";
@@ -607,6 +609,7 @@ function saveSettings() {
   persist();
   applyProvider(settings.provider);
   showSettings(false);
+  renderEstimate();
 }
 
 function showSettings(open) {
@@ -721,19 +724,19 @@ function setupDropzone() {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
   });
   input.addEventListener("change", () => {
-    if (input.files[0]) analyze(input.files[0]);
+    if (input.files[0]) prepare(input.files[0]);
     input.value = "";
   });
   for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); });
   for (const ev of ["dragleave", "drop"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); });
   drop.addEventListener("drop", (e) => {
     const file = [...e.dataTransfer.files].find((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
-    if (file) analyze(file);
+    if (file) prepare(file);
   });
   document.addEventListener("paste", (e) => {
     if (e.target instanceof HTMLInputElement) return;
     const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
-    if (item) analyze(item.getAsFile());
+    if (item) prepare(item.getAsFile());
   });
   $("#cancel").addEventListener("click", () => state.controller?.abort());
   $("#notify").addEventListener("click", enableNotifications);
@@ -775,6 +778,7 @@ function resetWorkspace() {
   state.replayT = null;
   state.run = null;
   state.truth = null;
+  $("#confirm").hidden = true;
   $("#demo-banner").hidden = true;
   showSettings(false);
   $("#workspace").hidden = false;
@@ -949,6 +953,232 @@ function firstImages(bitmap) {
  * Analyse a photo. `resumed` is the saved state of an interrupted run (see resume.js): log, zooms and
  * map are restored from its events, and the AI continues after the last completed round.
  */
+// ---------- before an analysis: estimate and confirmation ----------
+
+const DIRECT_KEY = "ortfinder.direkt"; // "1": start right away, without the confirmation
+const startsDirectly = () => {
+  try {
+    return localStorage.getItem(DIRECT_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const utcDay = () => new Date().toISOString().slice(0, 10);
+
+/** A photo was chosen: show what the analysis will do and use, and start once confirmed. */
+async function prepare(file) {
+  if (!file) return;
+  if (startsDirectly()) return analyze(file);
+  let bitmap;
+  try {
+    bitmap = await decodeImage(file);
+  } catch {
+    return analyze(file); // the analysis reports what is wrong with the file
+  }
+  state.pending = { file, width: bitmap.width, height: bitmap.height };
+  $("#confirm-photo").src = overview(bitmap, 320).dataUrl;
+  bitmap.close?.();
+  $("#confirm-file").textContent = `${file.name || "Eingefügtes Foto"} · ${state.pending.width}×${state.pending.height} Pixel`;
+  $("#confirm-skip").checked = false;
+  $("#confirm").hidden = false;
+  renderEstimate();
+  $("#confirm").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** The provider, model and service name of the current settings (the model the analysis starts with). */
+function currentAi() {
+  const cfg = runConfig();
+  const provider = cfg.provider;
+  const model = provider === "gemini" ? geminiModels(cfg.model)[0] : modelName(cfg);
+  const name = isCompat(provider) ? COMPAT_PROVIDERS[provider].name
+    : { puter: "Puter", gemini: "Google Gemini", openrouter: "OpenRouter", ollama: "deinem PC (Ollama)", claude: "Anthropic" }[provider] || provider;
+  return { cfg, provider, model, name };
+}
+
+function renderEstimate() {
+  if ($("#confirm").hidden || !state.pending) return;
+  const { cfg, provider, model, name } = currentAi();
+  $("#confirm-ai").textContent = `KI: ${model} über ${name}`;
+  $("#confirm-steps").value = settings.maxSteps;
+  $("#confirm-thinking").value = settings.thinking;
+  $("#confirm-thinking-box").hidden = provider !== "gemini";
+  $("#confirm-ai-on").checked = $("#use-ai").checked;
+  const summary = $("#confirm-summary");
+  const rows = $("#confirm-rows");
+  if (!cfg.useAI) {
+    summary.replaceChildren(el("p", { class: "big" }, "Nur GPS/EXIF aus der Datei – keine KI, kostenlos."));
+    rows.replaceChildren();
+    $("#confirm-plan").hidden = true;
+    return;
+  }
+  $("#confirm-plan").hidden = false;
+  const poe = provider === "poe" ? state.poePrices?.[model] : null;
+  const est = estimateAnalysis({
+    provider, model, thinking: settings.thinking, width: state.pending.width, height: state.pending.height, rounds: settings.maxSteps, prices: poe,
+  });
+  state.estimate = est;
+  rows.replaceChildren(...est.plan.map((r) => el("tr", { class: r.reserve ? "reserve" : "" },
+    el("td", {}, String(r.round)), el("td", {}, r.steps), el("td", {}, `${formatTokens(r.input)} / ${formatTokens(r.output)}`))));
+  const t = est.typical;
+  const m = est.max;
+  const lines = [
+    el("p", { class: "big" }, el("strong", {}, `Typisch ${t.rounds} Runden: ≈ ${formatTokens(t.input + t.output)} Tokens`),
+      ` (${formatTokens(t.input)} senden, ${formatTokens(t.output)} empfangen)`),
+    m.rounds > t.rounds ? el("p", {}, `Höchstens ${m.rounds} Runden (dein Limit): ≈ ${formatTokens(m.input + m.output)} Tokens`) : null,
+    el("p", { class: "small muted" }, `Dein Foto: Überblick mit ${formatTokens(est.photo)} Tokens pro Runde` +
+      (est.tiles ? `, in der ersten Runde zusätzlich ${est.tiles} Detail-Kacheln (${formatTokens(est.tileTokens)})` : "") + "."),
+    el("p", { id: "confirm-cost" }, ...costLine(provider, model, est)),
+    el("p", { id: "confirm-quota", class: "small" }),
+  ];
+  const actual = actualAverage(localStorage, `${provider}:${model}`);
+  if (actual) {
+    lines.push(el("p", { class: "small muted" }, `Tatsächlich bei deinen letzten ${actual.count} Analyse(n) mit diesem Modell: im Schnitt ${formatTokens(actual.input + actual.output)} Tokens in ${actual.rounds} Runden.`));
+  }
+  const missing = keyMissing(provider);
+  if (missing) lines.unshift(el("p", { class: "warn" }, missing, " ", actionButton("Einstellungen öffnen", () => runFix("settings"))));
+  summary.replaceChildren(...lines.filter(Boolean));
+  renderQuota(provider, model, est);
+  if (provider === "poe" && !state.poePrices) loadPoePrices().then(renderEstimate).catch(() => {});
+}
+
+const actionButton = (label, onClick) => {
+  const b = el("button", { type: "button", class: "ghost small-btn" }, label);
+  b.addEventListener("click", onClick);
+  return b;
+};
+
+function keyMissing(provider) {
+  if (provider === "gemini" && !settings.apiKey) return "Für Gemini fehlt noch der API-Key – ohne ihn werden nur GPS/EXIF ausgewertet.";
+  if (provider === "claude" && !settings.claudeKey) return "Für Claude fehlt noch der API-Key.";
+  if (isCompat(provider) && !compatSettings(settings, provider).key) return `Für ${COMPAT_PROVIDERS[provider].name} fehlt noch der API-Key.`;
+  return "";
+}
+
+/** What the analysis costs: money for paid use, or the free allowance it draws on. */
+function costLine(provider, model, est) {
+  const money = est.cost ? (x) => formatMoney(x) : null;
+  const both = money ? `${money(est.cost.typical)}${est.max.rounds > est.typical.rounds ? ` (höchstens ${money(est.cost.max)})` : ""}` : "";
+  const price = est.cost ? ` · Preis: ${est.cost.price[0].toLocaleString("de-DE")} $ / ${est.cost.price[1].toLocaleString("de-DE")} $ je 1 Mio. Tokens senden/empfangen` : "";
+  switch (provider) {
+    case "puter":
+      return [el("strong", {}, "Kostenlos"), ` über dein Puter-Monatskontingent; diese Analyse entspricht dort ${both || "einem kleinen Teil"}.`];
+    case "gemini":
+      return ["gemini-3.8-flash", "gemini-3.7-flash"].includes(model)
+        ? [el("strong", {}, "Kostenloser Tarif: 0 $"), ` (zählt ${est.typical.rounds} Anfragen aufs Tageslimit). Im bezahlten Tarif: ${both}${price}.`]
+        : [el("strong", {}, `Kosten: ${both || "laut Google-Preisliste"}`), price, " (bezahlter Gemini-Tarif)."];
+    case "openrouter":
+      return /:free$/.test(model) ? [el("strong", {}, "Kostenlos"), ` – zählt ${est.typical.rounds} Anfragen aufs Tageslimit von OpenRouter.`] : [el("strong", {}, "Kosten: laut OpenRouter-Preisliste"), " (kein kostenloses Modell gewählt)."];
+    case "ollama":
+      return [el("strong", {}, "Kostenlos und unbegrenzt"), " – läuft auf deinem PC (dauert dort länger)."];
+    case "mistral":
+      return [el("strong", {}, "Kostenloser Plan"), ` mit 10 $ API-Guthaben im Monat; diese Analyse ≈ ${both || "?"}${est.cost ? ` – reicht für ca. ${Math.max(1, Math.floor(10 / est.cost.typical))} Analysen im Monat` : ""}.`];
+    case "groq":
+      return [el("strong", {}, "Kostenlos"), " – Groq begrenzt Anfragen pro Minute und Tag; Ortfinder wartet dann automatisch."];
+    case "qwen":
+      return [el("strong", {}, "Gratis-Kontingent"), ` von 1 Mio. Tokens je Modell (90 Tage) – reicht für ca. ${Math.max(1, Math.floor(1e6 / (est.typical.input + est.typical.output)))} Analysen; danach ${both}${price}.`];
+    case "custom":
+      return [el("strong", {}, "Kosten: laut Preisliste deines Anbieters"), ` (≈ ${formatTokens(est.typical.input + est.typical.output)} Tokens).`];
+    default:
+      return money ? [el("strong", {}, `Kosten: ${both}`), price, provider === "deepseek" ? " (nachts nach chinesischer Zeit halb so teuer)." : "."] : [el("strong", {}, "Kosten: laut Preisliste des Anbieters.")];
+  }
+}
+
+/** What is left of a free allowance or a balance – counted here, or asked from the service. */
+async function renderQuota(provider, model, est) {
+  const token = (state.quotaToken = (state.quotaToken || 0) + 1);
+  const show = (...parts) => {
+    const box = $("#confirm-quota");
+    if (state.quotaToken === token && box) box.replaceChildren(...parts);
+  };
+  const perRun = est.typical.rounds;
+  if (provider === "gemini" && FREE_GEMINI.includes(model)) {
+    const day = quotaDay();
+    const exhausted = exhaustedToday();
+    const left = FREE_GEMINI.map((m) => [m, exhausted.includes(m) ? 0 : Math.max(0, 20 - usedToday(localStorage, `gemini:${m}`, day))]);
+    const sum = left.reduce((s, [, n]) => s + n, 0);
+    show(`Heute noch ca. ${sum} von 40 kostenlosen Anfragen (${left.map(([m, n]) => `${m.replace("gemini-", "")}: ${n}`).join(", ")}; in diesem Browser gezählt) – reicht für ca. ${Math.floor(sum / perRun)} Analyse(n). Neu ab 9 Uhr.`);
+  } else if (provider === "openrouter" && settings.openrouterKey) {
+    show("Tageslimit wird abgefragt …");
+    const info = await getJson("https://openrouter.ai/api/v1/key", settings.openrouterKey).catch(() => null);
+    const limit = info?.data?.is_free_tier === false ? 1000 : 50;
+    const left = Math.max(0, limit - usedToday(localStorage, "openrouter", utcDay()));
+    show(`Heute noch ca. ${left} von ${limit} kostenlosen Anfragen (in diesem Browser gezählt) – reicht für ca. ${Math.floor(left / perRun)} Analyse(n). Neu um Mitternacht UTC.`);
+  } else if (provider === "deepseek" && compatSettings(settings, provider).key) {
+    show("Guthaben wird abgefragt …");
+    const { key, baseUrl } = compatSettings(settings, provider);
+    const b = (await getJson(`${baseUrl}/user/balance`, key).catch(() => null))?.balance_infos?.[0];
+    if (!b) return show("Guthaben konnte nicht abgefragt werden.");
+    const total = Number(b.total_balance);
+    const runs = b.currency === "USD" && state.estimate?.cost ? ` – reicht für ca. ${Math.floor(total / state.estimate.cost.typical)} Analysen` : "";
+    show(`Guthaben bei DeepSeek: ${total.toLocaleString("de-DE", { maximumFractionDigits: 2 })} ${b.currency}${runs}.`);
+  } else if (provider === "poe" && compatSettings(settings, provider).key) {
+    show("Punktestand wird abgefragt …");
+    const b = await getJson("https://api.poe.com/usage/current_balance", compatSettings(settings, provider).key).catch(() => null);
+    show(Number.isFinite(b?.current_point_balance) ? `Punktestand bei Poe: ${b.current_point_balance.toLocaleString("de-DE")} Punkte.` : "Punktestand konnte nicht abgefragt werden.");
+  } else {
+    show();
+  }
+}
+
+async function getJson(url, key) {
+  const resp = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: timeoutSignal(10000) });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+/** Poe's prices come with its model list (US dollars per token). */
+async function loadPoePrices() {
+  const data = await (await fetch("https://api.poe.com/v1/models", { signal: timeoutSignal(15000) })).json();
+  state.poePrices = Object.fromEntries((data.data || []).filter((m) => m.pricing?.prompt).map((m) => [m.id, [Number(m.pricing.prompt) * 1e6, Number(m.pricing.completion) * 1e6]]));
+}
+
+/** After a run: count the requests against the free daily limits counted here, and remember the actual use. */
+function countUse(cfg, agent) {
+  const requests = agent.usage?.requests || 0;
+  if (!requests) return;
+  if (cfg.provider === "gemini") recordUse(localStorage, `gemini:${agent.model}`, quotaDay(), requests);
+  if (cfg.provider === "openrouter") recordUse(localStorage, "openrouter", utcDay(), requests);
+  recordActual(localStorage, `${cfg.provider}:${cfg.provider === "gemini" ? agent.model : modelName(cfg)}`, agent.usage);
+}
+
+function setupConfirm() {
+  $("#confirm-start").addEventListener("click", () => {
+    const pending = state.pending;
+    if (!pending) return;
+    if ($("#confirm-skip").checked) {
+      try {
+        localStorage.setItem(DIRECT_KEY, "1");
+      } catch {
+        // not remembered
+      }
+    }
+    $("#confirm").hidden = true;
+    state.pending = null;
+    analyze(pending.file);
+  });
+  $("#confirm-cancel").addEventListener("click", () => {
+    $("#confirm").hidden = true;
+    state.pending = null;
+  });
+  $("#confirm-change").addEventListener("click", () => runFix("settings"));
+  $("#confirm-steps").addEventListener("change", () => {
+    settings.maxSteps = Math.max(3, Math.min(60, parseInt($("#confirm-steps").value, 10) || 10));
+    $("#max-steps").value = settings.maxSteps;
+    persist();
+    renderEstimate();
+  });
+  $("#confirm-thinking").addEventListener("change", () => {
+    settings.thinking = $("#confirm-thinking").value;
+    $("#thinking").value = settings.thinking;
+    persist();
+    renderEstimate();
+  });
+  $("#confirm-ai-on").addEventListener("change", () => {
+    $("#use-ai").checked = $("#confirm-ai-on").checked;
+    renderEstimate();
+  });
+}
+
 async function analyze(file, resumed = null) {
   if (!file) return;
   resetWorkspace();
@@ -963,6 +1193,7 @@ async function analyze(file, resumed = null) {
   let ownsSavedRun = true;
   const releaseLock = holdLock(() => { ownsSavedRun = false; });
   const cfg = resumed?.config ?? runConfig();
+  let usedAgent = null; // for counting what the free allowances used, also when the run fails
   // Every event of a run is kept, so a run can be inspected, replayed (see runDemo) or resumed.
   const run = { started: new Date(state.startedAt).toISOString(), model: modelLabel(cfg), events: [] };
   state.run = run;
@@ -1078,6 +1309,7 @@ async function analyze(file, resumed = null) {
         }
       }
       const agent = createAgent(cfg, { ...common, fallbacks });
+      usedAgent = agent;
       ({ analysis, usage } = await agent.run({
         intro: buildIntro(bitmap, metadata, { userHints: cfg.hints || "", lens, lessons: currentLessons() }),
         images: resumed?.agentState ? [] : firstImages(bitmap),
@@ -1103,6 +1335,7 @@ async function analyze(file, resumed = null) {
     if (state.controller === controller && err.name !== "AbortError") announceEnd(false, `Analyse fehlgeschlagen: ${err.message || err}`);
   } finally {
     releaseLock();
+    if (usedAgent) countUse(cfg, usedAgent);
     if (state.controller === controller) {
       state.running = false;
       clearInterval(state.timer);
@@ -1209,13 +1442,59 @@ function log(type, text) {
   const t = `${(state.replayT ?? (Date.now() - state.startedAt) / 1000).toFixed(1)}s`;
   const list = $("#log");
   const stick = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
-  list.append(el("li", { class: type }, el("span", { class: "t" }, t), el("span", {}, ICONS[type] || "•"), el("span", { class: "body" }, text)));
+  const body = el("span", { class: "body" }, text);
+  // Trouble in the log gets a "?" that explains it in plain words, with fixes where there is one.
+  const help = ["status", "warning", "error"].includes(type) ? explainMessage(text, type === "status" ? "status" : type) : null;
+  if (help) {
+    const box = explanation(help, text);
+    box.hidden = true;
+    const btn = el("button", { type: "button", class: "ghost explain-btn", "aria-expanded": "false", title: "Was heißt das?" }, "?");
+    btn.addEventListener("click", () => {
+      box.hidden = !box.hidden;
+      btn.setAttribute("aria-expanded", String(!box.hidden));
+    });
+    body.append(btn, box);
+  }
+  list.append(el("li", { class: type }, el("span", { class: "t" }, t), el("span", {}, ICONS[type] || "•"), body));
   if (stick) list.scrollTop = list.scrollHeight;
+}
+
+/** The explanation of a message, with its fixes as buttons. */
+function explanation(help, message) {
+  const buttons = help.fixes.map(([action, label]) => {
+    const b = el("button", { type: "button", class: "ghost small-btn" }, label);
+    b.addEventListener("click", () => runFix(action, message));
+    return b;
+  });
+  return el("div", { class: "explain" }, el("p", {}, help.why), buttons.length ? el("div", { class: "row" }, ...buttons) : null);
+}
+
+function runFix(action, message) {
+  if (action === "settings") {
+    showSettings(true);
+    $("#settings").scrollIntoView({ behavior: "smooth", block: "start" });
+  } else if (action.startsWith("provider:")) {
+    settings.provider = action.slice(9);
+    $("#provider").value = settings.provider;
+    persist();
+    applyProvider(settings.provider);
+    if (state.lastFile) prepare(state.lastFile);
+  } else if (action === "retry") {
+    if (state.lastFile) prepare(state.lastFile);
+    else $("#file").click();
+  } else if (action === "pick") {
+    $("#file").click();
+  } else if (action === "report") {
+    window.open(reportUrl(message, `${modelLabel(runConfig())} · ${navigator.userAgent.slice(0, 120)}`), "_blank", "noopener");
+  } else if (action.startsWith("url:")) {
+    window.open(action.slice(4), "_blank", "noopener");
+  }
 }
 
 function fail(message) {
   log("error", message);
-  $("#result").replaceChildren(el("p", { class: "error" }, message));
+  const help = explainMessage(message, "error");
+  $("#result").replaceChildren(el("p", { class: "error" }, message), help ? explanation(help, message) : null);
 }
 
 function handle(type, data) {
@@ -2127,7 +2406,7 @@ function externalLinks(cam, view) {
       $("#hints").placeholder = "Erst hier eintragen, was du weißt oder gefunden hast – dann nochmal klicken.";
       return;
     }
-    if (state.lastFile) analyze(state.lastFile);
+    if (state.lastFile) prepare(state.lastFile);
   });
   return el("p", { class: "links small" },
     el("a", { href: `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${cam.lat},${cam.lon}${heading}`, target: "_blank", rel: "noopener" }, "🚶 Street View hier"),
@@ -2304,6 +2583,7 @@ applyLinkSettings();
 loadSharedLessons().then(renderLessonList);
 setupSettings();
 setupDropzone();
+setupConfirm();
 setupImageSearch();
 detectDemo();
 // Back from the OpenRouter sign-in first, so an analysis waiting for it can continue right away.
