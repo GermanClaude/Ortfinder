@@ -48,12 +48,15 @@ und zum erkannten Gerät).
    Draufsichten“, „🧊 3D-Modelle & Bergkamm“ und „🖼 Fotos anderer“. **Ein Tipp auf ein Bild zeigt es groß**
    (Ausschnitte in voller Auflösung aus dem Original), mit „🔍 +“ bzw. Tipp ins Bild doppelt so groß, ‹ ›
    oder Wischen zum nächsten Bild der Gruppe, bei Zooms „📍 Im Foto zeigen“.
-   **KI-Schärfung, aber nur wenn sicher:** Ist die KI sich sicher, was ein kleiner Ausschnitt zeigt
-   (mindestens 90 %, sie muss es benennen), vergrößert ein KI-Modell (ESRGAN ×4, läuft im Browser, einmalig
-   etwa 2 MB) ihn schärfer. Das Ergebnis wird geprüft: Verkleinert muss es sich mit dem Original decken –
-   insgesamt mindestens so gut wie eine normale Vergrößerung und in jedem kleinen Block. Erfundene Details
-   fallen dabei auf, dann wird es verworfen und die KI erhält den normalen Ausschnitt mit dem Grund.
-   Geschärfte Ausschnitte tragen ein „KI“; groß angesehen lässt sich das Original umschalten.
+   **Ausschnitte werden nur vergrößert, nicht bearbeitet:** kein Nachschärfen, kein Kontrast, keine
+   erzeugten Bildpunkte – die KI sieht, was im Foto ist, nur größer.
+   **KI-Schärfung (aus, nicht empfohlen):** Unter ⚙ → „🔬 Bildauswertung“ lässt sich eine KI-Vergrößerung
+   (ESRGAN ×4, im Browser, etwa 2 MB) einschalten – erst nach einer Warnung, denn sie **beeinträchtigt die
+   Genauigkeit stark**: Sie erzeugt neue Bildpunkte und kann Details erfinden, die KI zieht daraus falsche
+   Schlüsse, und die Analyse dauert deutlich länger. Eingeschaltet greift sie nur, wenn die KI benennt, was
+   ein Ausschnitt zeigt und sich sicher ist, und das Ergebnis wird gegen das Original geprüft (verkleinert
+   muss es sich decken); ausschließen lassen sich falsche Details damit nicht. Solange sie aus ist, wird sie
+   der KI gar nicht erst angeboten.
    Ihre Zwischenstände erscheinen sofort auf der
    Karte, die von der Weltkarte aus immer weiter heranzoomt. Jede Fehler- oder Störmeldung im Protokoll hat
    ein **„?“**: Es erklärt in einfachen Worten, was los ist, und bietet, wo es eine gibt, die Lösung als Knopf
@@ -291,9 +294,9 @@ Entscheidung braucht:
   machen würden. Dort sorgt Prompt-Caching dafür, dass Wiederholungen nur ein Zehntel kosten.
 
 Gemessen an einer typischen Analyse (Test `tests/js/token-budget.test.mjs`, derselbe Ablauf mit echten
-Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **59–64 % weniger Tokens**
-(z.B. Gemini 225 000 → 81 000) und eine Anfrage weniger (die Werkzeuge für KI-Schärfung und Draufsicht aus dem
-Foto kosten gut ein Prozent davon; der Test hält mindestens 58 %); bei Claude sinken die abgerechneten Tokens um
+Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **60–64 % weniger Tokens**
+(z.B. Gemini 225 000 → 80 000) und eine Anfrage weniger (die Draufsicht aus dem Foto kostet davon rund ein halbes
+Prozent; der Test hält mindestens 58 %); bei Claude sinken die abgerechneten Tokens um
 14 %, gegenüber den Rohdaten spart der Cache dort rund 75 %.
 
 ## Was realistisch ist
@@ -562,7 +565,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/watchdog.js      fragt neu an, wenn die KI oder ein Werkzeug hängt
   js/estimate.js      Vorab-Schätzung: Schritte je Runde, Tokens, Kosten, freie Limits
   js/explain.js       Erklärungen und Lösungen zu Fehler- und Störmeldungen
-  js/sharpen.js       KI-Schärfung (ESRGAN ×4 mit TensorFlow.js) nur mit Prüfung gegen das Original
+  js/sharpen.js       KI-Schärfung (nur wenn eingeschaltet; ESRGAN ×4 mit TensorFlow.js, Prüfung gegen das Original)
   js/surfaceview.js   Draufsicht aus dem Foto allein: ebener Boden, Oberflächen, verlässliche Reichweite
   js/live.js          Leiste „Jetzt / Als Nächstes“ während der Analyse
   js/providers.js     weitere Anbieter mit OpenAI-Schnittstelle (Mistral, Groq, DeepSeek, Qwen, Poe, OpenAI, xAI, eigener)

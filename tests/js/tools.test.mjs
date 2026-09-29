@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { VALID_SUBMISSION } from "./fixtures.mjs";
-import { FUNCTION_TOOLS, ToolExecutor, ToolInputError, buildTools, normalizeBox, validateSubmission } from "../../docs/js/tools.js";
+import { FUNCTION_TOOLS, ToolExecutor, ToolInputError, buildTools, normalizeBox, toolsFor, validateSubmission } from "../../docs/js/tools.js";
 
 
 test("every declared required field exists and google_search is optional", () => {
@@ -12,6 +12,18 @@ test("every declared required field exists and google_search is optional", () =>
   }
   assert.deepEqual(buildTools(true).at(-1), { type: "google_search" });
   assert.ok(!buildTools(false).some((t) => t.type === "google_search"));
+});
+
+test("zoom_image only enlarges: no editing fields; AI sharpening fields only when switched on", () => {
+  const zoomProps = (tools) => Object.keys(tools.find((t) => t.name === "zoom_image").parameters.properties);
+  assert.deepEqual(zoomProps(FUNCTION_TOOLS), ["x_min", "y_min", "x_max", "y_max", "purpose"]);
+  assert.equal(toolsFor(), FUNCTION_TOOLS);
+  assert.equal(toolsFor({ aiSharpen: false }), FUNCTION_TOOLS);
+  const on = toolsFor({ aiSharpen: true });
+  assert.deepEqual(zoomProps(on), ["x_min", "y_min", "x_max", "y_max", "purpose", "ki_schaerfen", "sicherheit"]);
+  assert.match(on.find((t) => t.name === "zoom_image").parameters.properties.ki_schaerfen.description, /erfinden/);
+  assert.deepEqual(zoomProps(FUNCTION_TOOLS), ["x_min", "y_min", "x_max", "y_max", "purpose"], "the base list stays untouched");
+  assert.equal(buildTools(false, on).length, on.length);
 });
 
 test("normalizeBox clamps and sorts", () => assert.deepEqual(normalizeBox(1.2, 0.8, -0.1, 0.2), [0, 0.2, 1, 0.8]));
@@ -63,8 +75,8 @@ function executor({ withMapView = true } = {}) {
     streetGeometry: async (...args) => { osmCalls.push(["street", ...args]); return { name: args[0], total: 0, ways: [] }; },
   };
   const ex = new ToolExecutor({
-    zoom: async (box, enhance) => {
-      zoomCalls.push({ box, enhance });
+    zoom: async (box, ai) => {
+      zoomCalls.push({ box, ai });
       return { data: "QUJD", width: 1024, height: 512, sourceWidth: 200, sourceHeight: 100, thumbnail: "data:image/jpeg;base64,QUJD" };
     },
     mapView: withMapView
@@ -155,7 +167,7 @@ test("zoom returns text + image and emits a thumbnail", async () => {
   const { ex, events, zoomCalls } = executor();
   const { result, isError } = await ex.run("zoom_image", { x_min: 0.2, y_min: 0.1, x_max: 0.1, y_max: 0.3, enhance: true, purpose: "Schild" });
   assert.equal(isError, false);
-  assert.deepEqual(zoomCalls[0], { box: [0.1, 0.1, 0.2, 0.3], enhance: true });
+  assert.deepEqual(zoomCalls[0], { box: [0.1, 0.1, 0.2, 0.3], ai: null }, "only enlarged: an old 'enhance' changes nothing");
   assert.match(result[0].text, /200x100 Originalpixel/);
   assert.deepEqual(result[1], { type: "image", mime_type: "image/jpeg", data: "QUJD", resolution: "high" });
   assert.equal(events[0][0], "zoom");
@@ -427,7 +439,7 @@ test("zoom_image sharpens with AI only when the AI names what it is and is sure 
   const events = [];
   const crop = { data: "AAAA", width: 1024, height: 512, sourceWidth: 64, sourceHeight: 32, thumbnail: "data:image/jpeg;base64,AA" };
   const ex = new ToolExecutor({
-    zoom: async (box, enhance, ai) => {
+    zoom: async (box, ai) => {
       calls.push(ai);
       if (!ai) return crop;
       return ai.what === "Schild Bahnhofstr."

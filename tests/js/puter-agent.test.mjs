@@ -251,3 +251,21 @@ test("a page reloaded after a switch continues with the model it was using", asy
   await again.agent.run({ intro: "x", images: [], executor: again.executor, resume: state });
   assert.deepEqual(again.calls.map((c) => c.opts.model), ["m2"]);
 });
+
+test("the tool list can be given (AI sharpening switched on); by default it is the plain one", async () => {
+  const { toolsFor } = await import("../../docs/js/tools.js");
+  const { toOpenAITools } = await import("../../docs/js/puter-agent.js");
+  const seen = [];
+  const chat = async (messages, opts) => {
+    seen.push(opts.tools);
+    return { message: { role: "assistant", content: null, tool_calls: [{ id: "s", type: "function", function: { name: "submit_result", arguments: "{}" } }] }, finish_reason: "tool_calls" };
+  };
+  const run = (extra) => new PuterAgent({ chat, maxSteps: 1, ...extra }).run({ intro: "x", images: [], executor: { run: async () => ({ result: "", isError: false }) } }).catch(() => {});
+  await run({});
+  await run({ tools: toolsFor({ aiSharpen: true }) });
+  assert.equal(seen[0], OPENAI_TOOLS);
+  const zoom = (tools) => tools.find((t) => t.function.name === "zoom_image").function.parameters.properties;
+  assert.ok(!("ki_schaerfen" in zoom(seen[0])));
+  assert.ok("ki_schaerfen" in zoom(seen[1]));
+  assert.deepEqual(seen[1], toOpenAITools(toolsFor({ aiSharpen: true })));
+});

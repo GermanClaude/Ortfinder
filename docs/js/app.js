@@ -27,7 +27,7 @@ import { surfacePlan } from "./surfaceview.js";
 import { SURFACE_FIRST_HINT, backgroundHint } from "./prompt.js";
 import { Terrain } from "./terrain.js";
 import qrcode from "../vendor/qrcode.mjs";
-import { ToolExecutor } from "./tools.js";
+import { ToolExecutor, toolsFor } from "./tools.js";
 import { contactSheet, languages, photosNearby, reverseImageSearch, visionSummary, wikiSearch } from "./websearch.js";
 import {
   SCREENSHOT_PROMPT, askAI, feedbackRecord, feedbackStats, lessonPrompt, lessonsBlock, loadFeedback, loadLessons, mergeLessons, parseLessons,
@@ -206,7 +206,7 @@ const settings = {
   visionKey: "",
   learn: true,
   marks: {}, // how the zooms are marked in the photo (merged with MARK_DEFAULTS below)
-  aiSharpen: true, // AI upscaling of zoom crops – only when the AI is sure what they show, and checked
+  aiSharpening: false, // AI upscaling of zoom crops – opt-in only (can invent details, slow); crops are otherwise only enlarged
   backgroundCheck: true, // look for hills/mountains against the sky before the analysis
   surfaceFirst: true, // first step: surfaces → top view from the photo alone (optional)
   apiKey: "",
@@ -218,6 +218,8 @@ const settings = {
   ...storageGet(),
 };
 settings.marks = { ...MARK_DEFAULTS, ...settings.marks };
+// AI sharpening was on by default for a short while (key "aiSharpen"); everyone starts with it off again.
+delete settings.aiSharpen;
 // 8 was the stored default before the fine-location step existed, which needs about two more rounds.
 if (settings.maxSteps === 8) settings.maxSteps = 10;
 // The first OpenRouter default (Gemma 4 31B, free) is almost always overloaded; it stays a fallback.
@@ -264,7 +266,7 @@ function fillSettingsForm() {
   $("#vision-key").value = settings.visionKey;
   $("#learn").checked = settings.learn !== false;
   fillMarkForm();
-  $("#ai-sharpen").checked = settings.aiSharpen !== false;
+  $("#ai-sharpen").checked = settings.aiSharpening === true;
   $("#background-check").checked = settings.backgroundCheck !== false;
   $("#surface-first").checked = settings.surfaceFirst !== false;
   renderLessonList();
@@ -901,7 +903,7 @@ const runConfig = () => ({
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
   ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx, openrouterModel: settings.openrouterModel,
   claudeModel: settings.claudeModel, hints: ($("#hints")?.value || "").trim().slice(0, 600),
-  aiSharpen: settings.aiSharpen !== false, backgroundCheck: settings.backgroundCheck !== false, surfaceFirst: settings.surfaceFirst !== false,
+  aiSharpen: settings.aiSharpening === true, backgroundCheck: settings.backgroundCheck !== false, surfaceFirst: settings.surfaceFirst !== false,
   ...(isCompat(settings.provider) ? (({ model, baseUrl }) => ({ compatModel: model, compatUrl: baseUrl }))(compatSettings(settings, settings.provider)) : {}),
 });
 
@@ -1084,6 +1086,10 @@ function renderEstimate() {
       (est.tiles ? `, in der ersten Runde zusätzlich ${est.tiles} Detail-Kacheln (${formatTokens(est.tileTokens)})` : "") + "."),
     el("p", { id: "confirm-cost" }, ...costLine(provider, model, est)),
     el("p", { id: "confirm-quota", class: "small" }),
+    settings.aiSharpening === true
+      ? el("p", { class: "warn-box" }, "⚠ KI-Schärfung ist eingeschaltet: Sie kann Details erfinden und beeinträchtigt die Genauigkeit stark; " +
+        "die Analyse dauert länger. Abschalten unter ⚙ → „🔬 Bildauswertung“.")
+      : null,
   ];
   const actual = actualAverage(localStorage, `${provider}:${model}`);
   if (actual) {
@@ -1332,6 +1338,9 @@ async function analyze(file, resumed = null) {
       const where = puter ? " über Puter" : ollama ? ` auf deinem PC (${cfg.ollamaUrl})` : openrouter ? " über OpenRouter" : cfg.provider === "claude" ? " (Anthropic)"
         : isCompat(cfg.provider) ? ` über ${COMPAT_PROVIDERS[cfg.provider].name}` : "";
       if (!resumed) emit("status", { message: `Bild geladen (${bitmap.width}×${bitmap.height}). Starte KI-Analyse mit ${modelName(cfg)}${where} …` });
+      if (!resumed && cfg.aiSharpen) {
+        emit("warning", { message: "KI-Schärfung ist eingeschaltet – sie kann Details erfinden und die Genauigkeit stark beeinträchtigen (abschaltbar unter ⚙ → Bildauswertung)." });
+      }
       if (puter) await ensurePuterSignedIn(emit, controller.signal);
       let fallbacks = [];
       if (openrouter) {
@@ -1343,12 +1352,12 @@ async function analyze(file, resumed = null) {
         }));
       }
       const executor = new ToolExecutor({
-        zoom: async (box, enhance, ai) => {
-          if (!ai) return zoomCrop(bitmap, box, enhance);
-          if (!cfg.aiSharpen) return { ...zoomCrop(bitmap, box, enhance), ai: { applied: false, reason: "KI-Schärfung ist in den Einstellungen ausgeschaltet" } };
+        zoom: async (box, ai) => {
+          if (!ai) return zoomCrop(bitmap, box);
+          if (!cfg.aiSharpen) return { ...zoomCrop(bitmap, box), ai: { applied: false, reason: "KI-Schärfung ist ausgeschaltet – Ausschnitte werden nur vergrößert" } };
           if (!state.sharpener) emit("status", { message: "Lade die KI-Schärfung (einmalig etwa 2 MB) …" });
           state.sharpener ??= createSharpener();
-          return sharpenedZoomCrop(bitmap, box, enhance, (rgb, w, h) => sharpenPixels({ rgb, w, h, upscale: state.sharpener.upscale }));
+          return sharpenedZoomCrop(bitmap, box, (rgb, w, h) => sharpenPixels({ rgb, w, h, upscale: state.sharpener.upscale }));
         },
         mapView: async (opts) => withPreview(await renderMapView(opts)),
         renderView: async (opts) => withPreview(await renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height, drapeTerrain: drapedTerrain })),
@@ -1375,7 +1384,8 @@ async function analyze(file, resumed = null) {
         await saveRun({ ...base, agentState: agentState && plain(agentState), counts: executor.counts, events: plain(run.events) });
       };
       if (!resumed?.agentState) await checkpoint(null);
-      const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden() };
+      // Without the (opt-in) AI sharpening the AI cannot even ask for it: zoom_image then only enlarges.
+      const common = { maxSteps: cfg.maxSteps, emit, signal: controller.signal, checkpoint, whenActive: () => waitWhileHidden(), tools: toolsFor({ aiSharpen: cfg.aiSharpen }) };
       // With the user's own Cloud Vision key: a reverse image search (like Google Lens) before the first round.
       let lens = null;
       if (settings.visionKey && !resumed?.agentState) {
@@ -2021,6 +2031,11 @@ function setupLightbox() {
   });
 }
 
+const SHARPEN_WARNING = "⚠ KI-Schärfung beeinträchtigt die Genauigkeit stark.\n\n" +
+  "Das Modell erzeugt neue Bildpunkte und kann dabei Details erfinden, die im Foto nicht vorhanden sind (Buchstaben, Ziffern, Kanten). " +
+  "Die KI kann daraus falsche Schlüsse ziehen, und die Analyse dauert deutlich länger.\n\n" +
+  "Ohne sie werden Ausschnitte nur vergrößert, nicht bearbeitet (empfohlen).\n\nTrotzdem einschalten?";
+
 // ---------- marker settings ----------
 
 function fillMarkForm() {
@@ -2059,8 +2074,10 @@ function setupMarkSettings() {
   for (const id of ["#mark-colors", "#mark-shape", "#mark-width"]) $(id).addEventListener("change", update);
   $("#mark-color").addEventListener("input", update);
   // Image analysis switches: applied at once (like the markers), the estimate follows.
-  for (const [id, key] of [["#ai-sharpen", "aiSharpen"], ["#background-check", "backgroundCheck"], ["#surface-first", "surfaceFirst"]]) {
+  for (const [id, key] of [["#ai-sharpen", "aiSharpening"], ["#background-check", "backgroundCheck"], ["#surface-first", "surfaceFirst"]]) {
     $(id).addEventListener("change", () => {
+      // Switching AI sharpening on needs a clear yes: it can make the analysis wrong and slow.
+      if (key === "aiSharpening" && $(id).checked && !confirm(SHARPEN_WARNING)) $(id).checked = false;
       settings[key] = $(id).checked;
       persist();
       renderEstimate();

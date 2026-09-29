@@ -136,6 +136,10 @@ a { color: var(--accent); }
 .gallery-sec h4 { margin: 10px 0 6px; font-size: 0.88rem; }
 .zooms figure.zoom-fig, .zooms figure.mapview { cursor: zoom-in; border-radius: 9px; }
 .zooms figure.mapview:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.warn-box {
+  padding: 8px 10px; border-radius: 8px; border: 1px solid var(--warn); color: var(--text);
+  background: rgba(178, 94, 9, 0.1);
+}
 .ai-badge {
   position: absolute; bottom: 4px; left: 4px; background: #111; color: #ffd400; border: 1px solid #ffd400;
   font-size: 10px; font-weight: 800; line-height: 1.4; padding: 0 4px; border-radius: 4px; letter-spacing: 0.05em;

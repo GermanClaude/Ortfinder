@@ -161,33 +161,11 @@ export function pixelBox(box, width, height) {
   return [left, top, right, bottom];
 }
 
-function sharpen(c, amount = 0.6) {
-  const ctx = c.getContext("2d");
-  const { width: w, height: h } = c;
-  const src = ctx.getImageData(0, 0, w, h);
-  const out = ctx.createImageData(w, h);
-  const s = src.data;
-  const d = out.data;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      for (let ch = 0; ch < 3; ch++) {
-        const centre = s[i + ch];
-        const up = y > 0 ? s[i - w * 4 + ch] : centre;
-        const down = y < h - 1 ? s[i + w * 4 + ch] : centre;
-        const left = x > 0 ? s[i - 4 + ch] : centre;
-        const right = x < w - 1 ? s[i + 4 + ch] : centre;
-        const laplace = 4 * centre - up - down - left - right;
-        d[i + ch] = Math.max(0, Math.min(255, centre + amount * laplace));
-      }
-      d[i + 3] = 255;
-    }
-  }
-  ctx.putImageData(out, 0, 0);
-}
-
-/** Crop `box` (normalized) from the full-resolution image and upscale it for reading small details. */
-export function zoomCrop(source, box, enhance = false) {
+/**
+ * Crop `box` (normalized) from the full-resolution image and enlarge it for reading small details – only
+ * enlarged (smooth scaling), never edited: no contrast, no sharpening, nothing added.
+ */
+export function zoomCrop(source, box) {
   const [left, top, right, bottom] = pixelBox(box, source.width, source.height);
   const sw = right - left;
   const sh = bottom - top;
@@ -196,14 +174,6 @@ export function zoomCrop(source, box, enhance = false) {
   const w = Math.max(1, Math.round(sw * scale));
   const h = Math.max(1, Math.round(sh * scale));
   const c = drawScaled(source, left, top, sw, sh, w, h);
-  if (enhance) {
-    const ctx = c.getContext("2d");
-    const tmp = drawScaled(c, 0, 0, w, h, w, h);
-    ctx.filter = "contrast(1.3) saturate(1.1)";
-    ctx.drawImage(tmp, 0, 0);
-    ctx.filter = "none";
-    sharpen(c);
-  }
   const [tw, th] = fitSize(w, h, 360);
   const thumb = drawScaled(c, 0, 0, w, h, tw, th);
   return {
@@ -217,15 +187,15 @@ export function zoomCrop(source, box, enhance = false) {
 }
 
 /**
- * A zoom crop sharpened by the AI upscaler (sharpen.js), when it may: `sharpen(rgb, w, h)` returns the
- * checked result. Falls back to the plain crop (with the reason) when the check fails or the crop is large.
- * Returns what zoomCrop returns plus { ai: { applied, reason, stats }, aiImage (data URL, when applied) }.
+ * A zoom crop sharpened by the AI upscaler (sharpen.js; opt-in only, it can invent details): `sharpen(rgb, w, h)`
+ * returns the checked result. Falls back to the plain crop (with the reason) when the check fails or the crop
+ * is large. Returns what zoomCrop returns plus { ai: { applied, reason, stats }, aiImage (when applied) }.
  */
-export async function sharpenedZoomCrop(source, box, enhance, sharpen) {
+export async function sharpenedZoomCrop(source, box, sharpen) {
   const [left, top, right, bottom] = pixelBox(box, source.width, source.height);
   const sw = right - left;
   const sh = bottom - top;
-  const plain = () => zoomCrop(source, box, enhance);
+  const plain = () => zoomCrop(source, box);
   let res;
   try {
     const px = drawScaled(source, left, top, sw, sh, sw, sh).getContext("2d").getImageData(0, 0, sw, sh).data;
@@ -249,19 +219,12 @@ export async function sharpenedZoomCrop(source, box, enhance, sharpen) {
     data.data[i + 3] = 255;
   }
   big.getContext("2d").putImageData(data, 0, 0);
-  // Same size as a plain crop; contrast only (the upscaler already sharpened – no unsharp mask on top).
+  // Same size as a plain crop.
   let scale = Math.max(1, ZOOM_MIN_SIDE / Math.max(sw, sh));
   scale = Math.min(scale, ZOOM_MAX_SIDE / Math.max(sw, sh));
   const w = Math.max(1, Math.round(sw * scale));
   const h = Math.max(1, Math.round(sh * scale));
   const c = drawScaled(big, 0, 0, res.width, res.height, w, h);
-  if (enhance) {
-    const ctx = c.getContext("2d");
-    const tmp = drawScaled(c, 0, 0, w, h, w, h);
-    ctx.filter = "contrast(1.3) saturate(1.1)";
-    ctx.drawImage(tmp, 0, 0);
-    ctx.filter = "none";
-  }
   const [tw, th] = fitSize(w, h, 360);
   const [vw, vh] = fitSize(w, h, 900);
   return {

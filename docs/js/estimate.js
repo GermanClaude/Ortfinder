@@ -8,9 +8,9 @@ import { SURFACE_FIRST_HINT } from "./prompt.js";
 
 /** Text tokens each request sends in the typical analysis (system prompt, tools, history, results). */
 export const TEXT_PROFILE = {
-  gemini: [5391, 5912, 13606, 8197, 7675, 8077, 8337],
-  chat: [5419, 6157, 13922, 8778, 8488, 9176, 9545], // OpenAI style: Puter, OpenRouter, the other services, own PC
-  claude: [5461, 6080, 13732, 15294, 15664, 16074, 16316], // Claude keeps its history unchanged (prompt cache)
+  gemini: [5326, 5847, 13541, 8132, 7610, 8012, 8272],
+  chat: [5354, 6092, 13857, 8713, 8423, 9111, 9480], // OpenAI style: Puter, OpenRouter, the other services, own PC
+  claude: [5396, 6015, 13667, 15229, 15599, 16009, 16251], // Claude keeps its history unchanged (prompt cache)
 };
 
 /**

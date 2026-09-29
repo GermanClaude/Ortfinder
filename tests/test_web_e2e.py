@@ -411,6 +411,7 @@ window.puter = {
     chat: async (messages, options) => {
       window.__puterCalls = window.__puterCalls || [];
       window.__puterCalls.push({ messages: JSON.parse(JSON.stringify(messages)), options: { model: options.model, normalize: options.normalize, tools: options.tools.length } });
+      window.__puterZoomFields = Object.keys(options.tools.find((t) => t.function.name === "zoom_image").function.parameters.properties);
       return window.__puterScript.shift();
     },
   },
@@ -454,6 +455,8 @@ def test_default_provider_puter_needs_no_key(browser, site_url, tmp_path):
     calls = page.evaluate("window.__puterCalls")
     assert len(calls) == 2
     assert calls[0]["options"] == {"model": "gemini-3.8-flash", "normalize": True, "tools": 18}
+    # Crops are only enlarged: the AI is not even offered editing or AI sharpening (opt-in only).
+    assert page.evaluate("window.__puterZoomFields") == ["x_min", "y_min", "x_max", "y_max", "purpose"]
     first_user = calls[0]["messages"][1]["content"]
     assert first_user[1]["type"] == "image_url" and first_user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     roles = [m["role"] for m in calls[1]["messages"]]
@@ -1605,8 +1608,9 @@ def test_while_it_searches_the_page_shows_what_happens_now_and_next(browser, sit
 
 
 def test_sections_large_view_ai_sharpening_and_top_view_from_the_photo(browser, site_url, tmp_path):
-    """Crops, aerial images/top views and 3D are shown apart and open large; a sure AI gets a checked AI-sharpened
-    crop (real ESRGAN in the browser); top_view without a standpoint lays the photo flat; the background is checked."""
+    """Crops, aerial images/top views and 3D are shown apart and open large; with AI sharpening switched on (opt-in,
+    with a warning) a sure AI gets a checked AI-sharpened crop (real ESRGAN in the browser); top_view without a
+    standpoint lays the photo flat; the background is checked."""
     street = tmp_path / "street.jpg"
     _street_jpeg(street)
     call = lambda i, name, args: {"id": i, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
@@ -1624,6 +1628,7 @@ def test_sections_large_view_ai_sharpening_and_top_view_from_the_photo(browser, 
     ]
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     context.add_init_script(f"window.__puterScript = {json.dumps(script)};")
+    context.add_init_script("if (!sessionStorage.getItem('opted')) { localStorage.setItem('ortfinder.settings.v1', JSON.stringify({ aiSharpening: true })); sessionStorage.setItem('opted', '1'); }")
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -1636,6 +1641,8 @@ def test_sections_large_view_ai_sharpening_and_top_view_from_the_photo(browser, 
     page.wait_for_selector(".answer", timeout=120000)
 
     log = page.text_content("#log")
+    assert "KI-Schärfung ist eingeschaltet" in log, "switched on: warned in the log"
+    assert "ki_schaerfen" in page.evaluate("window.__puterZoomFields")
     assert "Hintergrund geprüft" in log
     assert "Draufsicht aus dem Foto (noch ohne Standpunkt): 1 Oberflächen eingezeichnet" in log
     # Separate sections.
@@ -1684,10 +1691,36 @@ def test_sections_large_view_ai_sharpening_and_top_view_from_the_photo(browser, 
     # Settings: AI sharpening, background check and "surfaces first" can be switched off.
     page.click("#settings-toggle")
     page.click("#analysis-settings summary")
+    assert "Beeinträchtigt die Genauigkeit stark" in page.text_content("#analysis-settings")
     for box in ["#ai-sharpen", "#background-check", "#surface-first"]:
         assert page.is_checked(box)
         page.uncheck(box)
     stored = json.loads(page.evaluate("localStorage.getItem('ortfinder.settings.v1')"))
-    assert (stored["aiSharpen"], stored["backgroundCheck"], stored["surfaceFirst"]) == (False, False, False)
+    assert (stored["aiSharpening"], stored["backgroundCheck"], stored["surfaceFirst"]) == (False, False, False)
+    # Switching AI sharpening on again asks first, with the warning; "no" keeps it off.
+    asked: list[str] = []
+    page.once("dialog", lambda d: (asked.append(d.message), d.dismiss()))
+    page.click("#ai-sharpen")
+    assert "beeinträchtigt die Genauigkeit stark" in asked[0] and not page.is_checked("#ai-sharpen")
+    page.once("dialog", lambda d: d.accept())
+    page.click("#ai-sharpen")
+    assert page.is_checked("#ai-sharpen")
+    assert json.loads(page.evaluate("localStorage.getItem('ortfinder.settings.v1')"))["aiSharpening"] is True
     assert errors == []
+    context.close()
+
+
+def test_ai_sharpening_saved_as_on_by_the_earlier_version_starts_off(browser, site_url):
+    """For a short while AI sharpening was on by default and saved like that; everyone starts with it off again."""
+    context = browser.new_context()
+    context.add_init_script("if (!sessionStorage.getItem('set')) { localStorage.setItem('ortfinder.settings.v1', JSON.stringify({ aiSharpen: true, provider: 'puter' })); sessionStorage.setItem('set', '1'); }")
+    page = context.new_page()
+    page.goto(site_url)
+    page.click("#settings-toggle")
+    page.click("#analysis-settings summary")
+    assert not page.is_checked("#ai-sharpen")
+    assert "nur <strong>vergrößert</strong>" in page.inner_html("#analysis-settings")
+    page.click("#save-settings")
+    stored = json.loads(page.evaluate("localStorage.getItem('ortfinder.settings.v1')"))
+    assert "aiSharpen" not in stored and stored["aiSharpening"] is False
     context.close()

@@ -5,8 +5,8 @@
 import { preview } from "./agent.js";
 import { compactOllama, splitTiles } from "./compact.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
-import { OPENAI_TOOLS } from "./puter-agent.js";
-import { SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
+import { OPENAI_TOOLS, toOpenAITools } from "./puter-agent.js";
+import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
 import { MAX_STALLS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const OLLAMA_DEFAULT_URL = "http://localhost:11434";
@@ -93,8 +93,9 @@ export class OllamaAgent {
    */
   constructor({
     baseUrl = OLLAMA_DEFAULT_URL, model = OLLAMA_DEFAULT_MODEL, numCtx = 32768, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
-    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, stallMs = 180000,
+    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, stallMs = 180000, tools = FUNCTION_TOOLS,
   } = {}) {
+    this.tools = tools === FUNCTION_TOOLS ? OPENAI_TOOLS : toOpenAITools(tools);
     this.baseUrl = normalizeOllamaUrl(baseUrl);
     // A PC may think for a while about a big photo before the first word; after that words keep coming.
     this.stallMs = stallMs;
@@ -125,7 +126,7 @@ export class OllamaAgent {
       body: JSON.stringify({
         model: this.model,
         messages: compactOllama(messages), // earlier rounds' images and long results as short notes
-        tools: OPENAI_TOOLS,
+        tools: this.tools,
         stream: true,
         keep_alive: "30m",
         options: { num_ctx: this.numCtx },
