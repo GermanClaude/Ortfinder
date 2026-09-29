@@ -543,6 +543,8 @@ python -m pytest                           # Python-Version + Browser-Test der W
 Der Knopf „Beispiel ansehen“ erscheint, sobald unter `docs/demo/` eine aufgezeichnete echte Analyse liegt
 (`beispiel.json` + das Foto als `beispiel.jpg`). Die Datei entsteht nach jeder Analyse über
 „💾 Aufzeichnung speichern“ unter dem Ergebnis; ein in der Rückmeldung angegebener wahrer Ort geht mit.
+Auf dem Handy schickt „📤 Aufzeichnung teilen“ sie über das Teilen-Menü direkt an eine andere App, als
+Textdatei mit demselben Inhalt (Browser teilen keine JSON-Dateien).
 Das Format zeigt `_synthetic_recording` in `tests/test_web_e2e.py`.
 
 ### Lokale Python-Version (optional)

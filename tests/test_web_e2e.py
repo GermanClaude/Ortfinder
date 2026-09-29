@@ -1211,6 +1211,15 @@ def test_hints_image_search_and_feedback_teach_the_next_analysis(browser, site_u
     context = browser.new_context(viewport={"width": 1280, "height": 900}, accept_downloads=True)
     context.add_init_script(GEMINI_SETTINGS)
     context.add_init_script("window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; };")
+    # A phone's share menu (Web Share with files): records what would be sent to the other app.
+    context.add_init_script("""
+      window.__shared = [];
+      Object.defineProperty(navigator, 'canShare', { configurable: true, value: (d) => Array.isArray(d && d.files) && d.files.every((f) => f.type === 'text/plain') });
+      Object.defineProperty(navigator, 'share', { configurable: true, value: async (d) => {
+        const f = d.files[0];
+        window.__shared.push({ name: f.name, type: f.type, title: d.title, text: await f.text() });
+      } });
+    """)
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -1267,6 +1276,13 @@ def test_hints_image_search_and_feedback_teach_the_next_analysis(browser, site_u
     saved = json.loads(Path(dl.value.path()).read_text(encoding="utf-8"))
     assert saved["image"] == "beispiel.jpg" and saved["truth"] == {"lat": 47.9959, "lon": 7.8522, "label": "angegebener Aufnahmeort"}
     assert saved["events"][-1]["type"] == "result" and saved["model"] and saved["credit"] == {"text": "eigenes Foto"}
+    # The same through the share menu, e.g. straight into a chat app: as a text file (browsers do not share JSON files).
+    page.click("text=📤 Aufzeichnung teilen")
+    page.wait_for_function("window.__shared.length === 1")
+    shared = page.evaluate("window.__shared[0]")
+    assert [shared["name"], shared["type"], shared["title"]] == ["ortfinder-aufzeichnung.txt", "text/plain", "Ortfinder-Aufzeichnung"]
+    assert json.loads(shared["text"]) == saved
+    assert "Geteilt." in page.text_content("#result")
     page.click("#settings-toggle")
     page.click("#learn-settings summary")
     assert lesson in page.text_content("#lesson-list") and "1 Rückmeldung" in page.text_content("#lesson-list")

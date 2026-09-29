@@ -2136,32 +2136,60 @@ function externalLinks(cam, view) {
     " · ", rerun);
 }
 
-/**
- * The whole run as a file in the format of demo/beispiel.json, e.g. to publish it as the example
- * (with the photo as demo/beispiel.jpg). A true location given in the feedback goes along.
- */
-function recordingButton() {
-  const btn = el("button", { type: "button", class: "ghost small-btn" }, "💾 Aufzeichnung speichern (z.B. als Beispiel)");
-  btn.addEventListener("click", () => {
-    const run = state.run;
-    if (!run) return;
-    const t = state.truth;
-    const demo = {
-      model: run.model,
-      date: new Date(run.started).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }),
-      image: "beispiel.jpg",
-      credit: { text: "eigenes Foto" },
-      ...(t ? { truth: { lat: t.lat, lon: t.lon, label: t.name || "angegebener Aufnahmeort" } } : {}),
-      events: run.events,
-    };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(demo)], { type: "application/json" }));
-    const a = el("a", { href: url, download: "beispiel.json" });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+/** The whole run in the format of demo/beispiel.json; a true location given in the feedback goes along. */
+function recordingJson() {
+  const run = state.run;
+  const t = state.truth;
+  return JSON.stringify({
+    model: run.model,
+    date: new Date(run.started).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }),
+    image: "beispiel.jpg",
+    credit: { text: "eigenes Foto" },
+    ...(t ? { truth: { lat: t.lat, lon: t.lon, label: t.name || "angegebener Aufnahmeort" } } : {}),
+    events: run.events,
   });
-  return el("p", { class: "small" }, btn);
+}
+
+function downloadRecording() {
+  const url = URL.createObjectURL(new Blob([recordingJson()], { type: "application/json" }));
+  const a = el("a", { href: url, download: "beispiel.json" });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/**
+ * Save the run as a file (e.g. to publish it as the example, with the photo as demo/beispiel.jpg), or send
+ * it through the phone's share menu straight to another app. Browsers only share certain file types, not
+ * JSON – so it goes as a text file with the same content.
+ */
+function recordingButtons() {
+  const save = el("button", { type: "button", class: "ghost small-btn" }, "💾 Aufzeichnung speichern (z.B. als Beispiel)");
+  save.addEventListener("click", () => state.run && downloadRecording());
+  const textFile = () => new File([recordingJson()], "ortfinder-aufzeichnung.txt", { type: "text/plain" });
+  let canShare = false;
+  try {
+    canShare = Boolean(navigator.share && navigator.canShare?.({ files: [new File(["{}"], "test.txt", { type: "text/plain" })] }));
+  } catch {
+    // no file sharing in this browser
+  }
+  if (!canShare) return el("p", { class: "small" }, save);
+  const share = el("button", { type: "button", class: "ghost small-btn" }, "📤 Aufzeichnung teilen");
+  const status = el("span", { class: "small muted", role: "status" });
+  share.addEventListener("click", async () => {
+    if (!state.run) return;
+    const file = textFile();
+    try {
+      await navigator.share({ files: [file], title: "Ortfinder-Aufzeichnung" });
+      status.textContent = " Geteilt.";
+    } catch (err) {
+      if (err?.name === "AbortError") return; // closed the share menu
+      status.textContent = " Teilen ging nicht – die Datei wird stattdessen gespeichert.";
+      downloadRecording();
+    }
+  });
+  return el("p", { class: "small" }, share, " ", save, status);
 }
 
 function renderResult(r) {
@@ -2245,7 +2273,7 @@ function renderResult(r) {
     box.append(el("p", { class: "small muted" },
       `${r.model} · ${u.requests} Anfragen · ${u.input_tokens.toLocaleString("de-DE")} Input- / ${(u.output_tokens + u.thought_tokens).toLocaleString("de-DE")} Output-Tokens · ${r.seconds} s`));
   }
-  if (state.run && state.replayT == null) box.append(recordingButton());
+  if (state.run && state.replayT == null) box.append(recordingButtons());
 
   renderClueGallery(a.clues);
 
