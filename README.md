@@ -41,10 +41,19 @@ und zum erkannten Gerät).
    (Runde 3/10)“, mit Sekunden) – und **„Als Nächstes“**: den nächsten Schritt, wie ihn die KI selbst in ihrer
    Notiz beschreibt („Plan der KI“), sonst den typischen Ablauf an dieser Stelle.
    Jeder Zoom hat im Foto, beim Ausschnitt und im Protokoll dieselbe **Farbe und Nummer**. Ein Tipp auf einen
-   Zoom im Protokoll (oder auf den Ausschnitt) **hebt ihn im Foto hervor**: kräftig, pulsierend, der Rest
-   abgedunkelt; das Foto rollt dazu ins Bild. Nochmal tippen hebt es auf. Der Farbpunkt am Ausschnitt färbt
-   einen Zoom um; unter ⚙ → „🎨 Markierungen im Foto“ gibt es bunt oder eine Farbe für alle, Rahmen oder
-   Kreis und drei Linienstärken.
+   Zoom im Protokoll **hebt ihn im Foto hervor**: kräftig, pulsierend, der Rest abgedunkelt; das Foto rollt
+   dazu ins Bild. Nochmal tippen hebt es auf. Der Farbpunkt am Ausschnitt färbt einen Zoom um; unter ⚙ →
+   „🎨 Markierungen im Foto“ gibt es bunt oder eine Farbe für alle, Rahmen oder Kreis und drei Linienstärken.
+   Unter dem Foto stehen die Bilder **getrennt**: „🔍 Ausschnitte aus dem Foto“, „🛰 Luftbilder &
+   Draufsichten“, „🧊 3D-Modelle & Bergkamm“ und „🖼 Fotos anderer“. **Ein Tipp auf ein Bild zeigt es groß**
+   (Ausschnitte in voller Auflösung aus dem Original), mit „🔍 +“ bzw. Tipp ins Bild doppelt so groß, ‹ ›
+   oder Wischen zum nächsten Bild der Gruppe, bei Zooms „📍 Im Foto zeigen“.
+   **KI-Schärfung, aber nur wenn sicher:** Ist die KI sich sicher, was ein kleiner Ausschnitt zeigt
+   (mindestens 90 %, sie muss es benennen), vergrößert ein KI-Modell (ESRGAN ×4, läuft im Browser, einmalig
+   etwa 2 MB) ihn schärfer. Das Ergebnis wird geprüft: Verkleinert muss es sich mit dem Original decken –
+   insgesamt mindestens so gut wie eine normale Vergrößerung und in jedem kleinen Block. Erfundene Details
+   fallen dabei auf, dann wird es verworfen und die KI erhält den normalen Ausschnitt mit dem Grund.
+   Geschärfte Ausschnitte tragen ein „KI“; groß angesehen lässt sich das Original umschalten.
    Ihre Zwischenstände erscheinen sofort auf der
    Karte, die von der Weltkarte aus immer weiter heranzoomt. Jede Fehler- oder Störmeldung im Protokoll hat
    ein **„?“**: Es erklärt in einfachen Worten, was los ist, und bietet, wo es eine gibt, die Lösung als Knopf
@@ -126,7 +135,7 @@ und zum erkannten Gerät).
    **Feinortung auf ~20–50 m.** Steht die Straße oder der Platz fest, geht es weiter bis zum Standpunkt:
    - **Luftbild ansehen** (`map_view`): Ein Satellitenbild (Esri World Imagery) oder Kartenausschnitt um
      einen Kandidatenpunkt, mit Maßstab und Nordpfeil. Die KI vergleicht Dächer, Straßenbreite,
-     Zebrastreifen, Bäume und Plätze mit dem Foto. Die Luftbilder erscheinen violett umrandet neben den Zooms;
+     Zebrastreifen, Bäume und Plätze mit dem Foto. Die Luftbilder erscheinen violett umrandet unter dem Foto;
    - **Umgebung prüfen** (`nearby_features`): Was steht wirklich im Umkreis von z.B. 100 m (Geschäfte,
      Haltestellen, Ampeln, Kirchen …) – mit Entfernung und Richtung vom Punkt;
    - **Straßenverlauf holen** (`street_geometry`): Richtung jedes Straßenabschnitts. Passt die Flucht der
@@ -150,6 +159,21 @@ und zum erkannten Gerät).
      Luftbild desselben Ausschnitts gelegt (gleiches Raster, Norden oben). Liegen Wege, Feldgrenzen und
      Gebäudefüße deckungsgleich, stimmt die Pose. Dächer, Bäume und Masten erscheinen dabei nach hinten
      verlängert, weil sie über dem Boden liegen;
+   - **Draufsicht aus dem Foto allein** (`top_view` ohne Standpunkt, Schalter „Oberflächen zuerst“, an
+     – optional): Als erster Schritt, wenn Boden zu sehen ist, umreißt die KI die Bodenflächen im Foto
+     (Asphalt, Pflaster, Gehweg, Wiese, Acker, Wasser …) und nennt, wo der Horizont liegt. Ortfinder legt das
+     Foto daraus flach (ebener Boden angenommen): links das Foto von oben mit Meter-Raster, rechts die
+     Flächen farbig – noch bevor der Ort bekannt ist, zum Vergleich mit Luftbildern (Formen, Kurven,
+     Breiten, Abfolge). Dazu die gemessenen Breiten (z.B. „asphalt 6,5 m breit“). **Wie weit das stimmt,
+     wird berechnet, nicht geraten:** aus der Auflösung des Fotos am Boden (höchstens ½ m pro Bildpunkt) und
+     wie genau die Neigung bekannt ist (15 % Maßstabsfehler); bei einem Handyfoto aus Augenhöhe meist 30–60 m.
+     Diese Grenze ist gelb gestrichelt, dahinter ist alles abgedunkelt. Parallele Straßenränder müssen
+     parallel erscheinen – sonst stimmt der Horizont nicht. Mit bekanntem Standpunkt folgt die genaue
+     Draufsicht neben dem Luftbild (unten), auch dort mit den eingefärbten Flächen;
+   - **Hintergrund-Abgleich:** Vor jeder Analyse sucht Ortfinder im Foto die Himmelslinie (ohne KI, im
+     Browser). Verläuft sie über einen guten Teil der Breite mit echtem Auf und Ab (Hügel, Berge), steht das
+     im Protokoll und die KI wird angewiesen, sie früh mit dem Gelände abzugleichen (Schalter unter ⚙ →
+     „🔬 Bildauswertung“);
    - **Bergkamm-Abgleich wie PeakFinder** (`skyline_match`), sobald Berge oder Hügel vor dem Himmel zu
      sehen sind: Ortfinder findet im Foto die Linie, an der der Himmel endet, und vergleicht sie mit dem
      Horizont, den das Geländemodell vom Standpunkt aus zeigt: bis 200 km weit, mit Erdkrümmung,
@@ -267,8 +291,9 @@ Entscheidung braucht:
   machen würden. Dort sorgt Prompt-Caching dafür, dass Wiederholungen nur ein Zehntel kosten.
 
 Gemessen an einer typischen Analyse (Test `tests/js/token-budget.test.mjs`, derselbe Ablauf mit echten
-Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **60–65 % weniger Tokens**
-(z.B. Gemini 225 000 → 79 000) und eine Anfrage weniger; bei Claude sinken die abgerechneten Tokens um
+Anfragen jedes Anbieters): Gemini, Puter, OpenRouter und eigener PC brauchen **59–64 % weniger Tokens**
+(z.B. Gemini 225 000 → 81 000) und eine Anfrage weniger (die Werkzeuge für KI-Schärfung und Draufsicht aus dem
+Foto kosten gut ein Prozent davon; der Test hält mindestens 58 %); bei Claude sinken die abgerechneten Tokens um
 14 %, gegenüber den Rohdaten spart der Cache dort rund 75 %.
 
 ## Was realistisch ist
@@ -537,6 +562,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/watchdog.js      fragt neu an, wenn die KI oder ein Werkzeug hängt
   js/estimate.js      Vorab-Schätzung: Schritte je Runde, Tokens, Kosten, freie Limits
   js/explain.js       Erklärungen und Lösungen zu Fehler- und Störmeldungen
+  js/sharpen.js       KI-Schärfung (ESRGAN ×4 mit TensorFlow.js) nur mit Prüfung gegen das Original
+  js/surfaceview.js   Draufsicht aus dem Foto allein: ebener Boden, Oberflächen, verlässliche Reichweite
   js/live.js          Leiste „Jetzt / Als Nächstes“ während der Analyse
   js/providers.js     weitere Anbieter mit OpenAI-Schnittstelle (Mistral, Groq, DeepSeek, Qwen, Poe, OpenAI, xAI, eigener)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data), korrigierbar durch exakte Höhen
@@ -553,7 +580,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   anleitung.html      alle Anleitungen auf einer Seite (+ js/anleitung.js)
   ki/                 Startskripte für Ollama (+ Cloudflare-Tunnel fürs Handy)
   sw.js               Service Worker nur für die Fertig-Benachrichtigung (speichert nichts)
-  vendor/             Leaflet, exifr, heic2any, QR-Code, Anthropic-SDK, three.js (mit Lizenzen), kein CDN nötig
+  vendor/             Leaflet, exifr, heic2any, QR-Code, Anthropic-SDK, three.js, TensorFlow.js, ESRGAN-slim
+                      (UpscalerJS, MIT) – mit Lizenzen, kein CDN nötig
 tests/js/             Unit-Tests der Website (Node)
 tests/test_web_e2e.py Browser-Test der Website (Playwright, Gemini/OSM simuliert)
 ortfinder/            ältere lokale Python-Version (mit Claude statt Gemini), siehe unten

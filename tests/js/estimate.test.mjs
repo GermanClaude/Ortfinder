@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { TILES_MARK } from "../../docs/js/compact.js";
 import {
-  PLAN, PRICES, TYPICAL_ROUNDS, actualAverage, estimateAnalysis, formatMoney, formatTokens, gptImageTokens, photoParts, planFor, recordActual,
+  PLAN, PRICES, TEXT_PROFILE, TYPICAL_ROUNDS, actualAverage, estimateAnalysis, formatMoney, formatTokens, gptImageTokens, photoParts, planFor, recordActual,
   recordUse, usedToday,
 } from "../../docs/js/estimate.js";
 import { ROUNDS_NOW, fakeJpeg, measureAll } from "./token-scenario.mjs";
@@ -45,7 +45,7 @@ test("plans: a shorter budget ends with the result, a longer one keeps reserve r
   assert.ok(Math.abs(claude.cost.typical - (claude.typical.input * 0.33 * 5 + claude.typical.output * 25) / 1e6) < 1e-9);
   // Groq takes at most three pictures per request; unknown models have no price.
   const groq = estimateAnalysis({ provider: "groq", model: "qwen/qwen3.8-27b", width: 3200, height: 2400, rounds: 7 });
-  assert.ok(groq.plan[0].input < 5247 + 3 * 2048 + 1, `${groq.plan[0].input}`);
+  assert.ok(groq.plan[0].input < TEXT_PROFILE.chat[0] + 3 * 2048 + 1, `${groq.plan[0].input}`);
   assert.equal(estimateAnalysis({ provider: "custom", model: "irgendwas", width: 800, height: 600, rounds: 7 }).cost, null);
   assert.equal(estimateAnalysis({ provider: "poe", model: "gemini-3.8-flash", width: 800, height: 600, rounds: 7, prices: [0.76, 3.79] }).cost.price[0], 0.76);
   assert.ok(Object.values(PRICES).every(([i, o]) => i > 0 && o >= i), "output never cheaper than input");
@@ -72,4 +72,13 @@ test("free limits counted in this browser, and the actual use of the last analys
   recordUse({ getItem: () => null, setItem: () => { throw new Error("voll"); } }, "x", "d", 1);
   assert.deepEqual([formatTokens(950), formatTokens(84300), formatTokens(1250000)], ["950", "84 Tsd.", "1,3 Mio."]);
   assert.deepEqual([formatMoney(0.004), formatMoney(0.109), formatMoney(1.5)], ["unter 1 Cent", "ca. 11 Cent", "ca. 1,50 $"]);
+});
+
+test("'Oberflächen zuerst' shows in the plan and costs its instruction and one top view", () => {
+  const base = estimateAnalysis({ provider: "gemini", model: "gemini-3.8-flash", width: 4000, height: 3000, rounds: 7 });
+  const surf = estimateAnalysis({ provider: "gemini", model: "gemini-3.8-flash", width: 4000, height: 3000, rounds: 7, surfaceFirst: true });
+  assert.match(surf.plan[0].steps, /^Oberflächen → Draufsicht/);
+  assert.equal(surf.plan[1].input - base.plan[1].input, surf.plan[2].input - base.plan[2].input + 1120, "round 2 carries the top view");
+  assert.ok(surf.plan[2].input - base.plan[2].input > 50 && surf.plan[2].input - base.plan[2].input < 150, "the instruction");
+  assert.ok(surf.typical.output > base.typical.output);
 });

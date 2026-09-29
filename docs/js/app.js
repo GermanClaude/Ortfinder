@@ -5,9 +5,9 @@ import { CLAUDE_DEFAULT_MODEL, CLAUDE_KEY_PATTERN, CLAUDE_MODELS, ClaudeAgent, l
 import { OSMClient, haversineKm, timeoutSignal, viewCone } from "./geo.js";
 import { PRICES, TYPICAL_ROUNDS, actualAverage, estimateAnalysis, formatMoney, formatTokens, recordActual, recordUse, usedToday } from "./estimate.js";
 import { explainMessage, reportUrl } from "./explain.js";
-import { decodeImage, detailTiles, overview, rulerOverview, zoomCrop } from "./imaging.js";
+import { decodeImage, detailTiles, fitSize, overview, rulerOverview, sharpenedZoomCrop, zoomCrop } from "./imaging.js";
 import { TILES_MARK } from "./compact.js";
-import { drapedTerrain, topViewImage } from "./groundview.js";
+import { drapedTerrain, surfaceTopViewImage, topViewImage } from "./groundview.js";
 import { DEVICES, GUIDES, detectDevice, guideNodes } from "./guides.js";
 import { LiveStatus } from "./live.js";
 import { loadTileImage, renderMapView } from "./mapview.js";
@@ -21,7 +21,10 @@ import { COMPAT_PROVIDERS, compatChat, compatSettings, describeCompatError, isCo
 import { solveCameraWithTerrain } from "./resection.js";
 import { clearRun, loadRun, saveRun, waitWhileHidden } from "./resume.js";
 import { renderViewImage, visibleAreaFor } from "./scene3d.js";
-import { peakLabel, photoSkyline, skylineImage, skylineMatch } from "./skyline.js";
+import { backgroundRelief, peakLabel, photoSkyline, reliefWorthMatching, skylineImage, skylineMatch } from "./skyline.js";
+import { createSharpener, sharpenPixels } from "./sharpen.js";
+import { surfacePlan } from "./surfaceview.js";
+import { SURFACE_FIRST_HINT, backgroundHint } from "./prompt.js";
 import { Terrain } from "./terrain.js";
 import qrcode from "../vendor/qrcode.mjs";
 import { ToolExecutor } from "./tools.js";
@@ -203,6 +206,9 @@ const settings = {
   visionKey: "",
   learn: true,
   marks: {}, // how the zooms are marked in the photo (merged with MARK_DEFAULTS below)
+  aiSharpen: true, // AI upscaling of zoom crops – only when the AI is sure what they show, and checked
+  backgroundCheck: true, // look for hills/mountains against the sky before the analysis
+  surfaceFirst: true, // first step: surfaces → top view from the photo alone (optional)
   apiKey: "",
   model: MODELS[0].id,
   thinking: "medium",
@@ -258,6 +264,9 @@ function fillSettingsForm() {
   $("#vision-key").value = settings.visionKey;
   $("#learn").checked = settings.learn !== false;
   fillMarkForm();
+  $("#ai-sharpen").checked = settings.aiSharpen !== false;
+  $("#background-check").checked = settings.backgroundCheck !== false;
+  $("#surface-first").checked = settings.surfaceFirst !== false;
   renderLessonList();
   checkKeyFormat();
   checkClaudeKey();
@@ -799,8 +808,11 @@ function resetWorkspace() {
   $("#photo").removeAttribute("src");
   $("#overlay").replaceChildren();
   $("#overlay").classList.remove("zoomfocus");
-  $("#zooms").replaceChildren(el("p", { class: "muted small" }, "Noch keine Ausschnitte."));
+  for (const id of ["#zooms", "#aerials", "#models", "#others"]) $(id).replaceChildren();
+  for (const sec of document.querySelectorAll(".gallery-sec")) sec.hidden = true;
+  $("#gallery-empty").hidden = false;
   $("#zoom-count").textContent = "";
+  if ($("#lightbox").open) $("#lightbox").close();
   $("#log").replaceChildren();
   $("#progress").textContent = "";
   $("#osm-link").hidden = true;
@@ -832,7 +844,31 @@ function pendingBox() {
       "dort weiter, sobald die Seite wieder offen ist – auch wenn der Browser sie neu geladen hat."));
 }
 
-function buildIntro(image, metadata, { userHints = "", lens = null, lessons = "" } = {}) {
+/**
+ * Before the analysis: is there a line of hills or mountains against the sky? Then the AI is told to match it
+ * with the terrain early (skyline_match). Local, no request; returns the finding or null.
+ */
+function checkBackground(bitmap, metadata, emit, quiet = false) {
+  let relief = null;
+  try {
+    const fov = horizontalFov(metadata.focal_35mm, bitmap.width, bitmap.height) || typicalPhoneFov(bitmap.width, bitmap.height);
+    relief = backgroundRelief(photoSkyline(bitmap), fov);
+  } catch {
+    return null;
+  }
+  const worth = reliefWorthMatching(relief);
+  if (!quiet) {
+    emit("status", {
+      message: worth
+        ? `⛰ Hintergrund geprüft: Himmelslinie über ${Math.round(relief.coverage * 100)} % der Bildbreite mit ${relief.reliefDeg.toFixed(1)}° Höhenunterschied – ` +
+          "wird mit dem Gelände abgeglichen, sobald die Gegend grob feststeht."
+        : "Hintergrund geprüft: keine Hügel- oder Bergkette vor dem Himmel erkennbar.",
+    });
+  }
+  return worth ? relief : null;
+}
+
+function buildIntro(image, metadata, { userHints = "", lens = null, lessons = "", background = null, surfaceFirst = false } = {}) {
   const hints = hintsForModel(metadata);
   const parts = [
     `Bestimme, wo dieses Foto aufgenommen wurde. Originalauflösung: ${image.width}×${image.height} Pixel (zoom_image arbeitet auf dem Original).`,
@@ -846,6 +882,8 @@ function buildIntro(image, metadata, { userHints = "", lens = null, lessons = ""
     parts.push(`Bildwinkel unbekannt. Falls Handyfoto (Hauptkamera): bei diesem Seitenverhältnis typisch ≈ ${fov}° horizontal – ` +
       "als Startwert für fov_deg; solve_camera bestimmt ihn genau.");
   }
+  if (background) parts.push(backgroundHint(background));
+  if (surfaceFirst) parts.push(SURFACE_FIRST_HINT);
   if (lens) parts.push(`Rückwärts-Bildersuche im Web (Google Cloud Vision, wie Google Lens – Hinweise, keine Beweise):\n${visionSummary(lens)}`);
   if (userHints) parts.push(`Zusatzinfo des Nutzers (ernst nehmen, aber selbst prüfen):\n${userHints}`);
   if (lessons) parts.push(lessons);
@@ -863,6 +901,7 @@ const runConfig = () => ({
   webSearch: settings.webSearch, maxSteps: settings.maxSteps, useAI: $("#use-ai").checked,
   ollamaUrl: settings.ollamaUrl, ollamaModel: settings.ollamaModel, ollamaCtx: settings.ollamaCtx, openrouterModel: settings.openrouterModel,
   claudeModel: settings.claudeModel, hints: ($("#hints")?.value || "").trim().slice(0, 600),
+  aiSharpen: settings.aiSharpen !== false, backgroundCheck: settings.backgroundCheck !== false, surfaceFirst: settings.surfaceFirst !== false,
   ...(isCompat(settings.provider) ? (({ model, baseUrl }) => ({ compatModel: model, compatUrl: baseUrl }))(compatSettings(settings, settings.provider)) : {}),
 });
 
@@ -1017,6 +1056,7 @@ function renderEstimate() {
   $("#confirm-thinking").value = settings.thinking;
   $("#confirm-thinking-box").hidden = provider !== "gemini";
   $("#confirm-ai-on").checked = $("#use-ai").checked;
+  $("#confirm-surface").checked = settings.surfaceFirst !== false;
   const summary = $("#confirm-summary");
   const rows = $("#confirm-rows");
   if (!cfg.useAI) {
@@ -1029,6 +1069,7 @@ function renderEstimate() {
   const poe = provider === "poe" ? state.poePrices?.[model] : null;
   const est = estimateAnalysis({
     provider, model, thinking: settings.thinking, width: state.pending.width, height: state.pending.height, rounds: settings.maxSteps, prices: poe,
+    surfaceFirst: settings.surfaceFirst !== false,
   });
   state.estimate = est;
   rows.replaceChildren(...est.plan.map((r) => el("tr", { class: r.reserve ? "reserve" : "" },
@@ -1187,6 +1228,12 @@ function setupConfirm() {
     persist();
     renderEstimate();
   });
+  $("#confirm-surface").addEventListener("change", () => {
+    settings.surfaceFirst = $("#confirm-surface").checked;
+    $("#surface-first").checked = settings.surfaceFirst;
+    persist();
+    renderEstimate();
+  });
   $("#confirm-ai-on").addEventListener("change", () => {
     $("#use-ai").checked = $("#confirm-ai-on").checked;
     renderEstimate();
@@ -1296,12 +1343,27 @@ async function analyze(file, resumed = null) {
         }));
       }
       const executor = new ToolExecutor({
-        zoom: async (box, enhance) => zoomCrop(bitmap, box, enhance),
-        mapView: (opts) => renderMapView(opts),
-        renderView: (opts) => renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height, drapeTerrain: drapedTerrain }),
-        topView: (opts) => topViewImage({ ...opts, bitmap, terrain }),
+        zoom: async (box, enhance, ai) => {
+          if (!ai) return zoomCrop(bitmap, box, enhance);
+          if (!cfg.aiSharpen) return { ...zoomCrop(bitmap, box, enhance), ai: { applied: false, reason: "KI-Schärfung ist in den Einstellungen ausgeschaltet" } };
+          if (!state.sharpener) emit("status", { message: "Lade die KI-Schärfung (einmalig etwa 2 MB) …" });
+          state.sharpener ??= createSharpener();
+          return sharpenedZoomCrop(bitmap, box, enhance, (rgb, w, h) => sharpenPixels({ rgb, w, h, upscale: state.sharpener.upscale }));
+        },
+        mapView: async (opts) => withPreview(await renderMapView(opts)),
+        renderView: async (opts) => withPreview(await renderViewImage({ ...opts, osm, terrain, aspect: bitmap.width / bitmap.height, drapeTerrain: drapedTerrain })),
+        topView: async (opts) => withPreview(await topViewImage({ ...opts, bitmap, terrain })),
+        surfaceView: async (opts) => {
+          const plan = surfacePlan({ ...opts, width: bitmap.width, height: bitmap.height });
+          const view = surfaceTopViewImage({ ...opts, ...plan, bitmap, reliableM: plan.reliableM });
+          return withPreview({ ...view, ...plan });
+        },
         solveCamera: (opts) => solveCameraWithTerrain({ ...opts, terrain, width: bitmap.width, height: bitmap.height }),
-        skylineMatch: (opts) => runSkyline(bitmap, opts, { crop: true }),
+        skylineMatch: async (opts) => {
+          const res = await runSkyline(bitmap, opts, { crop: true });
+          if (res.image) await withPreview(res.image);
+          return res;
+        },
         web: webTools,
         osm, emit,
       });
@@ -1328,7 +1390,10 @@ async function analyze(file, resumed = null) {
       const agent = createAgent(cfg, { ...common, fallbacks });
       usedAgent = agent;
       ({ analysis, usage } = await agent.run({
-        intro: buildIntro(bitmap, metadata, { userHints: cfg.hints || "", lens, lessons: currentLessons() }),
+        intro: buildIntro(bitmap, metadata, {
+          userHints: cfg.hints || "", lens, lessons: currentLessons(), surfaceFirst: cfg.surfaceFirst,
+          background: cfg.backgroundCheck ? checkBackground(bitmap, metadata, emit, Boolean(resumed)) : null,
+        }),
         images: resumed?.agentState ? [] : firstImages(bitmap),
         executor,
         resume: resumed?.agentState ?? null,
@@ -1576,20 +1641,25 @@ function handle(type, data) {
       addZoom(data);
       break;
     case "mapview":
-      addSnapshot(data, data.layer === "karte" ? "🗺 Karte" : "🛰 Luftbild");
+      addSnapshot(data, data.layer === "karte" ? "🗺 Karte" : "🛰 Luftbild", "aerial");
       log("mapview", `${data.layer === "karte" ? "Kartenausschnitt" : "Luftbild"} bei ${data.lat.toFixed(5)}, ${data.lon.toFixed(5)} (Zoom ${data.zoom})${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
     case "render":
-      addSnapshot(data, "🧊 3D-Nachbau");
+      addSnapshot(data, "🧊 3D-Nachbau", "models");
       log("render", `3D-Nachbau bei ${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)})${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
     case "topview":
-      addSnapshot(data, "🗺 Draufsicht");
+      addSnapshot(data, "🗺 Draufsicht", "aerial");
       log("topview", `Draufsicht: Foto auf das Gelände geklappt, Blick ${Math.round(data.bearing_deg)}° (${compass(data.bearing_deg)}), ` +
         `mit dem Luftbild verglichen${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
+    case "surfaceview":
+      addSnapshot(data, "📐 Draufsicht aus dem Foto", "aerial");
+      log("topview", `Draufsicht aus dem Foto (noch ohne Standpunkt): ${data.surfaces ? `${data.surfaces} Oberflächen eingezeichnet, ` : ""}` +
+        `verlässlich bis ${data.reliable_m} m${data.purpose ? ` – ${data.purpose}` : ""}`);
+      break;
     case "photos":
-      if (data.thumbnail) addSnapshot(data, "🖼 Fotos anderer");
+      if (data.thumbnail) addSnapshot(data, "🖼 Fotos anderer", "other");
       log("photos", `${data.count} Fotos anderer im Umkreis von ${data.radius_m} m zum Vergleich geholt${data.purpose ? `: ${data.purpose}` : ""}`);
       break;
     case "lens":
@@ -1606,7 +1676,7 @@ function handle(type, data) {
       }
       break;
     case "skyline":
-      addSnapshot(data, "⛰ Bergkamm");
+      addSnapshot(data, "⛰ Bergkamm", "models");
       log("skyline", `Bergkamm-Abgleich: Blick ${fmt1(data.bearing_deg)}° (${compass(data.bearing_deg)}), Bildwinkel ${fmt1(data.fov_deg)}°, ` +
         `Zuordnung ${Math.round(data.confidence * 100)} % sicher${data.peaks.length ? ` – erkannt: ${data.peaks.join(", ")}` : ""}`);
       break;
@@ -1688,14 +1758,11 @@ function addBox(box, cls, label) {
 
 /**
  * A zoom of the AI: its frame in the photo, the enlarged crop and the log entry share a number and a color.
- * Tapping the log entry or the crop highlights the frame in the photo.
+ * Tapping the log entry highlights the frame in the photo; tapping the crop shows it large.
  */
 function addZoom(z) {
-  state.zoomCount += 1;
   state.zoomNumber = (state.zoomNumber || 0) + 1;
   const n = state.zoomNumber; // counted here: a resumed analysis starts its own count again
-  if (state.zoomCount === 1) $("#zooms").replaceChildren();
-  $("#zoom-count").textContent = `(${state.zoomCount})`;
   const box = addBox(z.box, "zoom", `#${n}`);
   box.dataset.zoom = n;
   if (z.box[1] < 0.06) box.classList.add("tag-inside"); // a tag above the photo's top edge would be cut off
@@ -1704,24 +1771,22 @@ function addZoom(z) {
     state.zoomColors = { ...state.zoomColors, [n]: picker.value };
     paintZoom(n);
   });
-  const figure = el("figure", { class: "zoom-fig", tabindex: "0", role: "button", "aria-pressed": "false", title: "Im Foto zeigen" },
+  const figure = el("figure", { class: "zoom-fig", tabindex: "0", role: "button", "aria-pressed": "false", title: "Groß ansehen" },
     el("div", { class: "fig-wrap" },
       el("img", { src: z.thumbnail, alt: z.purpose || "Ausschnitt" }),
       el("span", { class: "zoom-badge" }, `#${n}`),
+      z.sharpened ? el("span", { class: "ai-badge", title: `KI-geschärft (geprüft) – angefragt als „${z.sharpened_as || ""}“` }, "KI") : null,
       el("label", { class: "swatch", title: "Farbe ändern" }, picker)),
     el("figcaption", {}, z.purpose));
   figure.dataset.zoom = n;
-  figure.addEventListener("click", (e) => {
-    if (!e.target.closest(".swatch")) highlightZoom(n);
-  });
-  figure.addEventListener("keydown", (e) => {
-    if (e.target === figure && (e.key === "Enter" || e.key === " ")) {
-      e.preventDefault();
-      highlightZoom(n);
-    }
-  });
-  $("#zooms").append(figure);
-  const entry = log("zoom", `Zoom #${n}: ${z.purpose || "Detail"}`);
+  figure.lightbox = {
+    title: `Zoom #${n}${z.purpose ? ` · ${z.purpose}` : ""}`, zoom: n, box: z.box, thumb: z.thumbnail, sharpened: z.sharpened_image || null,
+    caption: z.sharpened
+      ? `KI-geschärft (ESRGAN ×4) als „${z.sharpened_as || ""}“ – geprüft: verkleinert deckt es sich mit dem Original. Nichts, was im Original nicht erkennbar ist, als Beleg nehmen.`
+      : "Ausschnitt aus dem Original in voller Auflösung.",
+  };
+  galleryAdd("zooms", figure, (e) => !e.target.closest(".swatch"));
+  const entry = log("zoom", `Zoom #${n}: ${z.purpose || "Detail"}${z.sharpened ? " (KI-geschärft)" : ""}`);
   entry.dataset.zoom = n;
   entry.classList.add("zoom-link");
   entry.setAttribute("tabindex", "0");
@@ -1770,15 +1835,19 @@ function applyMarkStyle() {
 }
 
 /** Highlight zoom n in the photo, on its crop and in the log (tapping it again ends that). */
-function highlightZoom(n) {
-  const same = state.activeZoom === n;
+function highlightZoom(n, on = false) {
+  const same = state.activeZoom === n && !on;
   state.activeZoom = same ? null : n;
   for (const node of document.querySelectorAll("[data-zoom].active")) {
     node.classList.remove("active");
     if (node.hasAttribute("aria-pressed")) node.setAttribute("aria-pressed", "false");
   }
   $("#overlay").classList.toggle("zoomfocus", !same);
-  if (same) return;
+  if (same) {
+    state.activeZoom = null;
+    return;
+  }
+  state.activeZoom = n;
   for (const node of document.querySelectorAll(`[data-zoom="${n}"]`)) {
     node.classList.add("active");
     if (node.hasAttribute("aria-pressed")) node.setAttribute("aria-pressed", "true");
@@ -1786,6 +1855,170 @@ function highlightZoom(n) {
   // Bring the photo into view when it is off screen (the log sits far below it on phones).
   const wrap = $("#image-wrap").getBoundingClientRect();
   if (wrap.bottom < 40 || wrap.top > innerHeight - 40) $("#image-wrap").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// ---------- gallery sections and the large view ----------
+
+/**
+ * Adds `preview` (≤ 720 px JPEG) to a tool's picture, for the large view: it goes with the run's events
+ * (recordings, resuming), the full picture does not.
+ */
+async function withPreview(view) {
+  const src = view?.dataUrl || (view?.data ? `data:image/jpeg;base64,${view.data}` : null);
+  if (!src || view.empty) return view;
+  try {
+    const img = new Image();
+    img.src = src;
+    await img.decode();
+    const [w, h] = fitSize(img.naturalWidth, img.naturalHeight, 720);
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, w, h);
+    view.preview = c.toDataURL("image/jpeg", 0.8);
+  } catch {
+    // the thumbnail will do
+  }
+  return view;
+}
+
+const GALLERY = { zooms: ["#sec-zooms", "#zooms"], aerial: ["#sec-aerial", "#aerials"], models: ["#sec-models", "#models"], other: ["#sec-other", "#others"] };
+
+/** Add a figure (with its .lightbox item) to a section; tapping it (where `opens` allows) shows it large. */
+function galleryAdd(section, figure, opens = () => true) {
+  state.zoomCount += 1;
+  $("#zoom-count").textContent = `(${state.zoomCount})`;
+  $("#gallery-empty").hidden = true;
+  const [secId, gridId] = GALLERY[section];
+  $(secId).hidden = false;
+  $(gridId).append(figure);
+  $(secId).querySelector(".sec-count").textContent = `(${$(gridId).children.length})`;
+  figure.addEventListener("click", (e) => {
+    if (opens(e)) openLightbox(figure);
+  });
+  figure.addEventListener("keydown", (e) => {
+    if (e.target === figure && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      openLightbox(figure);
+    }
+  });
+}
+
+/** A zoom crop as large as the AI saw it, cut from the original photo (not stored: made when opened). */
+function photoCrop(box) {
+  const src = state.imageSource;
+  if (!src) return null;
+  const w = src.naturalWidth || src.width;
+  const h = src.naturalHeight || src.height;
+  const [x0, y0, x1, y1] = [box[0] * w, box[1] * h, box[2] * w, box[3] * h];
+  const sw = Math.max(1, x1 - x0);
+  const sh = Math.max(1, y1 - y0);
+  const scale = Math.min(Math.max(1, 1024 / Math.max(sw, sh)), 1400 / Math.max(sw, sh));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(sw * scale));
+  c.height = Math.max(1, Math.round(sh * scale));
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  try {
+    ctx.drawImage(src, x0, y0, sw, sh, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.9);
+  } catch {
+    return null;
+  }
+}
+
+function openLightbox(figure) {
+  const grid = figure.parentElement;
+  state.lb = { list: [...grid.children].filter((f) => f.lightbox), index: 0, original: false };
+  state.lb.index = Math.max(0, state.lb.list.indexOf(figure));
+  const dialog = $("#lightbox");
+  if (!dialog.open) dialog.showModal();
+  showLightbox();
+}
+
+function showLightbox() {
+  const { list, index } = state.lb;
+  const item = list[index].lightbox;
+  const img = $("#lb-img");
+  const stage = $("#lb-stage");
+  stage.classList.remove("zoomed");
+  img.style.width = "";
+  let src = item.image || item.thumb;
+  if (item.box) {
+    item.full ??= photoCrop(item.box);
+    src = item.sharpened && !state.lb.original ? item.sharpened : item.full || item.thumb;
+  }
+  img.src = src;
+  img.alt = item.title;
+  $("#lb-title").textContent = `${item.title}${list.length > 1 ? `  (${index + 1}/${list.length})` : ""}`;
+  $("#lb-caption").textContent = item.box && state.lb.original ? "Original (ohne KI-Schärfung)." : item.caption || "";
+  $("#lb-ai").hidden = !item.sharpened;
+  $("#lb-ai").textContent = state.lb.original ? "KI-geschärft zeigen" : "Original zeigen";
+  $("#lb-show").hidden = !item.zoom;
+  $("#lb-prev").hidden = list.length < 2;
+  $("#lb-next").hidden = list.length < 2;
+}
+
+function stepLightbox(d) {
+  const lb = state.lb;
+  if (!lb || lb.list.length < 2) return;
+  lb.index = (lb.index + d + lb.list.length) % lb.list.length;
+  lb.original = false;
+  showLightbox();
+}
+
+/** Twice as large (scrollable) or back to fitting the screen. */
+function toggleLightboxZoom(e) {
+  const stage = $("#lb-stage");
+  const img = $("#lb-img");
+  if (stage.classList.contains("zoomed")) {
+    stage.classList.remove("zoomed");
+    img.style.width = "";
+    return;
+  }
+  const r = img.getBoundingClientRect();
+  const fx = e?.clientX != null ? (e.clientX - r.left) / r.width : 0.5;
+  const fy = e?.clientY != null ? (e.clientY - r.top) / r.height : 0.5;
+  stage.classList.add("zoomed");
+  img.style.width = `${Math.round(r.width * 2)}px`;
+  stage.scrollLeft = fx * img.offsetWidth - stage.clientWidth / 2;
+  stage.scrollTop = fy * img.offsetHeight - stage.clientHeight / 2;
+}
+
+function setupLightbox() {
+  const dialog = $("#lightbox");
+  $("#lb-close").addEventListener("click", () => dialog.close());
+  $("#lb-prev").addEventListener("click", () => stepLightbox(-1));
+  $("#lb-next").addEventListener("click", () => stepLightbox(1));
+  $("#lb-zoom").addEventListener("click", () => toggleLightboxZoom());
+  $("#lb-img").addEventListener("click", toggleLightboxZoom);
+  $("#lb-ai").addEventListener("click", () => {
+    state.lb.original = !state.lb.original;
+    showLightbox();
+  });
+  $("#lb-show").addEventListener("click", () => {
+    const n = state.lb.list[state.lb.index].lightbox.zoom;
+    dialog.close();
+    highlightZoom(n, true);
+  });
+  // Tap beside the picture closes; arrow keys and swipes move through the section.
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") stepLightbox(-1);
+    if (e.key === "ArrowRight") stepLightbox(1);
+  });
+  let startX = null;
+  $("#lb-stage").addEventListener("touchstart", (e) => { startX = e.touches.length === 1 ? e.touches[0].clientX : null; }, { passive: true });
+  $("#lb-stage").addEventListener("touchend", (e) => {
+    if (startX == null || $("#lb-stage").classList.contains("zoomed")) return;
+    const dx = e.changedTouches[0].clientX - startX;
+    if (Math.abs(dx) > 60) stepLightbox(dx < 0 ? 1 : -1);
+    startX = null;
+  });
 }
 
 // ---------- marker settings ----------
@@ -1825,6 +2058,14 @@ function setupMarkSettings() {
   };
   for (const id of ["#mark-colors", "#mark-shape", "#mark-width"]) $(id).addEventListener("change", update);
   $("#mark-color").addEventListener("input", update);
+  // Image analysis switches: applied at once (like the markers), the estimate follows.
+  for (const [id, key] of [["#ai-sharpen", "aiSharpen"], ["#background-check", "backgroundCheck"], ["#surface-first", "surfaceFirst"]]) {
+    $(id).addEventListener("change", () => {
+      settings[key] = $(id).checked;
+      persist();
+      renderEstimate();
+    });
+  }
   $("#mark-reset").addEventListener("click", () => {
     state.zoomColors = {};
     settings.marks = { ...MARK_DEFAULTS };
@@ -1835,15 +2076,20 @@ function setupMarkSettings() {
   applyMarkStyle();
 }
 
-/** Aerial view or 3D reconstruction the AI compared with the photo: shown next to the zooms, marked on the map. */
-function addSnapshot(v, kind) {
-  state.zoomCount += 1;
-  if (state.zoomCount === 1) $("#zooms").replaceChildren();
-  $("#zoom-count").textContent = `(${state.zoomCount})`;
-  $("#zooms").append(el("figure", { class: v.bearing_deg != null ? "mapview render" : "mapview" },
-    el("img", { src: v.thumbnail, alt: `${kind}: ${v.purpose || ""}`, title: v.purpose }),
-    el("figcaption", {}, `${kind}${v.purpose ? `: ${v.purpose}` : ""}`)));
-  if (state.hypoLayer) {
+/**
+ * Aerial view, top view, 3D reconstruction, sky line or photos of others the AI compared with the photo: shown
+ * in its own section below the photo (tap = large), marked on the map where it has a position.
+ */
+function addSnapshot(v, kind, section) {
+  const figure = el("figure", { class: v.bearing_deg != null ? "mapview render" : "mapview", tabindex: "0", role: "button", title: "Groß ansehen" },
+    el("img", { src: v.thumbnail, alt: `${kind}: ${v.purpose || ""}` }),
+    el("figcaption", {}, `${kind}${v.purpose ? `: ${v.purpose}` : ""}`));
+  figure.lightbox = {
+    title: kind, thumb: v.thumbnail, image: v.image || null,
+    caption: [v.purpose, v.image ? "" : "(nur Vorschau)"].filter(Boolean).join(" "),
+  };
+  galleryAdd(section, figure);
+  if (state.hypoLayer && v.lat != null) {
     L.circleMarker([v.lat, v.lon], { radius: 4, color: "#7a4cc2", weight: 1, fillColor: "#fff", fillOpacity: 1 })
       .bindTooltip(`${kind} geprüft`).addTo(state.hypoLayer);
   }
@@ -1957,7 +2203,7 @@ function bestView(r) {
 const webTools = {
   photosNearby: async (lat, lon, radiusM) => {
     const res = await photosNearby(fetch, lat, lon, radiusM);
-    if (res.items.length) res.sheet = await contactSheet(res.items, loadTileImage);
+    if (res.items.length) res.sheet = await withPreview(await contactSheet(res.items, loadTileImage));
     return res;
   },
   wikiSearch: (query, langs) => wikiSearch(fetch, query, languages(langs)),
@@ -2776,6 +3022,7 @@ applyLinkSettings();
 loadSharedLessons().then(renderLessonList);
 setupSettings();
 setupMarkSettings();
+setupLightbox();
 setupDropzone();
 setupConfirm();
 setupImageSearch();

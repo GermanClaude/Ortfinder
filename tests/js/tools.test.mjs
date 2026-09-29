@@ -421,3 +421,67 @@ test("a tool whose service hangs returns an error after its time limit instead o
   assert.match(result, /^zoom_image hat nach 0 s nicht geantwortet \(Dienst hängt\)/);
   assert.ok(Date.now() - started < 1000);
 });
+
+test("zoom_image sharpens with AI only when the AI names what it is and is sure (≥ 0.9); the result says what happened", async () => {
+  const calls = [];
+  const events = [];
+  const crop = { data: "AAAA", width: 1024, height: 512, sourceWidth: 64, sourceHeight: 32, thumbnail: "data:image/jpeg;base64,AA" };
+  const ex = new ToolExecutor({
+    zoom: async (box, enhance, ai) => {
+      calls.push(ai);
+      if (!ai) return crop;
+      return ai.what === "Schild Bahnhofstr."
+        ? { ...crop, aiImage: "data:image/jpeg;base64,BB", ai: { applied: true, stats: { psnr: 31.2, plain_psnr: 29.8 } } }
+        : { ...crop, ai: { applied: false, reason: "eine Stelle weicht deutlich vom Original ab" } };
+    },
+    osm: {}, emit: (type, data) => events.push({ type, data }),
+  });
+  const box = { x_min: 0.1, y_min: 0.1, x_max: 0.3, y_max: 0.2, purpose: "Schild" };
+  const unsure = await ex.run("zoom_image", { ...box, ki_schaerfen: "Schild", sicherheit: 0.6 });
+  assert.equal(calls[0], null, "not sure enough: no AI sharpening asked for");
+  assert.match(unsure.result[0].text, /nicht angewandt: nur wenn du dir sicher bist \(sicherheit ≥ 0,9, angegeben: 0\.6\)/);
+  const sure = await ex.run("zoom_image", { ...box, ki_schaerfen: "Schild Bahnhofstr.", sicherheit: 0.95 });
+  assert.deepEqual(calls[1], { what: "Schild Bahnhofstr.", certainty: 0.95 });
+  assert.match(sure.result[0].text, /KI-geschärft \(ESRGAN ×4, angefragt als „Schild Bahnhofstr\.“\)\. Prüfung bestanden.*31\.2 dB.*29\.8 dB.*nicht als Beleg/);
+  assert.equal(events[1].data.sharpened, true);
+  assert.equal(events[1].data.sharpened_image, "data:image/jpeg;base64,BB");
+  const rejected = await ex.run("zoom_image", { ...box, ki_schaerfen: "Hausnummer", sicherheit: 0.99 });
+  assert.match(rejected.result[0].text, /KI-Schärfung nicht angewandt: eine Stelle weicht deutlich vom Original ab\./);
+  assert.equal(events[2].data.sharpened, undefined);
+  await ex.run("zoom_image", box);
+  assert.equal(calls[3], null, "plain zooms stay plain");
+});
+
+test("top_view without a standpoint lays the photo on level ground, with the outlined surfaces", async () => {
+  let got = null;
+  const events = [];
+  const ex = new ToolExecutor({
+    zoom: async () => ({}), osm: {}, emit: (type, data) => events.push({ type, data }),
+    topView: async () => { throw new Error("needs a standpoint"); },
+    surfaceView: async (opts) => {
+      got = opts;
+      return {
+        data: "CCCC", thumbnail: "t", preview: "p", reliableM: 38.4, pitchDeg: -4.23, source: "horizont",
+        stats: { width_m: 40, depth_m: 45, grid_m: 10, nearest_m: 3.1, farthest_m: 76, surfaces: [{ art: "asphalt", area_m2: 180, near_m: 4, far_m: 40, width_m: 6.5 }] },
+      };
+    },
+  });
+  const r = await ex.run("top_view", {
+    fov_deg: 66, horizon_y: 0.44, surfaces: [{ art: "Straße", punkte: [[0.3, 0.9], [0.7, 0.9], [0.52, 0.5], [0.48, 0.5]] }], purpose: "Kreuzung",
+  });
+  assert.equal(r.isError, false, JSON.stringify(r.result));
+  assert.equal(got.horizonY, 0.44);
+  assert.equal(got.pitchDeg, null);
+  assert.deepEqual(got.surfaces.map((s) => s.art), ["asphalt"]);
+  const text = r.result[0].text;
+  assert.match(text, /NUR aus dem Foto: ebener Boden/);
+  assert.match(text, /Neigung -4\.2° aus horizon_y 0\.44/);
+  assert.match(text, /Verlässlich bis ca\. 38 m/);
+  assert.match(text, /asphalt 6\.5 m breit \(4–40 m\)/);
+  assert.match(text, /parallele Ränder/);
+  assert.equal(r.result[1].data, "CCCC");
+  assert.deepEqual(events[0], { type: "surfaceview", data: { purpose: "Kreuzung", thumbnail: "t", image: "p", reliable_m: 38, surfaces: 1 } });
+  // With a standpoint the ordinary top view is used; bearing is then required.
+  assert.equal((await ex.run("top_view", { camera_lat: 47.99, camera_lon: 7.85, fov_deg: 66 })).isError, true);
+  assert.equal((await ex.run("top_view", { horizon_y: 0.4 })).isError, true, "fov_deg is always needed");
+});
