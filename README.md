@@ -498,9 +498,9 @@ python -m pytest                           # Python-Version + Browser-Test der W
 ### Beispiel-Analyse hinterlegen (optional)
 
 Der Knopf „Beispiel ansehen“ erscheint, sobald unter `docs/demo/` eine aufgezeichnete echte Analyse liegt
-(`beispiel.json` + das Foto). Nach einer Analyse steht der Lauf in der Browser-Konsole unter
-`window.ortfinderLastRun`; das Format der Datei zeigt `test_example_runs_without_api_key` in
-`tests/test_web_e2e.py`.
+(`beispiel.json` + das Foto als `beispiel.jpg`). Die Datei entsteht nach jeder Analyse über
+„💾 Aufzeichnung speichern“ unter dem Ergebnis; ein in der Rückmeldung angegebener wahrer Ort geht mit.
+Das Format zeigt `_synthetic_recording` in `tests/test_web_e2e.py`.
 
 ### Lokale Python-Version (optional)
 

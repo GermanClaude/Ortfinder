@@ -55,7 +55,7 @@ const STORAGE_KEY = "ortfinder.settings.v1";
 
 const state = {
   controller: null, map: null, layer: null, hypoLayer: null, imageSource: null, startedAt: 0, timer: null, zoomCount: 0, replayT: null, run: null,
-  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0, running: false, wakeLock: null, skyline: null,
+  aspect: 4 / 3, bases: null, coneLayer: null, resultToken: 0, running: false, wakeLock: null, skyline: null, truth: null,
 };
 const osm = new OSMClient();
 const terrain = new Terrain();
@@ -682,6 +682,8 @@ function resetWorkspace() {
   clearInterval(state.timer);
   state.zoomCount = 0;
   state.replayT = null;
+  state.run = null;
+  state.truth = null;
   $("#demo-banner").hidden = true;
   showSettings(false);
   $("#workspace").hidden = false;
@@ -1061,8 +1063,8 @@ async function runDemo() {
   banner.replaceChildren(
     el("strong", {}, "Aufgezeichnete Beispiel-Analyse: "),
     `So arbeitet Ortfinder – echter Lauf mit ${demo.model} vom ${demo.date}, im Zeitraffer abgespielt. `,
-    "Foto: ", el("a", { href: demo.credit.url, target: "_blank", rel: "noopener" }, demo.credit.text), ". ",
-    settings.apiKey ? "Lade jetzt dein eigenes Foto hoch." : "Für eigene Fotos oben den Gemini-API-Key eintragen.",
+    "Foto: ", demo.credit.url ? el("a", { href: demo.credit.url, target: "_blank", rel: "noopener" }, demo.credit.text) : demo.credit.text, ". ",
+    "Lade jetzt dein eigenes Foto hoch.",
   );
   const photo = $("#photo");
   photo.src = `demo/${demo.image}`;
@@ -1869,6 +1871,7 @@ function feedbackSection(r) {
   let line = null;
   const setTruth = (t, why) => {
     truth = t;
+    state.truth = t;
     status.textContent = `Tatsächlicher Ort: ${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}${t.name ? ` (${t.name})` : ""}${why ? ` – ${why}` : ""}. ` +
       `Abweichung der Analyse: ${formatKm(haversineKm(a.camera.lat, a.camera.lon, t.lat, t.lon))}.`;
     if (!state.layer) return;
@@ -2022,6 +2025,34 @@ function externalLinks(cam, view) {
     " · ", rerun);
 }
 
+/**
+ * The whole run as a file in the format of demo/beispiel.json, e.g. to publish it as the example
+ * (with the photo as demo/beispiel.jpg). A true location given in the feedback goes along.
+ */
+function recordingButton() {
+  const btn = el("button", { type: "button", class: "ghost small-btn" }, "💾 Aufzeichnung speichern (z.B. als Beispiel)");
+  btn.addEventListener("click", () => {
+    const run = state.run;
+    if (!run) return;
+    const t = state.truth;
+    const demo = {
+      model: run.model,
+      date: new Date(run.started).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" }),
+      image: "beispiel.jpg",
+      credit: { text: "eigenes Foto" },
+      ...(t ? { truth: { lat: t.lat, lon: t.lon, label: t.name || "angegebener Aufnahmeort" } } : {}),
+      events: run.events,
+    };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(demo)], { type: "application/json" }));
+    const a = el("a", { href: url, download: "beispiel.json" });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  });
+  return el("p", { class: "small" }, btn);
+}
+
 function renderResult(r) {
   const box = $("#result");
   box.replaceChildren();
@@ -2103,6 +2134,7 @@ function renderResult(r) {
     box.append(el("p", { class: "small muted" },
       `${r.model} · ${u.requests} Anfragen · ${u.input_tokens.toLocaleString("de-DE")} Input- / ${(u.output_tokens + u.thought_tokens).toLocaleString("de-DE")} Output-Tokens · ${r.seconds} s`));
   }
+  if (state.run && state.replayT == null) box.append(recordingButton());
 
   renderClueGallery(a.clues);
 

@@ -373,6 +373,7 @@ def test_example_replays_a_recording_without_api_key(browser, site_url, tmp_path
     page.wait_for_selector(".answer", timeout=60000)
     assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
     assert "Tatsächlicher Aufnahmeort: Testort" in page.text_content("#result")
+    assert "Aufzeichnung speichern" not in page.text_content("#result"), "only own runs can be saved"
     assert page.locator(".clue-card img").count() == 2
     assert page.locator(".zooms figure").count() == 1
     assert "42.0s" in page.text_content("#log")  # original timestamps are kept in the replay
@@ -1134,7 +1135,7 @@ def test_hints_image_search_and_feedback_teach_the_next_analysis(browser, site_u
     """Extra info goes to the AI; the true location measures the error; the AI's lessons go along next time."""
     street = tmp_path / "street.jpg"
     _street_jpeg(street)
-    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context = browser.new_context(viewport={"width": 1280, "height": 900}, accept_downloads=True)
     context.add_init_script(GEMINI_SETTINGS)
     context.add_init_script("window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; };")
     page = context.new_page()
@@ -1186,6 +1187,13 @@ def test_hints_image_search_and_feedback_teach_the_next_analysis(browser, site_u
     share = page.get_attribute("#feedback a[href*='github.com']", "href")
     assert "issues/new" in share and "nicht+mitgeteilt" in share
     assert len(page.evaluate("JSON.parse(localStorage.getItem('ortfinder.lessons.v1'))")) == 1
+    # The run as a file in the example format, with the true place from the feedback.
+    with page.expect_download() as dl:
+        page.click("text=💾 Aufzeichnung speichern")
+    assert dl.value.suggested_filename == "beispiel.json"
+    saved = json.loads(Path(dl.value.path()).read_text(encoding="utf-8"))
+    assert saved["image"] == "beispiel.jpg" and saved["truth"] == {"lat": 47.9959, "lon": 7.8522, "label": "angegebener Aufnahmeort"}
+    assert saved["events"][-1]["type"] == "result" and saved["model"] and saved["credit"] == {"text": "eigenes Foto"}
     page.click("#settings-toggle")
     page.click("#learn-settings summary")
     assert lesson in page.text_content("#lesson-list") and "1 Rückmeldung" in page.text_content("#lesson-list")
