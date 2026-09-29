@@ -8,6 +8,7 @@
 import { levenbergMarquardt, solveLinear } from "./resection.js";
 import { makeCamera, parseLength } from "./scene3d.js";
 import { worldPixel } from "./mapview.js";
+import { learnSwissHeights } from "./swiss.js";
 
 const DEG = Math.PI / 180;
 const WGS_A = 6378137;
@@ -499,14 +500,26 @@ const OUTSIDE = rho(5) + 2;
  */
 export const pxPerDeg = (obs, fov) => (obs.width / 2 / Math.tan((clamp(fov, 1, 170) * DEG) / 2)) * DEG;
 
-/** Viewing direction (azimuth, elevation in degrees) of every skyline column for a pose. */
+/**
+ * Viewing direction (azimuth, elevation in degrees) of every skyline column for a pose. pose.k1 (optional)
+ * is the lens's radial distortion: phones correct most of it, but far from the image centre a little
+ * barrel (k1 < 0 in the photo) can remain.
+ */
 export function columnDirections(obs, pose) {
   const cam = makeCamera({ bearingDeg: pose.bearing, pitchDeg: pose.pitch, rollDeg: pose.roll, fovDeg: pose.fov, width: obs.width, height: obs.height });
   const az = new Float64Array(obs.count);
   const el = new Float64Array(obs.count);
+  const k1 = pose.k1 || 0;
+  const half = Math.hypot(obs.width, obs.height) / 2 / cam.fpx; // radius of the image corner, for scaling k1
   for (let k = 0; k < obs.count; k++) {
-    const a = (obs.x[k] - obs.width / 2) / cam.fpx;
-    const b = (obs.height / 2 - obs.y[k]) / cam.fpx;
+    let a = (obs.x[k] - obs.width / 2) / cam.fpx;
+    let b = (obs.height / 2 - obs.y[k]) / cam.fpx;
+    if (k1) {
+      // Undo the distortion: the photo shows a point at radius r·(1 + k1·(r/corner)²).
+      const s = 1 - k1 * ((a * a + b * b) / (half * half));
+      a *= s;
+      b *= s;
+    }
     const dx = cam.f[0] + a * cam.r[0] + b * cam.u[0];
     const dy = cam.f[1] + a * cam.r[1] + b * cam.u[1];
     const dz = cam.f[2] + a * cam.r[2] + b * cam.u[2];
@@ -758,6 +771,46 @@ export function poseUncertainty(obs, h, pose, { sigmaPx, demErrM = DEM_ERROR_M, 
 }
 
 /**
+ * The horizon made by 3D terrain points seen from (cx, cy) with the eye at absolute height eyeZ: per
+ * azimuth bin the highest elevation angle along the lines through the points (upper envelope). pts are
+ * [x, y, zAbs] in DEM grid metres, in order along lines; null separates lines.
+ */
+export function envelopeHorizon(pts, cx, cy, eyeZ, az0, count, step, minDistM = 0) {
+  const el = new Float64Array(count).fill(-Infinity);
+  const dist = new Float32Array(count);
+  let prev = null;
+  for (const p of pts) {
+    if (!p) {
+      prev = null;
+      continue;
+    }
+    const dx = p[0] - cx;
+    const dy = p[1] - cy;
+    const d = Math.hypot(dx, dy);
+    if (d < minDistM) {
+      prev = null;
+      continue;
+    }
+    const cur = { f: (wrap180(Math.atan2(dx, dy) / DEG - az0 - 180) + 180) / step, el: Math.atan((p[2] - eyeZ - dropAt(d)) / d) / DEG, d };
+    // A jump means a gap in the line (or the far side of the circle).
+    const a = prev && Math.abs(prev.f - cur.f) < 5 / step ? prev : cur;
+    const lo = Math.max(0, Math.ceil(Math.min(a.f, cur.f)));
+    const hi = Math.min(count - 1, Math.floor(Math.max(a.f, cur.f)));
+    for (let b = lo; b <= hi; b++) {
+      const t = cur.f === a.f ? 0 : (b - a.f) / (cur.f - a.f);
+      const v = a.el + (cur.el - a.el) * t;
+      if (v > el[b]) {
+        el[b] = v;
+        dist[b] = t < 0.5 ? a.d : cur.d;
+      }
+    }
+    prev = cur;
+  }
+  for (let b = 0; b < count; b++) if (el[b] === -Infinity) el[b] = NaN;
+  return { az0, stepDeg: step, count, full: false, el, dist };
+}
+
+/**
  * The fitted skyline as a constraint for other solvers (e.g. the resection from ground points): the
  * terrain skyline's ridge points are kept in 3D, so for a slightly different standpoint and eye height
  * their directions are recomputed and the photo's skyline columns compared again.
@@ -776,41 +829,12 @@ export function skylineConstraint({ dem, horizon, camera, obs, sigmaPx, demErrM 
     const a = (horizon.az0 + i * horizon.stepDeg) * DEG;
     pts.push([camera.e + d * Math.sin(a), camera.n + d * Math.cos(a), camera.eyeZ + d * Math.tan(el * DEG) + dropAt(d)]);
   }
-  const step = horizon.stepDeg;
   const pad = 3;
-  const count = horizon.count + Math.round((2 * pad) / step);
+  const count = horizon.count + Math.round((2 * pad) / horizon.stepDeg);
   const az0 = horizon.az0 - pad;
   const reproject = (lat, lon, eyeZ) => {
     const [cx, cy] = dem.toLocal(lat, lon);
-    const el = new Float64Array(count).fill(-Infinity);
-    const dist = new Float32Array(count);
-    let prev = null;
-    for (const p of pts) {
-      if (!p) {
-        prev = null;
-        continue;
-      }
-      const dx = p[0] - cx;
-      const dy = p[1] - cy;
-      const d = Math.hypot(dx, dy);
-      const cur = { f: wrap180(Math.atan2(dx, dy) / DEG - az0 - 180) + 180, el: Math.atan((p[2] - eyeZ - dropAt(d)) / d) / DEG, d };
-      cur.f /= step;
-      // Upper envelope of the reprojected ridge line, bin by bin (a jump means a gap in the line).
-      const a = prev && Math.abs(prev.f - cur.f) < 5 / step ? prev : cur;
-      const lo = Math.max(0, Math.ceil(Math.min(a.f, cur.f)));
-      const hi = Math.min(count - 1, Math.floor(Math.max(a.f, cur.f)));
-      for (let b = lo; b <= hi; b++) {
-        const t = cur.f === a.f ? 0 : (b - a.f) / (cur.f - a.f);
-        const v = a.el + (cur.el - a.el) * t;
-        if (v > el[b]) {
-          el[b] = v;
-          dist[b] = t < 0.5 ? a.d : cur.d;
-        }
-      }
-      prev = cur;
-    }
-    for (let b = 0; b < count; b++) if (el[b] === -Infinity) el[b] = NaN;
-    return { az0, stepDeg: step, count, full: false, el, dist };
+    return envelopeHorizon(pts, cx, cy, eyeZ, az0, count, horizon.stepDeg);
   };
   const full = (lat, lon, eyeZ, pose) => normalizedResiduals(obs, reproject(lat, lon, eyeZ), pose, sigmaPx, demErrM);
   return {
@@ -1128,6 +1152,62 @@ export function ridgeLines(h, minLength = 6) {
   return done.filter((l) => l.length >= minLength);
 }
 
+/**
+ * Exact ridge heights (in Switzerland from swisstopo's 2 m model): the terrain skyline and the longest ridge
+ * lines in front of it, sampled on the model's crest and `offsets` metres in front of and behind it – the
+ * worldwide model's crests can sit a little off. All lines go as one polyline per offset (the stretches
+ * between them are real terrain, too). profile(line [[lat, lon]…], nbPoints) → [{ lat, lon, h }].
+ * Returns { points: [[x, y, zAbs] | null …] on the DEM grid for envelopeHorizon, minDistM, samples }.
+ */
+export async function ridgePointsFromProfiles({ dem, horizon, camera, profile, offsets = [-40, 0, 40], maxLines = 6, vertexM = 25, spacingM = 6 }) {
+  const lines = [];
+  let cur = [];
+  for (let i = 0; i < horizon.count; i++) {
+    const d = horizon.dist[i];
+    if (!(horizon.el[i] === horizon.el[i]) || !d) {
+      if (cur.length > 1) lines.push(cur);
+      cur = [];
+      continue;
+    }
+    cur.push({ az: horizon.az0 + i * horizon.stepDeg, d });
+  }
+  if (cur.length > 1) lines.push(cur);
+  lines.push(...ridgeLines(horizon, 8).sort((a, b) => b.length - a.length).slice(0, maxLines));
+  if (!lines.length) return { points: [], minDistM: 0, samples: 0 };
+  const minDistM = 0.7 * Math.min(...lines.flat().map((p) => p.d));
+  const at = (p, off) => [camera.e + (p.d + off) * Math.sin(p.az * DEG), camera.n + (p.d + off) * Math.cos(p.az * DEG)];
+  const points = [];
+  let samples = 0;
+  for (const off of offsets) {
+    // Vertices at least vertexM apart (the service samples evenly along the whole line anyway).
+    const verts = [];
+    for (const line of lines) {
+      for (const p of line) {
+        const xy = at(p, off);
+        const last = verts.at(-1);
+        if (!last || Math.hypot(xy[0] - last[0], xy[1] - last[1]) >= vertexM) verts.push(xy);
+      }
+    }
+    let length = 0;
+    for (let i = 1; i < verts.length; i++) length += Math.hypot(verts[i][0] - verts[i - 1][0], verts[i][1] - verts[i - 1][1]);
+    const got = await profile(verts.map(([x, y]) => dem.toLatLon(x, y)), Math.min(5000, Math.max(50, length / spacingM)));
+    for (const q of got) {
+      const [x, y] = dem.toLocal(q.lat, q.lon);
+      points.push([x, y, q.h]);
+    }
+    points.push(null);
+    samples += got.length;
+  }
+  return { points, minDistM, samples };
+}
+
+/** A horizon with the exact ridge heights where they exist, the model's elsewhere. */
+export function mergeHorizon(model, exact) {
+  const el = Float64Array.from(model.el, (v, i) => (exact.el[i] === exact.el[i] ? exact.el[i] : v));
+  const dist = Float32Array.from(model.dist, (v, i) => (exact.el[i] === exact.el[i] ? exact.dist[i] : v));
+  return { ...model, el, dist };
+}
+
 /** Direction (azimuth, elevation) → photo position (0–1) for a pose, or null behind the camera. */
 export function projectDirection(pose, width, height, azDeg, elDeg) {
   const cam = makeCamera({ bearingDeg: pose.bearing, pitchDeg: pose.pitch, rollDeg: pose.roll, fovDeg: pose.fov, width, height });
@@ -1268,6 +1348,8 @@ export async function skylineMatch({
   // Expected skyline error in pixels of the skyline image: on the coarse grid, and on the fine one.
   const sigmaCoarse = 2.5;
   const sigmaFine = 1.2;
+  // In Switzerland the exact ground height at the standpoint (the worldwide model is often metres off).
+  await learnSwissHeights(terrain, fetchImpl, [{ lat, lon }]).catch(() => 0);
   // 1) Orientation on a coarse grid (all round when the direction is unknown).
   onStatus("Bergkamm: Geländemodell rundum laden …");
   const fovMax = fixFov && fovDeg ? fovDeg : fovDeg ? fovDeg * 1.4 : 85;
@@ -1283,16 +1365,23 @@ export async function skylineMatch({
   onStatus("Bergkamm: Blickrichtung suchen …");
   const cands = searchOrientation(obs, hc, { bearingDeg: full ? null : bearingDeg, bearingRange, fovDeg, fixFov });
   if (!cands.length) return { ok: false, note: "Kein passender Horizont gefunden (Geländemodell leer?)." };
+  // Candidates are ranked with the expected field of view: the cost is per column, so the prior's share
+  // is spread over the skyline's independent pieces – else a far-off field of view can fit a little better
+  // by chance (e.g. an ultra-wide view steeply down instead of the phone's normal one).
+  const score = (p) => {
+    const z = !fixFov && fovDeg ? (p.fov - fovDeg) / (0.3 * fovDeg) : 0;
+    return poseCost(obs, hc, p, sigmaCoarse) + (z ? (0.5 * z * z) / effectiveSamples(obs, hc, p) : 0);
+  };
   const refined = cands.slice(0, 5).map((c) => refinePose(obs, hc, c, { sigmaPx: sigmaCoarse, fovHint: fovDeg, fixFov }))
-    .sort((a, b) => a.cost - b.cost);
+    .map((p) => ({ p, s: score(p) })).sort((a, b) => a.s - b.s).map(({ p }) => p);
   let pose = refined[0];
   // The best clearly different orientation (refined, or as found by the search when all refined to the same).
-  const bestCoarse = poseCost(obs, hc, pose, sigmaCoarse);
+  const bestCoarse = score(pose);
   let rival = null;
   let secondCoarse = null;
   for (const p of [...refined, ...cands]) {
     if (Math.abs(wrap180(p.bearing - pose.bearing)) <= Math.max(3, pose.fov / 5)) continue;
-    const c = poseCost(obs, hc, p, sigmaCoarse);
+    const c = score(p);
     if (secondCoarse == null || c < secondCoarse) {
       secondCoarse = c;
       rival = p;

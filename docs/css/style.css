@@ -341,3 +341,7 @@ ul.lessons { margin: 6px 0; padding-left: 18px; }
 ul.lessons li { margin: 3px 0; }
 .pin-truth span { background: #12805c; }
 #map.picking, #map.picking .leaflet-interactive { cursor: crosshair; }
+#model-slot { margin-top: 14px; }
+.model3d-canvas { margin: 6px auto; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: #bfd4ea; }
+.model3d-canvas canvas { display: block; width: 100% !important; height: auto !important; touch-action: none; }
+.compare-slider.wrap { flex-wrap: wrap; }

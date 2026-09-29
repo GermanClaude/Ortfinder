@@ -297,8 +297,15 @@ function photoPixels(bitmap, maxSide = 1600) {
 }
 
 /** Aerial imagery for a Mercator box (sharpest tile zoom that is not finer than needed). */
-async function drawImageryBox(ctx, box, url = TILE_SOURCES.satellit.url) {
-  const z = clamp(Math.ceil(box.zoom), 2, 19);
+export async function drawImageryBox(ctx, box, url = TILE_SOURCES.satellit.url, maxTiles = Infinity) {
+  let z = clamp(Math.ceil(box.zoom), 2, 19);
+  // Coarser tiles when the box would need too many (each zoom level down quarters the count).
+  const count = (zz) => {
+    const kk = 2 ** (zz - box.zoom);
+    return (Math.floor((box.x0 + box.width) * kk / TILE) - Math.floor((box.x0 * kk) / TILE) + 1) *
+      (Math.floor((box.y0 + box.height) * kk / TILE) - Math.floor((box.y0 * kk) / TILE) + 1);
+  };
+  while (z > 2 && count(z) > maxTiles) z--;
   const k = 2 ** (z - box.zoom); // tile pixels per box pixel
   const left = box.x0 * k;
   const top = box.y0 * k;

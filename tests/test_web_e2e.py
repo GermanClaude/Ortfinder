@@ -149,6 +149,12 @@ def _mock_scene(page, overpass_queries: list | None = None):
         "https://s3.amazonaws.com/elevation-tiles-prod/**",
         lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=terrain),
     )
+    _no_swisstopo(page)
+
+
+def _no_swisstopo(page):
+    """Scenes near Switzerland ask swisstopo for exact heights; the tests keep their synthetic terrain."""
+    page.route("https://api3.geo.admin.ch/**", lambda r: r.fulfill(status=404, headers={"Access-Control-Allow-Origin": "*"}, body=""))
 
 
 def _mock_network(page, gemini_bodies: list):
@@ -1035,6 +1041,7 @@ def test_mountain_skyline_names_the_peaks(browser, site_url, tmp_path):
 
     page.route("https://s3.amazonaws.com/elevation-tiles-prod/**", tile)
     page.route("**/api/interpreter", overpass)
+    _no_swisstopo(page)
     page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
     page.route("https://server.arcgisonline.com/**", lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=PNG_1X1))
     page.goto(site_url)
@@ -1190,5 +1197,52 @@ def test_hints_image_search_and_feedback_teach_the_next_analysis(browser, site_u
     page.set_input_files("#file", str(street))
     page.wait_for_function("document.querySelector('#log').textContent.includes('Fertig')", timeout=30000)
     assert f"- {lesson}" in bodies[0]["input"][0]["content"][0]["text"]
+    assert errors == []
+    context.close()
+
+
+def test_photo_as_3d_model_from_side_view_to_top_view(browser, site_url, tmp_path):
+    """The result offers the photo as a 3D model: terrain + OSM buildings with the photo projected from the camera."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script(GEMINI_SETTINGS)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    _mock_network(page, [])
+    view = {**SUBMISSION["view"], "pitch_deg": -2, "eye_height_m": 1.6}
+    page.route("https://generativelanguage.googleapis.com/**", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(
+        _interaction([{"type": "function_call", "id": "x", "name": "submit_result", "arguments": {**SUBMISSION, "view": view}}]))))
+    page.goto(site_url)
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector("#model-slot button", timeout=30000)
+    page.click("#model-slot button")
+    page.wait_for_selector("#model-slot canvas", timeout=60000)
+    page.wait_for_function("document.querySelector('#model-slot').textContent.includes('Gelände bis')", timeout=30000)
+    text = page.text_content("#model-slot")
+    assert "Gebäude aus OSM" in text and "Luftbild von Esri" in text
+    buildings = int(text.split("Gebäude aus OSM")[0].split(",")[-1].strip())
+    assert buildings >= 10, text  # the street's houses from the mocked OSM scene
+    shots = {}
+    for label in ["📷 Wie das Foto", "↗ Schräg", "⬇ Draufsicht"]:
+        page.click(f"#model-slot >> text={label}")
+        data = page.evaluate("document.querySelector('#model-slot canvas').toDataURL('image/png')")
+        shots[label] = Image.open(io.BytesIO(base64.b64decode(data.split(",")[1]))).convert("RGB")
+    for label, img in shots.items():
+        colours = img.resize((64, 64)).getcolors(64 * 64)
+        assert colours and len(colours) > 20, f"{label}: blank render"
+    if os.environ.get("ORTFINDER_SHOTS"):
+        for i, img in enumerate(shots.values()):
+            img.save(os.path.join(os.environ["ORTFINDER_SHOTS"], f"e2e-model-{i}.png"))
+    # Seen from the camera, the model shows the photo: sky blue on top, the grey road below.
+    photo_view = shots["📷 Wie das Foto"].resize((50, 50))
+    r, g, b = photo_view.getpixel((25, 45))
+    assert abs(r - 90) < 30 and abs(g - 90) < 30 and abs(b - 95) < 30, (r, g, b)
+    # Photo overlay off: the aerial image (here plain test tiles) instead.
+    page.fill("#model-slot input[type=range]", "0")
+    page.dispatch_event("#model-slot input[type=range]", "input")
+    page.click("#model-slot >> text=▶ Seitenansicht → Draufsicht")
+    page.wait_for_timeout(3600)
     assert errors == []
     context.close()

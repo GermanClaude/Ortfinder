@@ -598,6 +598,7 @@ export class ToolExecutor {
           : `Standpunkt festgehalten (Punkte ${Math.round(sol.geometry.spreadDeg)}° breit, Entfernungsverhältnis ${r1(sol.geometry.depthRatio)} – für den Standpunkt braucht es ≥5 Punkte, >25° breit, nah und fern gemischt).`,
         bad.length ? `Verdächtig: ${bad.map((p) => sol.points.indexOf(p) + 1).map((n) => points[n - 1].label || `Punkt ${n}`).join(", ")} – vermutlich falsch zugeordnet.` : "",
         sol.rms_pct < 1.5 ? "Gute Übereinstimmung." : sol.rms_pct < 4 ? "Mäßige Übereinstimmung – Punkte prüfen." : "Schlechte Übereinstimmung – Zuordnung oder Standpunkt falsch.",
+        sol.exact_heights ? `Höhen exakt von swisstopo (2-m-Modell; Boden am Standpunkt ${r1(sol.exact_heights.ground_fix_m)} m korrigiert).` : "",
         useSky ? `Bergkamm aus skyline_match mitgenutzt: ${Math.round((sol.skyline_share ?? 0) * 100)} % der Himmelslinie liegen auf dem Geländehorizont.` : "",
       ].filter(Boolean).join(" "),
     };
