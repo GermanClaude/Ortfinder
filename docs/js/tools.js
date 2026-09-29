@@ -27,8 +27,8 @@ export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "zoom_image",
-    description: "Ausschnitt des Originalfotos in voller Auflösung, vergrößert (Schrift, Schilder, Kennzeichen, Logos, Details, " +
-      "Fernes). Koordinaten 0-1 wie das Lineal am Fotorand (0 = links/oben). Mehrere parallel.",
+    description: "Ausschnitt des Originals in voller Auflösung, vergrößert (Schrift, Schilder, Kennzeichen, Details, Fernes). " +
+      "Koordinaten 0-1 wie das Lineal (0 = links/oben). Mehrere parallel.",
     parameters: obj({
       x_min: NUM, y_min: NUM, x_max: NUM, y_max: NUM,
       enhance: { type: "boolean", description: "Kontrast/Schärfe anheben" },
@@ -54,8 +54,8 @@ export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "overpass_query",
-    description: "Overpass-QL auf OpenStreetMap, um Merkmals-Kombinationen zu finden/prüfen. Immer mit Gebiets- oder around-Filter " +
-      "und begrenzter Ausgabe, z.B. [out:json][timeout:25];way[\"highway\"][\"name\"=\"Lindenweg\"](around:3000,48.13,11.57);out center 20;",
+    description: "Overpass-QL auf OpenStreetMap für Merkmals-Kombinationen, immer mit around-/Gebietsfilter und Limit, z.B. " +
+      "[out:json];way[\"highway\"][\"name\"=\"Lindenweg\"](around:3000,48.13,11.57);out center 20;",
     parameters: obj({ query: { type: "string" }, purpose: { type: "string" } }, ["query"]),
   },
   {
@@ -75,9 +75,8 @@ export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "render_view",
-    description: "3D-Nachbau der Sicht von einem Standpunkt (OSM-Gebäude, Straßen, Bäume, Gelände mit Bergkamm) im Seitenverhältnis " +
-      "des Fotos, Kompassskala oben. Mit Foto vergleichen und Standpunkt/Blick nachstellen. texture \"satellit\": Luftbild über dem " +
-      "Gelände (wie Google Earth), Gebäude als Drahtgitter.",
+    description: "3D-Nachbau vom Standpunkt (OSM-Gebäude, Straßen, Bäume, Gelände) im Seitenverhältnis des Fotos, Kompassskala " +
+      "oben; zum Nachstellen von Standpunkt/Blick. texture \"satellit\" = Luftbild über dem Gelände, Gebäude als Drahtgitter.",
     parameters: obj({
       lat: NUM, lon: NUM,
       bearing_deg: { type: "number", description: "Blickrichtung, 0 = Nord" },
@@ -92,9 +91,9 @@ export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "top_view",
-    description: "Draufsicht: Foto per Sichtstrahlen auf das Gelände geklappt, neben dem Luftbild desselben Ausschnitts (gleiches " +
-      "Raster, Norden oben, gelb = Bildränder). Deckungsgleich = Pose stimmt. Verdreht → bearing; zu lang/kurz → pitch/eye_height; " +
-      "versetzt → Standpunkt. style \"ueberlagert\" legt beides übereinander.",
+    description: "Draufsicht: Foto per Sichtstrahlen aufs Gelände geklappt, neben dem Luftbild desselben Ausschnitts. " +
+      "Deckungsgleich = Pose stimmt; verdreht → bearing, zu lang/kurz → pitch/eye_height, versetzt → Standpunkt. " +
+      "style \"ueberlagert\" = übereinander.",
     parameters: obj({
       camera_lat: NUM, camera_lon: NUM, bearing_deg: NUM, fov_deg: NUM,
       pitch_deg: NUM, roll_deg: NUM,
@@ -109,9 +108,9 @@ export const FUNCTION_TOOLS = [
   {
     type: "function",
     name: "solve_camera",
-    description: "Rückwärtsschnitt: exakte Kamerapose aus 4-8 Punkten, die im Foto UND auf Luftbild/Karte eindeutig sind (am Boden: " +
-      "Hausecken, Kreuzungen, Feldecken, Mastfüße; sonst height_m). Liefert Richtung, Neigung, Schieflage, Bildwinkel, Höhe, " +
-      "ggf. Standpunkt, Fehler je Punkt und gleich die Draufsicht dazu.",
+    description: "Rückwärtsschnitt: exakte Kamerapose aus 3-8 Punkten, eindeutig im Foto UND im Luftbild (Hausecken am Boden, " +
+      "Kreuzungen, Feldecken; sonst height_m). Gibt Richtung, Neigung, Schieflage, Bildwinkel, Höhe, ggf. Standpunkt, Fehler je Punkt, " +
+      "dazu die Draufsicht.",
     parameters: obj({
       camera_lat: { type: "number", description: "vermuteter Standpunkt" },
       camera_lon: NUM,
@@ -146,6 +145,18 @@ export const FUNCTION_TOOLS = [
       solve_height: { type: "boolean" },
       purpose: { type: "string" },
     }, ["camera_lat", "camera_lon"]),
+  },
+  {
+    type: "function",
+    name: "photos_nearby",
+    description: "Fotos anderer nahe einem Punkt (Wikimedia Commons, Panoramax-Straßenbilder), nummeriert, wie Street View.",
+    parameters: obj({ lat: NUM, lon: NUM, radius_m: { type: "integer", description: "50-5000, Standard 300" }, purpose: { type: "string" } }, ["lat", "lon"]),
+  },
+  {
+    type: "function",
+    name: "wiki_search",
+    description: "Wikipedia-Suche mit Koordinaten (Wahrzeichen, Gebäude, Firmen, Texte im Bild).",
+    parameters: obj({ query: { type: "string" }, languages: { type: "string", description: "z.B. 'de,en,fr'" } }, ["query"]),
   },
   {
     type: "function",
@@ -356,10 +367,13 @@ function parseUtc(value) {
 export class ToolExecutor {
   // Stateless requests resend every crop, so the total is capped to stay well below request size limits.
   constructor({
-    zoom, mapView, renderView, topView, solveCamera, skylineMatch, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12, maxRenders = 12,
-    maxTopViews = 10, maxSkylines = 6,
+    zoom, mapView, renderView, topView, solveCamera, skylineMatch, web = null, osm, emit = () => {}, maxZooms = 24, maxMapViews = 12,
+    maxRenders = 12, maxTopViews = 10, maxSkylines = 6, maxWeb = 16,
   }) {
     this.zoom = zoom;
+    this.web = web; // { photosNearby(lat, lon, radiusM), wikiSearch(query, langs) }
+    this.maxWeb = maxWeb;
+    this.webCount = 0;
     this.skylineMatch = skylineMatch;
     this.maxSkylines = maxSkylines;
     this.skylineCount = 0;
@@ -382,10 +396,13 @@ export class ToolExecutor {
 
   /** Usage counters, saved with a checkpoint so limits still hold after resuming. */
   get counts() {
-    return { zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount, topView: this.topViewCount, skyline: this.skylineCount };
+    return {
+      zoom: this.zoomCount, mapView: this.mapViewCount, render: this.renderCount, topView: this.topViewCount, skyline: this.skylineCount, web: this.webCount,
+    };
   }
 
-  restoreCounts({ zoom = 0, mapView = 0, render = 0, topView = 0, skyline = 0 } = {}) {
+  restoreCounts({ zoom = 0, mapView = 0, render = 0, topView = 0, skyline = 0, web = 0 } = {}) {
+    this.webCount = web;
     this.zoomCount = zoom;
     this.mapViewCount = mapView;
     this.renderCount = render;
@@ -663,6 +680,36 @@ export class ToolExecutor {
       peaks: named.slice(0, 8).map((p) => p.name), purpose: String(args.purpose || ""), thumbnail: image.thumbnail,
     });
     return [{ type: "text", text: JSON.stringify(out) }, { type: "image", mime_type: "image/jpeg", data: image.data, resolution: "high" }];
+  }
+
+  webAllowed() {
+    if (!this.web) throw new ToolInputError("Die Internetsuche ist in dieser Umgebung nicht verfügbar");
+    if (this.webCount >= this.maxWeb) throw new ToolInputError(`Limit für Internetsuchen (${this.maxWeb}) erreicht`);
+    this.webCount += 1;
+  }
+
+  async tool_photos_nearby(args) {
+    const lat = num(args, "lat", -85, 85);
+    const lon = num(args, "lon", -180, 180);
+    const radius = Math.round(Number.isFinite(args.radius_m) ? Math.min(Math.max(args.radius_m, 50), 5000) : 300);
+    this.webAllowed();
+    const res = await this.web.photosNearby(lat, lon, radius);
+    const note = res.problems.length ? ` (${res.problems.join("; ")})` : "";
+    if (!res.items.length) return `Keine frei verfügbaren Fotos im Umkreis von ${radius} m${note}. Radius vergrößern oder anderen Punkt prüfen.`;
+    this.emit("photos", { lat, lon, radius_m: radius, count: res.items.length, purpose: String(args.purpose || ""), thumbnail: res.sheet?.thumbnail });
+    const list = res.items.map((p, i) => `${i + 1}. ${p.source}: ${p.title || "Foto"}${p.description ? ` – ${p.description}` : ""} · ${p.distance_m} m, ` +
+      `Richtung ${p.bearing_deg}°${p.heading != null ? `, Blick ${Math.round(p.heading)}°` : ""}${p.date ? `, ${p.date}` : ""} · ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`);
+    const text = `Fotos anderer im Umkreis von ${radius} m um ${lat.toFixed(6)}, ${lon.toFixed(6)} (${res.found} gefunden, ${res.items.length} gezeigt)${note}:\n` +
+      `${list.join("\n")}\nNummern wie im Bild. Gleiche Gebäude, Schilder, Bergformen = Ort bestätigt; Aufnahmeort des passenden Fotos als Standpunkt-Hinweis.`;
+    return res.sheet ? [{ type: "text", text }, { type: "image", mime_type: "image/jpeg", data: res.sheet.data, resolution: "high" }] : text;
+  }
+
+  async tool_wiki_search(args) {
+    const query = str(args, "query");
+    this.webAllowed();
+    const res = await this.web.wikiSearch(query, String(args.languages || ""));
+    if (!res.results.length) return `Keine Wikipedia-Treffer für „${query}“${res.problems.length ? ` (${res.problems.join("; ")})` : ""}. Anders formulieren oder Sprache wechseln.`;
+    return JSON.stringify({ query, results: res.results.slice(0, 10), ...(res.problems.length ? { problems: res.problems } : {}) });
   }
 
   async tool_nearby_features(args) {

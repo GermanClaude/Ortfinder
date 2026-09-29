@@ -34,6 +34,13 @@
         </div>
       </div>
 
+      <details id="hints-box" class="hints-box">
+        <summary>✍️ Zusatzinfo für die KI (optional)</summary>
+        <textarea id="hints" rows="2" maxlength="600" aria-label="Zusatzinfo für die KI"
+          placeholder="z.B. „Google Lens findet: Restaurant Sonne, Bern“ oder „Blick aus einem Zugfenster, Sommer 2024“"></textarea>
+        <p class="small muted">Geht bei der nächsten Analyse mit. Die KI nimmt es ernst, prüft es aber selbst.</p>
+      </details>
+
       <p id="puter-note" class="puter-note small" hidden>
         Kostenlos und ohne API-Key: Beim ersten Foto meldest du dich einmalig kostenlos bei
         <a href="https://puter.com" target="_blank" rel="noopener">Puter</a> an (Google, Microsoft, Apple oder E-Mail).
@@ -218,6 +225,37 @@
             </p>
           </details>
         </div>
+        <details id="lens-settings" class="ollama-box">
+          <summary>🔎 Automatische Bildersuche wie Google Lens (optional, eigener Key)</summary>
+          <p class="small">
+            Mit einem eigenen Schlüssel für die <strong>Google Cloud Vision API</strong> sucht Ortfinder das Foto zu Beginn jeder
+            Analyse im Web, wie Google Lens: Seiten mit demselben Bild, Stichworte und erkannte Wahrzeichen mit Koordinaten.
+            Die ersten 1000 Bilder im Monat sind kostenlos; Google verlangt dafür aber ein Abrechnungskonto (Kreditkarte).
+          </p>
+          <ol class="small">
+            <li><a href="https://console.cloud.google.com/apis/library/vision.googleapis.com" target="_blank" rel="noopener">console.cloud.google.com</a>:
+              Projekt wählen oder anlegen, „Cloud Vision API“ aktivieren (Abrechnung einrichten).</li>
+            <li>„APIs &amp; Dienste“ → „Anmeldedaten“ → „API-Schlüssel erstellen“. Einschränken auf Websites
+              <code>https://germanclaude.github.io/*</code> und die API „Cloud Vision API“.</li>
+            <li>Schlüssel hier einfügen und speichern.</li>
+          </ol>
+          <input id="vision-key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…" aria-label="Google-Cloud-Vision-Key">
+          <p class="small muted">
+            Das Foto geht dann zusätzlich an Google (Cloud Vision). Ohne Key: beim Foto „🔎 Bild im Web suchen“ – das öffnet
+            Google Lens, Bing oder Yandex zum Selbersuchen; das Gefundene kommt als Zusatzinfo in die nächste Analyse.
+          </p>
+        </details>
+        <details id="learn-settings" class="ollama-box">
+          <summary>🧠 Lernen aus Rückmeldungen</summary>
+          <p class="small">
+            Nach einer Analyse kannst du im Ergebnis den richtigen Ort angeben. Die KI leitet daraus kurze, allgemeine Lehren ab
+            (was sie hätte beachten sollen). Diese gehen bei künftigen Analysen auf diesem Gerät mit – zusammen mit den gemeinsamen
+            Lehren, die in neue Versionen von Ortfinder übernommen werden. Die KI-Modelle selbst lassen sich von einer Website aus
+            nicht umtrainieren; die Lehren sind Hinweise, jederzeit sichtbar und löschbar.
+          </p>
+          <label class="check"><input id="learn" type="checkbox" checked> Lehren bei Analysen mitgeben</label>
+          <div id="lesson-list"></div>
+        </details>
         <details id="guide" class="guide">
           <summary id="guide-title">📖 Anleitung Schritt für Schritt</summary>
           <div id="guide-tabs" class="tabs" role="tablist" aria-label="Gerät"></div>
@@ -248,6 +286,13 @@
             <img id="photo" alt="Hochgeladenes Bild">
             <div id="overlay" class="overlay"></div>
           </div>
+          <div class="photo-tools small">
+            <span>🔎 Bild im Web suchen:</span>
+            <button id="lens-google" type="button" class="ghost small-btn">Google Lens</button>
+            <button id="lens-bing" type="button" class="ghost small-btn">Bing</button>
+            <button id="lens-yandex" type="button" class="ghost small-btn">Yandex</button>
+          </div>
+          <p id="lens-hint" class="small muted" role="status"></p>
           <h3>Genauer angesehen <span id="zoom-count" class="muted"></span></h3>
           <div id="zooms" class="zooms"><p class="muted small">Noch keine Ausschnitte.</p></div>
         </div>

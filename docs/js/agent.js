@@ -62,6 +62,9 @@ function describeHttpError(status, body) {
       status, code: err.status || err.code, retryable: true, retryAfterMs, requestsPerMinute: rpmMatch ? Number(rpmMatch[1]) : 0,
     });
   }
+  if (status === 503 || /overloaded|unavailable/i.test(message)) {
+    return new GeminiError(`Gemini ist gerade überlastet (HTTP ${status}): ${message}`, { status, code: err.status, retryable: true });
+  }
   if (status >= 500) return new GeminiError(`Gemini-Serverfehler (HTTP ${status}): ${message}`, { status, code: err.status, retryable: true });
   return new GeminiError(`Anfrage abgelehnt (HTTP ${status}): ${message}`, { status, code: err.status });
 }
@@ -105,7 +108,9 @@ export class GeminiAgent {
   constructor({
     apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
     emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, fallbackModels = [], onModelExhausted = () => {},
+    retryBaseMs = 2000,
   } = {}) {
+    this.retryBaseMs = retryBaseMs;
     this.apiKey = apiKey;
     this.model = model;
     this.fallbackModels = [...fallbackModels];
@@ -183,7 +188,7 @@ export class GeminiAgent {
       }
       const maxRetries = err.status === 429 ? MAX_RATE_LIMIT_RETRIES : MAX_RETRIES;
       if (err.retryable && attempt < maxRetries) {
-        const wait = Math.min(err.retryAfterMs ? err.retryAfterMs + 1000 : 2000 * 2 ** attempt, 90000);
+        const wait = Math.min(err.retryAfterMs ? err.retryAfterMs + 1000 : this.retryBaseMs * 2 ** attempt, 90000);
         const why = err.requestsPerMinute ? `Tarif erlaubt ${err.requestsPerMinute} Anfragen pro Minute` : err.message.split(":")[0];
         this.emit("status", { message: `${why} – neuer Versuch in ${Math.round(wait / 1000)} s …` });
         await sleep(wait, this.signal);
@@ -240,6 +245,7 @@ export class GeminiAgent {
       "Bündle deshalb alle Zooms und Kartenabfragen, die du gerade brauchst, parallel in EINER Antwort.";
     const history = resume ? [...resume.conversation] : [{ type: "user_input", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...images] }];
     let nudges = resume?.nudges ?? 0;
+    let serverSwitches = 0;
     if (resume) {
       this.usage = { ...this.usage, ...resume.usage };
       if (resume.webSearch === false) this.webSearch = false;
@@ -257,13 +263,22 @@ export class GeminiAgent {
       try {
         interaction = await this.request(history);
       } catch (err) {
-        if (err.code !== "DAILY_LIMIT" || !this.fallbackModels.length) throw err;
-        // Today's free requests of this model are used up; the next free model has its own. Its thinking
-        // cannot continue this model's, so it starts over with the photo (tools run locally and fast).
+        // Still overloaded after the retries: the other free model runs on other servers (at most twice per analysis).
+        const overloaded = err.status >= 500 && err.retryable && serverSwitches < 2;
+        if ((err.code !== "DAILY_LIMIT" && !overloaded) || !this.fallbackModels.length) throw err;
+        // Today's free requests of this model are used up (or its servers are busy); the next free model has
+        // its own. Its thinking cannot continue this model's, so it starts over with the photo (tools run
+        // locally and fast).
         const used = this.model;
-        this.onModelExhausted(used);
         this.model = this.fallbackModels.shift();
-        this.emit("status", { message: `Tageslimit von ${used} erreicht – Ortfinder macht mit ${this.model} weiter (eigenes Tageskontingent).` });
+        if (err.code === "DAILY_LIMIT") {
+          this.onModelExhausted(used);
+          this.emit("status", { message: `Tageslimit von ${used} erreicht – Ortfinder macht mit ${this.model} weiter (eigenes Tageskontingent).` });
+        } else {
+          serverSwitches += 1;
+          this.fallbackModels.push(used); // only busy for now, may be used again
+          this.emit("status", { message: `${used} ist gerade überlastet – Ortfinder macht mit ${this.model} weiter.` });
+        }
         history.splice(1);
         nudges = 0;
         step = 0;

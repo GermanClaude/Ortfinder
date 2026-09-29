@@ -165,6 +165,21 @@ test("daily limit with a fallback model: continues with its own quota, starting 
   assert.ok(events.some(([t, d]) => t === "status" && /Tageslimit von gemini-3.8-flash erreicht – Ortfinder macht mit gemini-3.7-flash weiter/.test(d.message)));
 });
 
+test("Gemini overloaded (503) after the retries: the other free model takes over", async () => {
+  const busy = () => json(503, { error: { code: 503, message: "The model is overloaded. Please try again later.", status: "UNAVAILABLE" } });
+  const exhausted = [];
+  const { run, requests, events } = setup([
+    busy, busy, busy, busy,
+    interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
+  ], { fallbackModels: ["gemini-3.7-flash"], onModelExhausted: (m) => exhausted.push(m), retryBaseMs: 1, webSearch: false });
+  const { analysis } = await run();
+  assert.equal(analysis.city, "Freiburg");
+  assert.deepEqual(requests.map((r) => r.body.model), ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.7-flash"]);
+  assert.deepEqual(exhausted, [], "busy is not used up: it stays available for later analyses");
+  assert.ok(events.some(([t, d]) => t === "status" && /^Gemini ist gerade überlastet \(HTTP 503\) – neuer Versuch/.test(d.message)));
+  assert.ok(events.some(([t, d]) => t === "status" && d.message === "gemini-3.8-flash ist gerade überlastet – Ortfinder macht mit gemini-3.7-flash weiter."));
+});
+
 test("the model is told its round budget", async () => {
   const { run, requests } = setup([interaction([call("c1", "submit_result", VALID_SUBMISSION)])], { maxSteps: 7 });
   await run();

@@ -1,0 +1,8 @@
+{
+  "note": "Gemeinsame Lehren aus Rückmeldungen: kurze, allgemeine Hinweise zur Methode (keine Orte). Werden mit neuen Versionen gepflegt.",
+  "lessons": [
+    "Blick aus einem Fenster oder über ein Dach: Die Kamera steht oft 10–25 m über dem Gelände – eye_height_m mit solve_camera bestimmen statt 1,6 m anzunehmen.",
+    "Berge vor Himmel: früh skyline_match rufen (findet die Richtung auch ohne Vorgabe), danach solve_camera mit 3–5 Bodenpunkten für das genaue Haus.",
+    "Schmale Hochformat-Fotos (etwa 9:20) zeigen meist nur 32–37° Bildwinkel – nicht die üblichen 65° annehmen."
+  ]
+}
