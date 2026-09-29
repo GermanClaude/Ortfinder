@@ -5,6 +5,7 @@ import { preview } from "./agent.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
 import { compactOpenAI } from "./compact.js";
+import { MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const PUTER_SCRIPT = "https://js.puter.com/v2/";
 export const PUTER_MODELS = [
@@ -101,7 +102,7 @@ export class PuterAgent {
   /** Also drives other OpenAI-style services (OpenRouter): pass their `chat` function and an error translator. */
   constructor({
     model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
-    describeError = describePuterError,
+    describeError = describePuterError, stallMs = STALL_MS,
   } = {}) {
     this.model = model;
     this.maxSteps = maxSteps;
@@ -111,6 +112,8 @@ export class PuterAgent {
     this.signal = signal;
     this.checkpoint = checkpoint;
     this.whenActive = whenActive;
+    this.stallMs = stallMs;
+    this.slowestMs = 0;
     this.usage = { requests: 0, input_tokens: 0, output_tokens: 0, thought_tokens: 0, cached_tokens: 0 };
   }
 
@@ -124,19 +127,31 @@ export class PuterAgent {
   }
 
   async request(messages) {
+    let stalls = 0;
     for (let attempt = 0; ; attempt++) {
       this.signal?.throwIfAborted();
+      const started = Date.now();
       try {
-        // puter.ai.chat has no abort option, so a cancelled analysis just stops waiting for it.
+        // puter.ai.chat has no abort option: after a cancel or a stall its late answer is ignored.
         // Earlier rounds' images and long results go as short notes (see compact.js).
-        const call = this.chat(compactOpenAI(messages), { model: this.model, tools: OPENAI_TOOLS, normalize: true });
-        const response = await (this.signal
-          ? Promise.race([call, new Promise((_, reject) => this.signal.addEventListener("abort", () => reject(this.signal.reason ?? new DOMException("Abgebrochen", "AbortError")), { once: true }))])
-          : call);
+        const response = await watch(
+          (signal) => this.chat(compactOpenAI(messages), { model: this.model, tools: OPENAI_TOOLS, normalize: true }, signal),
+          stallLimit(this.slowestMs, stalls, this.stallMs), this.signal);
+        this.slowestMs = Math.max(this.slowestMs, Date.now() - started);
         this.usage.requests += 1;
         return response;
       } catch (raw) {
         if (raw?.name === "AbortError") throw raw;
+        if (raw instanceof StallError) {
+          // No answer at all: ask the same round again (a page in the background waits to be visible first).
+          if (!(await this.waitIfBackground())) {
+            stalls += 1;
+            if (stalls > MAX_STALLS) throw new PuterError(stallGiveUp(stalls), { code: "STALLED" });
+            this.emit("warning", { message: stallNote(raw, stalls) });
+          }
+          attempt -= 1;
+          continue;
+        }
         const err = this.describeError(raw);
         // Browsers cut connections of pages in the background: wait until Ortfinder is visible again.
         if (err.retryable && (await this.waitIfBackground())) {

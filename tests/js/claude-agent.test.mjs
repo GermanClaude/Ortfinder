@@ -51,7 +51,7 @@ function setup(responses, options = {}) {
     requests.push({ url: String(url), headers: new Headers(init.headers), body: JSON.parse(init.body) });
     const next = responses.shift();
     if (!next) throw new Error("keine Antwort mehr vorbereitet");
-    return typeof next === "function" ? next() : next;
+    return typeof next === "function" ? next(init) : next;
   };
   const client = new Anthropic({ apiKey: "sk-ant-test", dangerouslyAllowBrowser: true, fetch, maxRetries: 0 });
   const events = [];
@@ -269,4 +269,17 @@ test("checkpoints after every round and resumes from the saved conversation", as
   assert.equal(usage.requests, 2);
   assert.deepEqual(second.requests[0].body.messages, state.conversation);
   assert.deepEqual(second.events.find(([t]) => t === "step")[1], { step: 2, max_steps: 6 });
+});
+
+test("a stream without any sign of life is dropped and the round asked again", async () => {
+  let closed = false;
+  const { run, requests, events } = setup([
+    (init) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => { closed = true; reject(new DOMException("aborted", "AbortError")); })),
+    sse({ content: [use("t1", "submit_result", VALID_SUBMISSION)] }),
+  ], { stallMs: 60 });
+  const { analysis } = await run();
+  assert.equal(analysis.subject.name, "Martinstor");
+  assert.equal(requests.length, 2);
+  assert.ok(closed, "the hanging connection was closed");
+  assert.ok(events.some(([t, d]) => t === "warning" && /kein Lebenszeichen/.test(d.message)));
 });

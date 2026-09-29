@@ -68,12 +68,13 @@ function retryAfter(resp, metadata) {
  * model actually answered.
  */
 export function openRouterChat({ key, fetchImpl = globalThis.fetch.bind(globalThis), signal, fallbacks = [], onModel = () => {} } = {}) {
-  return async (messages, { model, tools }) => {
+  // callSignal (from the agent's watchdog) also ends a request that hangs; it follows `signal` as well.
+  return async (messages, { model, tools }, callSignal = null) => {
     const resp = await fetchImpl(`${OPENROUTER_API}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "X-Title": "Ortfinder" },
       body: JSON.stringify({ model, ...(fallbacks.length ? { models: [model, ...fallbacks].slice(0, MAX_MODELS) } : {}), messages, tools, tool_choice: "auto" }),
-      signal,
+      signal: callSignal ?? signal,
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.error) {

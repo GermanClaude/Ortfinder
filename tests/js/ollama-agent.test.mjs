@@ -24,7 +24,7 @@ function setup(responses, options = {}) {
   const fetchImpl = async (url, init) => {
     requests.push({ url, body: init?.body ? JSON.parse(init.body) : null });
     const next = responses.shift();
-    return typeof next === "function" ? next() : next;
+    return typeof next === "function" ? next(init) : next;
   };
   const events = [];
   const emit = (t, d) => events.push([t, d]);
@@ -185,4 +185,18 @@ test("without tool calls the model is nudged, then the run gives up", async () =
   await assert.rejects(run(), /kein Ergebnis/);
   assert.equal(requests.length, 3);
   assert.match(requests[1].body.messages.at(-1).content, /submit_result/);
+});
+
+test("a stream that stops sending is dropped and the round asked again", async () => {
+  const stuck = (init) => new Response(new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode(JSON.stringify({ message: { role: "assistant", content: "Ich schaue" }, done: false }) + "\n"));
+      init.signal.addEventListener("abort", () => c.error(init.signal.reason));
+    },
+  }), { status: 200 });
+  const { run, requests, events } = setup([stuck, stream({ tool_calls: [call("submit_result", VALID_SUBMISSION)] })], { stallMs: 40 });
+  const { analysis } = await run();
+  assert.equal(analysis.subject.name, "Martinstor");
+  assert.equal(requests.length, 2);
+  assert.ok(events.some(([t, d]) => t === "warning" && /Versuch 2 von 4/.test(d.message)));
 });

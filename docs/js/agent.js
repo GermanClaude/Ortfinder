@@ -4,6 +4,7 @@ import { haversineKm } from "./geo.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { SUBMIT_TOOL, ToolInputError, buildTools, validateSubmission } from "./tools.js";
 import { compactGemini } from "./compact.js";
+import { MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 export const MODELS = [
@@ -108,9 +109,11 @@ export class GeminiAgent {
   constructor({
     apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
     emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, fallbackModels = [], onModelExhausted = () => {},
-    retryBaseMs = 2000,
+    retryBaseMs = 2000, stallMs = STALL_MS,
   } = {}) {
     this.retryBaseMs = retryBaseMs;
+    this.stallMs = stallMs;
+    this.slowestMs = 0;
     this.apiKey = apiKey;
     this.model = model;
     this.fallbackModels = [...fallbackModels];
@@ -143,18 +146,34 @@ export class GeminiAgent {
       input: compactGemini(input), // earlier rounds' images and long results as short notes
       generation_config: { thinking_level: this.thinkingLevel, thinking_summaries: "auto" },
     };
+    let stalls = 0;
     for (let attempt = 0; ; attempt++) {
       await this.pace();
       let resp;
+      const started = Date.now();
       try {
-        resp = await this.fetch(API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-          body: JSON.stringify({ ...body, tools: buildTools(this.webSearch) }),
-          signal: this.signal,
-        });
+        // The answer is read under the watchdog, too: a body that stops arriving is just as stuck.
+        resp = await watch(async (signal) => {
+          const r = await this.fetch(API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+            body: JSON.stringify({ ...body, tools: buildTools(this.webSearch) }),
+            signal,
+          });
+          return r.ok ? { ok: true, data: await r.json() } : { ok: false, status: r.status, data: await r.json().catch(() => ({})) };
+        }, stallLimit(this.slowestMs, stalls, this.stallMs), this.signal);
       } catch (err) {
         if (err.name === "AbortError") throw err;
+        if (err instanceof StallError) {
+          // No answer at all: ask the same round again (a page in the background waits to be visible first).
+          if (!(await this.waitIfBackground())) {
+            stalls += 1;
+            if (stalls > MAX_STALLS) throw new GeminiError(stallGiveUp(stalls));
+            this.emit("warning", { message: stallNote(err, stalls) });
+          }
+          attempt -= 1;
+          continue;
+        }
         // Browsers cut connections of pages in the background: wait until Ortfinder is visible again.
         if (await this.waitIfBackground()) {
           attempt = -1;
@@ -169,11 +188,11 @@ export class GeminiAgent {
         throw new GeminiError(`Keine Verbindung zur Gemini API (${err.message || err.name}).`);
       }
       if (resp.ok) {
+        this.slowestMs = Math.max(this.slowestMs, Date.now() - started);
         this.usage.requests += 1;
-        return resp.json();
+        return resp.data;
       }
-      const payload = await resp.json().catch(() => ({}));
-      const err = describeHttpError(resp.status, payload);
+      const err = describeHttpError(resp.status, resp.data);
       // Google Search grounding is not part of the free tier. Depending on the case Google reports that as
       // a search/grounding error or simply as 429 "exceeded your current quota", so both switch it off.
       if (this.webSearch && (looksLikeSearchProblem(err) || err.status === 429) && !["API_KEY_INVALID", "DAILY_LIMIT"].includes(err.code)) {

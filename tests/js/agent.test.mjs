@@ -18,7 +18,7 @@ function fakeGemini(responses) {
     assert.equal(url, API_URL);
     requests.push({ at: Date.now(), headers: init.headers, body: JSON.parse(init.body) });
     const next = responses.shift();
-    return typeof next === "function" ? next() : json(200, next);
+    return typeof next === "function" ? next(init) : json(200, next);
   };
   return { fetchImpl, requests };
 }
@@ -320,4 +320,17 @@ test("the background wait is announced when it actually waits", async () => {
   });
   await run();
   assert.ok(events.some(([t, d]) => t === "status" && /im Hintergrund/.test(d.message)));
+});
+
+test("a request without any answer is aborted after the stall limit and sent again", async () => {
+  let aborted = null;
+  const { run, requests, events } = setup([
+    (init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => { aborted = init.signal.reason; reject(init.signal.reason); })),
+    interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
+  ], { webSearch: false, stallMs: 40 });
+  const { analysis } = await run();
+  assert.equal(analysis.subject.name, "Martinstor");
+  assert.equal(requests.length, 2);
+  assert.equal(aborted?.name, "StallError", "the hanging connection was closed");
+  assert.ok(events.some(([t, d]) => t === "warning" && /kein Lebenszeichen/.test(d.message)));
 });
