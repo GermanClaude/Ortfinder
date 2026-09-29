@@ -36,7 +36,16 @@ und zum erkannten Gerät).
 3. Beim allerersten Foto einmalig auf **„Bei Puter anmelden (kostenlos)“** klicken und mit Google, Microsoft,
    Apple oder E-Mail anmelden. Danach läuft die Analyse automatisch weiter; beim nächsten Mal ist man
    schon angemeldet.
-4. Live verfolgen, wohin die KI zoomt und was sie sucht. Ihre Zwischenstände erscheinen sofort auf der
+4. Live verfolgen, wohin die KI zoomt und was sie sucht. Eine Leiste oben (bleibt beim Scrollen sichtbar) zeigt
+   **„Jetzt“** – was gerade läuft (z.B. „sucht den Ort „Bahnhofstraße Freiburg““ oder „Die KI denkt nach
+   (Runde 3/10)“, mit Sekunden) – und **„Als Nächstes“**: den nächsten Schritt, wie ihn die KI selbst in ihrer
+   Notiz beschreibt („Plan der KI“), sonst den typischen Ablauf an dieser Stelle.
+   Jeder Zoom hat im Foto, beim Ausschnitt und im Protokoll dieselbe **Farbe und Nummer**. Ein Tipp auf einen
+   Zoom im Protokoll (oder auf den Ausschnitt) **hebt ihn im Foto hervor**: kräftig, pulsierend, der Rest
+   abgedunkelt; das Foto rollt dazu ins Bild. Nochmal tippen hebt es auf. Der Farbpunkt am Ausschnitt färbt
+   einen Zoom um; unter ⚙ → „🎨 Markierungen im Foto“ gibt es bunt oder eine Farbe für alle, Rahmen oder
+   Kreis und drei Linienstärken.
+   Ihre Zwischenstände erscheinen sofort auf der
    Karte, die von der Weltkarte aus immer weiter heranzoomt. Jede Fehler- oder Störmeldung im Protokoll hat
    ein **„?“**: Es erklärt in einfachen Worten, was los ist, und bietet, wo es eine gibt, die Lösung als Knopf
    an (z.B. „Key prüfen“, „Mit Puter weitermachen“, „Mehr Runden erlauben“, „Noch einmal versuchen“). Bricht
@@ -528,6 +537,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/watchdog.js      fragt neu an, wenn die KI oder ein Werkzeug hängt
   js/estimate.js      Vorab-Schätzung: Schritte je Runde, Tokens, Kosten, freie Limits
   js/explain.js       Erklärungen und Lösungen zu Fehler- und Störmeldungen
+  js/live.js          Leiste „Jetzt / Als Nächstes“ während der Analyse
   js/providers.js     weitere Anbieter mit OpenAI-Schnittstelle (Mistral, Groq, DeepSeek, Qwen, Poe, OpenAI, xAI, eigener)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data), korrigierbar durch exakte Höhen
   js/swiss.js         Schweiz: amtliche Höhen und Höhenprofile von swisstopo, LV95-Koordinaten

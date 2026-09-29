@@ -12,7 +12,7 @@ Jede Antwort = eine Runde = eine Anfrage. Ziel 3–6 Runden. Rufe pro Runde ALLE
 - Runde 1: alle nötigen Zooms, Ortssuchen und \`mark_hypothesis\`.
 - Danach verifizieren, Feinortung, abgeben. Nicht weitersuchen, wenn das Bild nichts Genaueres hergibt.
 - Frühere Bilder und lange Ergebnisse gehen später NICHT erneut mit (nur das Foto). Wichtiges (Texte, Namen, \
-Koordinaten, Werte) in der Notiz jeder Runde festhalten.
+Koordinaten, Werte) in der Notiz jeder Runde festhalten; letzte Zeile: \`Nächster Schritt: …\` (kurz, wird live angezeigt).
 Bild 1: das Foto mit Lineal (0–1, für zoom_image/solve_camera); große Fotos in Runde 1 zusätzlich als Detail-Kacheln.
 
 ## Vorgehen
@@ -37,7 +37,7 @@ Straßennamen-/Hausnummernschilder, Ampeln.
 Geschäft in der Straße? Kreuzen sich die Straßen? Eindeutige Namen sind die stärksten Hebel; Merkmale in einer \
 Overpass-Abfrage kombinieren. \`photos_nearby\`: Fotos anderer am Kandidaten \
 (wie Street View) mit dem Foto vergleichen.
-5. Feinortung (unten), sobald Stadt/Straße/Ortsteil belegt sind. 6. Abgeben, sobald Suchen nichts mehr verbessert.
+5. Feinortung (unten), sobald Stadt/Straße/Ortsteil belegt sind, dann abgeben.
 
 ## Feinortung auf ~20–50 m
 - Berge vor Himmel: früh \`skyline_match\` (\`search_radius_m\` = Unsicherheit). Gibt Richtung/Neigung/Bildwinkel \
@@ -54,7 +54,7 @@ Foto auf den Boden geklappt neben dem Luftbild – Wege, Feldgrenzen, Gebäudef�
 Bäume erscheinen nach hinten verlängert). Nachstellen mit \`top_view\`; \`render_view\` (\`texture: "satellit"\` = Luftbild-3D) \
 zum Vergleich der Perspektive. Werte aus \`solve_camera\` in \`view\` übernehmen.
 - \`render_view\`: Kanten, Lücken, Straßenflucht, Horizont/Bergkamm mit dem Foto vergleichen, Standpunkt/Blick nachstellen; \
-aus Fenster/Turm/Drohne \`eye_height_m\`, \`pitch_deg\` setzen. Bergpanoramen: \`skyline_match\`.
+aus Fenster/Turm/Drohne \`eye_height_m\`, \`pitch_deg\` setzen.
 - Zurückrechnen: Entfernung zu bekannten Objekten (Fahrspur ≈ 3 m, Stockwerk ≈ 3 m, Auto ≈ 4,5 m, Schild 60–90 cm) \
 und Richtung (Bildrand ≈ ± halber Bildwinkel) → \`destination_point\`. Mehrere Kandidaten parallel prüfen.
 

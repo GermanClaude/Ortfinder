@@ -96,23 +96,57 @@ a { color: var(--accent); }
   position: absolute; border: 2px solid var(--accent); border-radius: 3px;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5); transition: opacity .15s, border-width .15s;
 }
-.box.zoom { border: 1.5px dashed var(--zoom); opacity: 0.8; }
+.box.zoom { --c: var(--zoom); border: var(--mark-w, 2.5px) dashed var(--c); opacity: 0.85; }
+.overlay.round .box.zoom { border-radius: 50%; }
 .box.clue.stark { border-color: #ff4d6d; }
 .box.clue.mittel { border-color: #ffb020; }
 .box.clue.schwach { border-color: #9aa5b1; }
-.box .tag {
+.box .tag, .mark-preview .tag {
   position: absolute; top: -1px; left: -1px; transform: translateY(-100%);
   background: rgba(0, 0, 0, 0.75); color: #fff; font-size: 11px; line-height: 1.4; padding: 0 4px; border-radius: 3px 3px 0 0;
   white-space: nowrap;
 }
 .overlay.focus .box { opacity: 0.15; }
 .overlay.focus .box.active { opacity: 1; border-width: 3px; }
+/* Zoom markers: number tag in the zoom's color; inside the frame when it touches the top edge; centered on circles. */
+.box.zoom .tag, .mark-preview .tag { background: var(--c); color: var(--on, #111); font-weight: 600; }
+.box.zoom.tag-inside .tag { transform: none; top: 0; left: 0; border-radius: 0 0 3px 0; }
+.overlay.round .box.zoom .tag { left: 50%; transform: translate(-50%, -100%); border-radius: 3px; }
+.overlay.round .box.zoom.tag-inside .tag { top: 50%; transform: translate(-50%, -50%); }
+/* The zoom tapped in the log or below the photo: solid, thicker, pulsing, the rest of the photo dimmed. */
+.overlay.zoomfocus .box { opacity: 0.2; }
+.overlay.zoomfocus .box.zoom.active {
+  opacity: 1; z-index: 2; border-style: solid; border-width: calc(var(--mark-w, 2.5px) + 1.5px);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55), 0 0 0 9999px rgba(0, 0, 0, 0.38);
+  animation: zoom-pulse 1.1s ease-in-out 3;
+}
+@keyframes zoom-pulse {
+  50% { box-shadow: 0 0 0 7px var(--c), 0 0 0 9999px rgba(0, 0, 0, 0.38); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .overlay.zoomfocus .box.zoom.active { animation: none; }
+}
 
 .zooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
 .zooms figure { margin: 0; }
 .zooms img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
 .zooms figcaption { font-size: 0.72rem; color: var(--muted); line-height: 1.3; margin-top: 3px; }
 .zooms figure.mapview img { border: 2px solid #7a4cc2; }
+.zooms figure.zoom-fig { cursor: pointer; border-radius: 9px; }
+.zooms .fig-wrap { position: relative; }
+.zooms figure.zoom-fig img { border: 2px solid var(--c, var(--border)); transition: box-shadow .15s; }
+.zooms figure.zoom-fig.active img { box-shadow: 0 0 0 3px var(--c); }
+.zooms figure.zoom-fig.active figcaption { color: var(--text); font-weight: 600; }
+.zoom-badge {
+  position: absolute; top: 4px; left: 4px; background: var(--c); color: var(--on, #111);
+  font-size: 11px; font-weight: 700; line-height: 1.5; padding: 0 5px; border-radius: 4px;
+}
+.swatch {
+  position: absolute; top: 3px; right: 3px; width: 26px; height: 26px; border-radius: 50%; overflow: hidden; cursor: pointer;
+  background: var(--c); border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+.swatch-input { display: block; width: 100%; height: 100%; opacity: 0; border: 0; padding: 0; cursor: pointer; }
+.zooms figure.zoom-fig:focus-visible, .log li.zoom-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .zooms figure.render img { border-color: #0b7285; object-fit: contain; background: #dde7f0; }
 
 .pending-wrap p { margin: 8px 0 0; }
@@ -140,6 +174,29 @@ table.peaks td:nth-child(n+2) { white-space: nowrap; }
   border: 2px solid var(--border); border-top-color: var(--accent); animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* While an analysis runs: what happens now and roughly what comes next, kept in view while scrolling. */
+.live {
+  position: sticky; top: 8px; z-index: 1100; display: grid; gap: 4px; margin: 0 0 14px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 10px; font-size: 0.86rem;
+  background: var(--card); background: color-mix(in srgb, var(--card) 90%, transparent);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(16, 24, 40, 0.12);
+}
+.live-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.live-spin {
+  flex: none; width: 12px; height: 12px; align-self: center; border-radius: 50%;
+  border: 2px solid var(--accent-soft); border-top-color: var(--accent); animation: spin 0.9s linear infinite;
+}
+.live-arrow { flex: none; width: 12px; color: var(--accent); text-align: center; }
+.live-label { font-weight: 700; white-space: nowrap; }
+.live-text {
+  flex: 1 1 14em; min-width: 0; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.live-since { font-size: 0.78rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.live-source { font-size: 0.72rem; padding: 0 7px; border-radius: 999px; white-space: nowrap; background: var(--accent-soft); color: var(--accent); }
+.live-source.typisch { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .live-spin { animation-duration: 3s; } }
 
 .answer { font-size: 1.15rem; font-weight: 600; margin: 0 0 4px; }
 .coords { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; color: var(--muted); }
@@ -172,6 +229,13 @@ summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
 .log .thinking .body { color: var(--muted); font-style: italic; }
 .log .step .body { font-weight: 600; }
 .log code { font-size: 0.8rem; }
+.log li.zoom-link { cursor: pointer; border-radius: 6px; }
+.log li.zoom-link:hover .body { text-decoration: underline dotted; text-underline-offset: 3px; }
+.log li.zoom-link.active { background: var(--accent-soft); background: color-mix(in srgb, var(--c) 20%, transparent); box-shadow: inset 3px 0 0 var(--c); }
+.zoom-dot {
+  display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%;
+  background: var(--c, var(--zoom)); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
 
 footer { max-width: 1280px; margin: 0 auto; padding: 8px 16px 32px; color: var(--muted); font-size: 0.8rem; }
 
@@ -332,6 +396,16 @@ code.copy.copied::after { content: " ✔ kopiert"; color: var(--good); font-fami
 .ollama-box summary { cursor: pointer; font-weight: 600; }
 .ollama-box ol { margin: 6px 0; padding-left: 20px; }
 .ollama-box code { word-break: break-all; }
+.mark-preview {
+  display: flex; gap: 16px; margin: 12px 0 8px; padding: 24px 14px 14px; border-radius: 8px;
+  background: linear-gradient(160deg, #4f6d80, #8ea38a 55%, #cfc4a6);
+}
+.mark-preview .sample {
+  position: relative; width: 64px; height: 44px; border: var(--mark-w, 2.5px) dashed var(--c); border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+.mark-preview.round .sample { border-radius: 50%; }
+.mark-preview.round .tag { left: 50%; transform: translate(-50%, -100%); border-radius: 3px; }
 .row.nowrap { flex-wrap: nowrap; }
 .row.nowrap select { flex: 1; min-width: 0; }
 .qr { margin: 10px 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
