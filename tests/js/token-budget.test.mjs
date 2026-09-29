@@ -8,8 +8,8 @@ import { ROUNDS_NOW, fakeJpeg, measureAll } from "./token-scenario.mjs";
 // every round, every earlier image and result resent, long prompt and tool descriptions).
 const BEFORE = { gemini: 225491, puter: 234871, openrouter: 244449, ollama: 210104, claude_billed: 71003 };
 
-// The goal was at least 50 % fewer tokens. The diet reached 60 %; later features (AI sharpening, the top view from
-// the photo alone) cost about one percent of that margin in their tool descriptions, so the guard stands at 58 %.
+// The goal was at least 50 % fewer tokens. The diet reached 60 %; the top view from the photo alone (top_view
+// without a standpoint) costs about half a percent of that margin in its tool description, so the guard stands at 58 %.
 const MIN_SAVED = 0.58;
 
 test("a typical analysis uses at least 58 % fewer tokens than before (Claude: cheaper through its cache)", async () => {

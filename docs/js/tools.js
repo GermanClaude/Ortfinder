@@ -34,10 +34,7 @@ export const FUNCTION_TOOLS = [
       "Koordinaten 0-1 wie das Lineal (0 = links/oben). Mehrere parallel.",
     parameters: obj({
       x_min: NUM, y_min: NUM, x_max: NUM, y_max: NUM,
-      enhance: { type: "boolean", description: "Kontrast/Schärfe anheben" },
       purpose: { type: "string", description: "was du erkennen willst" },
-      ki_schaerfen: { type: "string", description: "nur wenn sicher, was es zeigt: das nennen → KI-Schärfung" },
-      sicherheit: { type: "number", description: "0-1, ab 0,9" },
     }, ["x_min", "y_min", "x_max", "y_max", "purpose"]),
   },
   {
@@ -248,8 +245,27 @@ export const FUNCTION_TOOLS = [
   },
 ];
 
-export function buildTools(webSearch) {
-  return webSearch ? [...FUNCTION_TOOLS, { type: "google_search" }] : [...FUNCTION_TOOLS];
+/**
+ * The tools of an analysis. Zoom crops are only enlarged, never edited; AI sharpening (opt-in, it can invent
+ * details and costs time) adds its two fields to zoom_image only when switched on.
+ */
+export function toolsFor({ aiSharpen = false } = {}) {
+  if (!aiSharpen) return FUNCTION_TOOLS;
+  return FUNCTION_TOOLS.map((t) => (t.name !== "zoom_image" ? t : {
+    ...t,
+    parameters: {
+      ...t.parameters,
+      properties: {
+        ...t.parameters.properties,
+        ki_schaerfen: { type: "string", description: "nur wenn sicher, was es zeigt: das nennen → KI-Schärfung (kann Details erfinden)" },
+        sicherheit: { type: "number", description: "0-1, ab 0,9" },
+      },
+    },
+  }));
+}
+
+export function buildTools(webSearch, tools = FUNCTION_TOOLS) {
+  return webSearch ? [...tools, { type: "google_search" }] : [...tools];
 }
 
 export class ToolInputError extends Error {}
@@ -371,7 +387,7 @@ function parseUtc(value) {
 }
 
 /**
- * Runs client-side tools. `zoom(box, enhance)` must return
+ * Runs client-side tools. `zoom(box, ai)` must return
  * { data (base64 JPEG), width, height, sourceWidth, sourceHeight, thumbnail (data URL) }.
  */
 export class ToolExecutor {
@@ -449,7 +465,8 @@ export class ToolExecutor {
     const what = String(args.ki_schaerfen || "").trim().slice(0, 200);
     const certainty = Number(args.sicherheit);
     const wantsAi = what !== "" && certainty >= MIN_CERTAINTY;
-    const crop = await this.zoom(box, Boolean(args.enhance), wantsAi ? { what, certainty } : null);
+    // Only enlarged, never edited – unless AI sharpening is switched on and the AI is sure (see toolsFor).
+    const crop = await this.zoom(box, wantsAi ? { what, certainty } : null);
     this.zoomCount += 1;
     const sharpened = Boolean(crop.ai?.applied);
     this.emit("zoom", {

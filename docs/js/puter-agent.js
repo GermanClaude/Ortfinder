@@ -78,7 +78,8 @@ const sleep = (ms, signal) =>
   });
 
 /** Our tool declarations in the OpenAI "function" format Puter expects. */
-export const OPENAI_TOOLS = FUNCTION_TOOLS.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } }));
+export const toOpenAITools = (tools) => tools.map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } }));
+export const OPENAI_TOOLS = toOpenAITools(FUNCTION_TOOLS);
 
 /** Convert our content blocks (text / base64 image) to OpenAI message parts. */
 function toParts(blocks) {
@@ -148,7 +149,9 @@ export class PuterAgent {
   constructor({
     model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
     describeError = describePuterError, stallMs = null, fallbackModels = [], backAfterMs = BACK_AFTER_MS, streaming = false,
+    tools = FUNCTION_TOOLS,
   } = {}) {
+    this.tools = tools === FUNCTION_TOOLS ? OPENAI_TOOLS : toOpenAITools(tools);
     // A streaming chat function shows every piece as it comes (alive), so only real silence counts as stuck.
     this.streaming = streaming;
     this.model = model;
@@ -186,7 +189,7 @@ export class PuterAgent {
         // puter.ai.chat has no abort option: after a cancel or a stall its late answer is ignored.
         // Earlier rounds' images and long results go as short notes (see compact.js).
         const response = await watch(
-          (signal, alive) => this.chat(compactOpenAI(messages), { model: this.model, tools: OPENAI_TOOLS, normalize: true }, signal, alive),
+          (signal, alive) => this.chat(compactOpenAI(messages), { model: this.model, tools: this.tools, normalize: true }, signal, alive),
           stallLimit(this.streaming ? 0 : this.slowestMs, stalls, this.stallMs), this.signal);
         this.slowestMs = Math.max(this.slowestMs, Date.now() - started);
         this.usage.requests += 1;

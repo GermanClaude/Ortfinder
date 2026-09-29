@@ -101,9 +101,10 @@ const sleep = (ms, signal) =>
   });
 
 /** Our tool declarations in the Claude format; inputs stream as they are written (validated before use). */
-export const CLAUDE_TOOLS = FUNCTION_TOOLS.map(({ name, description, parameters }) => ({
+export const toClaudeTools = (tools) => tools.map(({ name, description, parameters }) => ({
   name, description, input_schema: parameters, eager_input_streaming: true,
 }));
+export const CLAUDE_TOOLS = toClaudeTools(FUNCTION_TOOLS);
 
 /** Convert our content blocks (text / base64 image) to Claude content blocks. */
 export function toClaudeBlocks(blocks) {
@@ -137,8 +138,9 @@ export class ClaudeAgent {
    */
   constructor({
     apiKey = "", model = CLAUDE_DEFAULT_MODEL, maxSteps = 10, client = null, fetch = undefined,
-    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, stallMs = 120000,
+    emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, stallMs = 120000, tools = FUNCTION_TOOLS,
   } = {}) {
+    this.tools = tools === FUNCTION_TOOLS ? CLAUDE_TOOLS : toClaudeTools(tools);
     this.apiKey = apiKey;
     // The stream carries thinking summaries, text and tool input as they are written; a long silence means stuck.
     this.stallMs = stallMs;
@@ -171,7 +173,7 @@ export class ClaudeAgent {
       thinking: haiku ? { type: "enabled", budget_tokens: 8000 } : { type: "adaptive", display: "summarized" },
       cache_control: { type: "ephemeral" }, // each round re-reads the growing conversation from the cache
       system: SYSTEM_PROMPT,
-      tools: CLAUDE_TOOLS,
+      tools: this.tools,
       messages,
     };
   }

@@ -2,7 +2,7 @@
 
 import { haversineKm } from "./geo.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
-import { SUBMIT_TOOL, ToolInputError, buildTools, validateSubmission } from "./tools.js";
+import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, buildTools, validateSubmission } from "./tools.js";
 import { compactGemini, splitTiles } from "./compact.js";
 import { MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
@@ -152,8 +152,9 @@ export class GeminiAgent {
   constructor({
     apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
     emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, fallbackModels = [], onModelExhausted = () => {},
-    retryBaseMs = 2000, stallMs = STALL_MS, backAfterMs = BACK_AFTER_MS,
+    retryBaseMs = 2000, stallMs = STALL_MS, backAfterMs = BACK_AFTER_MS, tools = FUNCTION_TOOLS,
   } = {}) {
+    this.tools = tools;
     this.backAfterMs = backAfterMs;
     this.retryBaseMs = retryBaseMs;
     this.stallMs = stallMs;
@@ -202,7 +203,7 @@ export class GeminiAgent {
           const r = await this.fetch(API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-            body: JSON.stringify({ ...body, tools: buildTools(this.webSearch) }),
+            body: JSON.stringify({ ...body, tools: buildTools(this.webSearch, this.tools) }),
             signal,
           });
           return r.ok ? { ok: true, data: await r.json() } : { ok: false, status: r.status, data: await r.json().catch(() => ({})) };
