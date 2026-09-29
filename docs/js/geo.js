@@ -165,11 +165,21 @@ export function summarizeOverpass(data) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** A signal that ends a request after ms (older browsers: none). */
+export const timeoutSignal = (ms) => (typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
+// A server that neither answers nor fails would otherwise hold a tool (e.g. the 3D view) for good.
+const NOMINATIM_TIMEOUT_MS = 15000;
+const OVERPASS_TIMEOUT_MS = 30000; // the queries ask the server for at most 25 s
+const OVERPASS_BUDGET_MS = 60000; // all servers together
 
 /** Polite client for the public Nominatim and Overpass services (rate limited + cached). */
 export class OSMClient {
-  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), nominatimUrl = "https://nominatim.openstreetmap.org", overpassUrls = DEFAULT_OVERPASS, minIntervalMs = 1050 } = {}) {
+  constructor({
+    fetchImpl = globalThis.fetch.bind(globalThis), nominatimUrl = "https://nominatim.openstreetmap.org", overpassUrls = DEFAULT_OVERPASS, minIntervalMs = 1050,
+    nominatimTimeoutMs = NOMINATIM_TIMEOUT_MS, overpassTimeoutMs = OVERPASS_TIMEOUT_MS, overpassBudgetMs = OVERPASS_BUDGET_MS,
+  } = {}) {
     this.fetch = fetchImpl;
+    this.timeouts = { nominatim: nominatimTimeoutMs, overpass: overpassTimeoutMs, budget: overpassBudgetMs };
     this.nominatimUrl = nominatimUrl.replace(/\/$/, "");
     this.overpassUrls = overpassUrls;
     this.minIntervalMs = minIntervalMs;
@@ -187,7 +197,7 @@ export class OSMClient {
       const wait = this.minIntervalMs - (Date.now() - this.lastNominatim);
       if (wait > 0) await sleep(wait);
       try {
-        return await this.fetch(url);
+        return await this.fetch(url, { signal: timeoutSignal(this.timeouts.nominatim) });
       } finally {
         this.lastNominatim = Date.now();
       }
@@ -284,17 +294,29 @@ export class OSMClient {
     const key = "overpass:" + q;
     if (this.cache.has(key)) return this.cache.get(key);
     const problems = [];
+    const started = Date.now();
     for (const url of this.overpassUrls) {
+      const left = this.timeouts.budget - (Date.now() - started);
+      if (left < Math.min(5000, this.timeouts.overpass)) {
+        problems.push("keine Zeit mehr für weitere Server");
+        break;
+      }
+      const ms = Math.min(this.timeouts.overpass, left);
       let resp;
+      let data;
       try {
-        // Form-encoded POST is a "simple" CORS request, so no preflight is needed.
+        // Form-encoded POST is a "simple" CORS request, so no preflight is needed. The time limit covers the
+        // whole answer (a server that stalls mid-answer is just as stuck).
+        const signal = timeoutSignal(ms);
         resp = await this.fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ data: q }).toString(),
+          signal,
         });
+        if (resp.ok) data = await resp.json().catch((err) => (err?.name === "TimeoutError" || err?.name === "AbortError" ? Promise.reject(err) : undefined));
       } catch (err) {
-        problems.push(`nicht erreichbar (${err.name || "Netzwerkfehler"})`);
+        problems.push(err?.name === "TimeoutError" || err?.name === "AbortError" ? `keine Antwort nach ${Math.round(ms / 1000)} s` : `nicht erreichbar (${err.name || "Netzwerkfehler"})`);
         continue;
       }
       if ([429, 502, 503, 504].includes(resp.status)) {
@@ -309,12 +331,7 @@ export class OSMClient {
         problems.push(`HTTP ${resp.status}`);
         continue;
       }
-      let data;
-      try {
-        data = await resp.json();
-      } catch {
-        throw new OSMError("Overpass lieferte kein JSON - fehlt [out:json]?");
-      }
+      if (data === undefined) throw new OSMError("Overpass lieferte kein JSON - fehlt [out:json]?");
       this.cache.set(key, data);
       return data;
     }

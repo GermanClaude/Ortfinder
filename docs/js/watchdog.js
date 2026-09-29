@@ -2,8 +2,13 @@
 // that now and then) would otherwise stall an analysis for good. After a while without any sign of life
 // the request is dropped and the same round is asked again.
 
-/** Time without an answer after which a request counts as stuck (Puter, OpenRouter, Gemini). */
-export const STALL_MS = 50000;
+/**
+ * Time without an answer after which a request counts as stuck, for services that send the whole answer at
+ * once (Puter, OpenRouter, Gemini): they cannot tell "still thinking" from "stuck", so this is generous.
+ */
+export const STALL_MS = 90000;
+/** Time without any new data for streamed answers (they show every piece, so silence really means stuck). */
+export const IDLE_MS = 50000;
 /** Retries of one round after a stall; each one waits a little longer. */
 export const MAX_STALLS = 3;
 
@@ -53,11 +58,11 @@ export function watch(start, ms, outer = null) {
 }
 
 /**
- * Time allowed for the next answer: the base (50 s), more when earlier answers of this analysis already
- * took long (a slow model is not stuck), and one base more for every retry of the same round.
+ * Time allowed for the next answer: the base, twice the slowest answer of this analysis when that is more
+ * (a slow model is not stuck), and half a base more for every retry of the same round.
  */
 export function stallLimit(slowestMs, stalls, base = STALL_MS) {
-  return Math.max(base, 1.5 * slowestMs) + stalls * base;
+  return Math.max(base, 2 * slowestMs) + (stalls * base) / 2;
 }
 
 export const stallNote = (err, stalls, max = MAX_STALLS) =>

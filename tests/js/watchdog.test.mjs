@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MAX_STALLS, STALL_MS, StallError, stallLimit, stallNote, watch } from "../../docs/js/watchdog.js";
+import { IDLE_MS, MAX_STALLS, STALL_MS, StallError, stallLimit, stallNote, watch } from "../../docs/js/watchdog.js";
 
 const later = (ms, value) => new Promise((r) => setTimeout(() => r(value), ms));
 
@@ -44,12 +44,14 @@ test("cancelling the analysis ends the wait at once, even for requests that cann
   await assert.rejects(watch(() => later(10), 5000, outer.signal), (err) => err.name === "AbortError", "already cancelled");
 });
 
-test("limits: 50 s, longer for slow models and for every retry", () => {
-  assert.equal(STALL_MS, 50000);
-  assert.equal(stallLimit(0, 0), 50000);
-  assert.equal(stallLimit(20000, 0), 50000);
-  assert.equal(stallLimit(60000, 0), 90000, "a model that needed 60 s before gets 90 s");
-  assert.equal(stallLimit(0, 2), 150000);
+test("limits: 90 s for whole answers (more for slow models and retries), 50 s of silence for streams", () => {
+  assert.equal(STALL_MS, 90000);
+  assert.equal(IDLE_MS, 50000);
+  assert.equal(stallLimit(0, 0), 90000);
+  assert.equal(stallLimit(30000, 0), 90000);
+  assert.equal(stallLimit(60000, 0), 120000, "a model that needed 60 s before gets 120 s");
+  assert.equal(stallLimit(0, 2), 180000);
+  assert.equal(stallLimit(0, 1, IDLE_MS), 75000);
   assert.equal(MAX_STALLS, 3);
-  assert.equal(stallNote(new StallError(50000), 1), "Die KI gibt seit 50 s kein Lebenszeichen – Ortfinder fragt dieselbe Runde neu an (Versuch 2 von 4) …");
+  assert.equal(stallNote(new StallError(90000), 1), "Die KI gibt seit 90 s kein Lebenszeichen – Ortfinder fragt dieselbe Runde neu an (Versuch 2 von 4) …");
 });

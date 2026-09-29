@@ -9,6 +9,7 @@ import { levenbergMarquardt, solveLinear } from "./resection.js";
 import { makeCamera, parseLength } from "./scene3d.js";
 import { worldPixel } from "./mapview.js";
 import { learnSwissHeights } from "./swiss.js";
+import { timeoutSignal } from "./geo.js";
 
 const DEG = Math.PI / 180;
 const WGS_A = 6378137;
@@ -1317,7 +1318,7 @@ export async function loadPeaks({ osm, fetchImpl = globalThis.fetch?.bind(global
       const lats = poly.map((p) => p[0]);
       const lons = poly.map((p) => p[1]);
       const q = wikidataPeakQuery(Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons));
-      const resp = await fetchImpl(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(q)}`, { headers: { Accept: "application/sparql-results+json" } });
+      const resp = await fetchImpl(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(q)}`, { headers: { Accept: "application/sparql-results+json" }, signal: timeoutSignal(25000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       return { peaks: parseWikidataPeaks(await resp.json()), source: "Wikidata", note: problems.join(" ") };
     } catch (err) {

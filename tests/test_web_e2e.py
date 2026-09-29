@@ -868,7 +868,18 @@ def test_more_providers_grouped_by_cost_and_deepseek_with_own_key(browser, site_
             route.fulfill(status=200, headers=cors, body="")
             return
         requests.append({"url": route.request.url, "headers": route.request.headers, "body": json.loads(route.request.post_data)})
-        route.fulfill(status=200, content_type="application/json", headers=cors, body=json.dumps(script.pop(0)))
+        # Streamed like the real service: keep-alive comment, the answer in pieces (tool arguments split), [DONE].
+        answer = script.pop(0)
+        message = answer["choices"][0]["message"]
+        chunks = [": keep-alive", {"choices": [{"delta": {"role": "assistant", "reasoning_content": message.get("reasoning_content", "")}}]}]
+        for i, call in enumerate(message["tool_calls"]):
+            args = call["function"]["arguments"]
+            chunks.append({"choices": [{"delta": {"tool_calls": [{"index": i, "id": call["id"], "type": "function", "function": {"name": call["function"]["name"], "arguments": args[:10]}}]}}]})
+            chunks.append({"choices": [{"delta": {"tool_calls": [{"index": i, "function": {"arguments": args[10:]}}]}}]})
+        chunks.append({"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": answer["usage"]})
+        chunks.append("[DONE]")
+        body = "".join(f"{c}\n\n" if c == ": keep-alive" else f"data: {c if isinstance(c, str) else json.dumps(c)}\n\n" for c in chunks)
+        route.fulfill(status=200, content_type="text/event-stream", headers=cors, body=body)
 
     page.route("https://api.deepseek.com/**", deepseek)
     page.goto(site_url)
@@ -899,11 +910,12 @@ def test_more_providers_grouped_by_cost_and_deepseek_with_own_key(browser, site_
     page.wait_for_selector(".answer", timeout=30000)
     assert page.locator(".answer").first.text_content() == "Bahnhofstraße, Freiburg"
     assert "deepseek-flash (DeepSeek)" in page.text_content("#result")
+    assert "Schild unten rechts." in page.text_content("#log"), "DeepSeek's thinking is shown"
     assert len(requests) == 2
     first = requests[0]
     assert first["url"] == "https://api.deepseek.com/chat/completions"
     assert first["headers"]["authorization"] == "Bearer sk-deepseek-test"
-    assert first["body"]["model"] == "deepseek-flash" and len(first["body"]["tools"]) == 18
+    assert first["body"]["model"] == "deepseek-flash" and first["body"]["stream"] is True and len(first["body"]["tools"]) == 18
     assert first["body"]["messages"][1]["content"][1]["type"] == "image_url"
     second = requests[1]["body"]["messages"]
     # The answer goes back with the common fields only, plus DeepSeek's own thinking.

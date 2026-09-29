@@ -210,19 +210,73 @@ const errorText = (data) => {
 };
 
 /**
- * A chat function for the OpenAI-style agent: → { message, finish_reason, usage }. callSignal (from the
- * agent's watchdog) also ends a request that hangs.
+ * Put a streamed answer (server-sent events, OpenAI style) back together: text, thinking and tool calls
+ * arrive in pieces; alive() is called for every piece, so a long answer never looks stuck.
+ */
+export async function readChatStream(resp, alive = () => {}) {
+  const message = { role: "assistant", content: "" };
+  const calls = [];
+  let finish = null;
+  let usage;
+  const handle = (line) => {
+    if (!line.startsWith("data:")) return; // comments (": keep-alive"), event names, blank lines
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    const chunk = JSON.parse(payload);
+    if (chunk.error) throw new CompatHttpError(Number(chunk.error.code) || 500, errorText(chunk) || "Fehler im Datenstrom");
+    usage = chunk.usage ?? chunk.x_groq?.usage ?? usage;
+    const choice = chunk.choices?.[0];
+    if (!choice) return;
+    const d = choice.delta || choice.message || {};
+    if (typeof d.content === "string") message.content += d.content;
+    for (const k of ["reasoning_content", "reasoning"]) if (typeof d[k] === "string") message[k] = (message[k] || "") + d[k];
+    for (const tc of d.tool_calls || []) {
+      // Pieces of one call share its index; a service without indexes sends each call whole.
+      const i = Number.isInteger(tc.index) ? tc.index : tc.id || !calls.length ? calls.length : calls.length - 1;
+      const slot = (calls[i] ||= { id: "", type: "function", function: { name: "", arguments: "" } });
+      if (tc.id) slot.id = tc.id;
+      if (tc.function?.name) slot.function.name += tc.function.name;
+      const args = tc.function?.arguments;
+      if (args != null) slot.function.arguments += typeof args === "string" ? args : JSON.stringify(args);
+    }
+    if (choice.finish_reason) finish = choice.finish_reason;
+  };
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    alive();
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) handle(line.trim());
+  }
+  handle((buffer + decoder.decode()).trim());
+  const toolCalls = calls.filter(Boolean);
+  if (toolCalls.length) message.tool_calls = toolCalls;
+  if (!message.content && !toolCalls.length && !message.reasoning_content && !message.reasoning) throw new CompatHttpError(502, "leere Antwort");
+  return { message, finish_reason: finish, usage };
+}
+
+/**
+ * A chat function for the OpenAI-style agent: → { message, finish_reason, usage }. The answer is streamed,
+ * so the agent's watchdog (callSignal, alive) sees every piece and only real silence counts as stuck; a
+ * service that answers in one piece anyway is read as usual.
  */
 export function compatChat({ baseUrl, key, fetchImpl = globalThis.fetch.bind(globalThis), signal, maxImages = 0, keep = [] }) {
-  return async (messages, { model, tools }, callSignal = null) => {
+  return async (messages, { model, tools }, callSignal = null, alive = () => {}) => {
     let body = cleanMessages(messages, keep);
     if (maxImages) body = limitImages(body, maxImages);
     const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: body, tools, tool_choice: "auto" }),
+      body: JSON.stringify({ model, messages: body, tools, tool_choice: "auto", stream: true }),
       signal: callSignal ?? signal,
     });
+    const streamed = resp.ok && resp.body?.getReader && /event-stream/.test(resp.headers?.get?.("content-type") || "");
+    if (streamed) return readChatStream(resp, alive);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.error) {
       const wait = Number(resp.headers?.get?.("retry-after"));
