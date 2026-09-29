@@ -701,6 +701,8 @@ function resetWorkspace() {
   state.coneLayer = null;
   state.topLayer = null;
   state.skyline = null;
+  state.viewer?.dispose();
+  state.viewer = null;
   initMap();
   state.layer?.clearLayers();
   state.hypoLayer?.clearLayers();
@@ -1573,8 +1575,76 @@ async function refineView(r) {
   }
 }
 
+/**
+ * The photo as a 3D model (model3d.js, three.js loaded on demand): terrain and buildings with the photo
+ * projected on from the camera, aerial image elsewhere; views as the photo, oblique, from above, and the
+ * flight from side view to top view.
+ */
+function modelSlot(slot, v) {
+  if (!state.imageSource || !v) {
+    slot.remove();
+    return;
+  }
+  const token = state.resultToken;
+  const open = el("button", { type: "button", class: "ghost small-btn" }, "🧊 Foto als 3D-Modell ansehen (Seitenansicht → Draufsicht)");
+  open.addEventListener("click", async () => {
+    open.disabled = true;
+    const status = el("p", { class: "small muted" }, "3D-Modell wird gebaut …");
+    slot.replaceChildren(el("p", { class: "label" }, "🧊 Foto als 3D-Modell"), status);
+    try {
+      const { buildPhotoModel, openModelViewer } = await import("./model3d.js");
+      const model = await buildPhotoModel({
+        bitmap: state.imageSource, terrain, osm, onStatus: (t) => { status.textContent = t; },
+        pose: { lat: v.lat, lon: v.lon, bearingDeg: v.bearingDeg, fovDeg: v.fovDeg, pitchDeg: v.pitchDeg, rollDeg: v.rollDeg, eyeHeight: v.eyeHeight },
+      });
+      if (token !== state.resultToken) return;
+      const box = el("div", { class: "model3d" });
+      slot.append(box);
+      const viewer = await openModelViewer(box, model);
+      state.viewer?.dispose();
+      state.viewer = viewer;
+      const button = (label, fn) => {
+        const b = el("button", { type: "button", class: "ghost small-btn" }, label);
+        b.addEventListener("click", fn);
+        return b;
+      };
+      const opacity = el("input", { type: "range", min: "0", max: "100", value: "100", "aria-label": "Foto-Überzug" });
+      opacity.addEventListener("input", () => { viewer.photoOpacity = opacity.value / 100; });
+      const houses = el("input", { type: "checkbox", checked: true });
+      houses.addEventListener("change", () => { viewer.buildings = houses.checked; });
+      const aerial = el("input", { type: "checkbox", checked: true });
+      aerial.addEventListener("change", () => { viewer.aerial = aerial.checked; });
+      const s = viewer.stats;
+      status.textContent = `Gelände bis ${formatKm(s.radius_m / 1000)} rund um den Standpunkt, ${s.buildings} Gebäude aus OSM, Luftbild von Esri. ` +
+        "Ziehen = drehen, zwei Finger/Mausrad = zoomen, Rechtsklick/zwei Finger ziehen = verschieben.";
+      slot.append(
+        el("div", { class: "compare-slider wrap" },
+          button("▶ Seitenansicht → Draufsicht", () => viewer.fly("photo", "top")),
+          button("📷 Wie das Foto", () => viewer.show("photo")),
+          button("↗ Schräg", () => viewer.show("oblique")),
+          button("⬇ Draufsicht", () => viewer.show("top"))),
+        el("div", { class: "compare-slider wrap" },
+          el("span", { class: "small" }, "Luftbild"), opacity, el("span", { class: "small" }, "Foto"),
+          el("label", { class: "check small" }, houses, " Gebäude"),
+          el("label", { class: "check small" }, aerial, " Luftbild")),
+        el("p", { class: "small muted" },
+          "Das Foto ist vom Standpunkt aus auf Gelände und Gebäude projiziert – überall, wo die Kamera hinsah; der Rest zeigt das Luftbild. " +
+          "Von oben ist das die Draufsicht. Liegen Wege, Felder und Dächer des Fotos auf denen des Luftbilds (Regler hin und her schieben), " +
+          "stimmen Standpunkt und Blick; rutschen sie weg, ist die Pose daneben. Gebäude sind einfache Klötze, das Gelände ein Modell – " +
+          "Hauswände und Bäume werden deshalb verzerrt dargestellt."),
+      );
+      viewer.fly("photo", "top");
+    } catch (err) {
+      if (token === state.resultToken) slot.replaceChildren(el("p", { class: "small muted" }, `3D-Modell nicht möglich (${err.message}).`));
+    }
+  });
+  slot.replaceChildren(open);
+}
+
 /** The skyline section: the AI's latest mountain match, or a button to run one for this result. */
 function refineSkyline(r) {
+  const mslot = $("#model-slot");
+  if (mslot) modelSlot(mslot, bestView(r));
   const slot = $("#skyline-slot");
   if (!slot) return;
   if (state.skyline?.match?.ok) showSkyline(slot, state.skyline.match, state.skyline.bitmap);
@@ -1975,6 +2045,7 @@ function renderResult(r) {
       box.append(
         el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")),
         el("div", { id: "topview-slot" }, el("p", { class: "small muted" }, "Draufsicht wird berechnet …")),
+        el("div", { id: "model-slot" }),
         el("div", { id: "skyline-slot" }),
       );
       refineView(r);
@@ -2006,6 +2077,7 @@ function renderResult(r) {
     el("p", { class: "summary" }, a.summary),
     bestView(r) ? el("div", { id: "compare-slot" }, el("p", { class: "small muted" }, "3D-Nachbau wird berechnet …")) : null,
     bestView(r) ? el("div", { id: "topview-slot" }, el("p", { class: "small muted" }, "Draufsicht wird berechnet …")) : null,
+    bestView(r) ? el("div", { id: "model-slot" }) : null,
     bestView(r) || state.skyline?.match?.ok ? el("div", { id: "skyline-slot" }) : null,
   ].filter(Boolean));
 
