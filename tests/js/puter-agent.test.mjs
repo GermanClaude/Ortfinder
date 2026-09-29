@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { OPENAI_TOOLS, PuterAgent, describePuterError } from "../../docs/js/puter-agent.js";
+import { OPENAI_TOOLS, PuterAgent, PuterError, describePuterError, handoffMessages } from "../../docs/js/puter-agent.js";
+import { TILES_MARK } from "../../docs/js/compact.js";
 import { ToolExecutor } from "../../docs/js/tools.js";
 import { VALID_SUBMISSION } from "./fixtures.mjs";
 
@@ -169,4 +170,84 @@ test("a service that keeps hanging gives up after four attempts with a clear mes
   const { run, calls } = setup(Array.from({ length: 6 }, () => () => new Promise(() => {})), { stallMs: 15 });
   await assert.rejects(run(), /Die KI hat 4× nicht geantwortet.*anderen Anbieter/);
   assert.equal(calls.length, 4);
+});
+
+test("a busy model hands over to the next one with the analysis so far, and gets it back later", async () => {
+  const busy = () => { throw { error: { code: 503, message: "Model is overloaded" } }; };
+  const { run, calls, events } = setup([
+    reply({ tool_calls: [toolCall("c1", "geocode", { query: "Bahnhofstraße" })] }),
+    busy, busy,
+    reply({ tool_calls: [toolCall("c2", "geocode", { query: "Martinstor" })] }),
+    reply({ tool_calls: [toolCall("c3", "submit_result", VALID_SUBMISSION)] }),
+  ], { model: "gemini-3.8-flash", fallbackModels: ["gemini-3.1-flash-lite", "gpt-5.4-mini"], backAfterMs: 0 });
+  const { analysis } = await run();
+  assert.equal(analysis.subject.name, "Martinstor");
+  assert.deepEqual(calls.map((c) => c.opts.model), ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]);
+  const handed = calls[3].messages;
+  assert.deepEqual(handed.map((m) => m.role), ["system", "user"], "a fresh start with a transcript, no foreign thinking");
+  const note = handed[1].content.find((p) => p.type === "text" && p.text.startsWith("Bisheriger Stand dieser Analyse")).text;
+  assert.match(note, /bis hier mit gemini-3\.8-flash; du setzt als gemini-3\.1-flash-lite fort/);
+  assert.match(note, /→ geocode \{"query":"Bahnhofstraße"\}\n  ← .*Bahnhofstraße, Deutschland/);
+  assert.match(calls[4].messages[1].content.find((p) => p.type === "text" && p.text.startsWith("Bisheriger Stand")).text, /Bahnhofstraße[\s\S]*Martinstor/);
+  assert.ok(events.some(([t, d]) => t === "status" && d.message === "gemini-3.8-flash ist gerade überlastet – Ortfinder macht mit gemini-3.1-flash-lite weiter (der bisherige Stand geht mit) und versucht es in 0 s wieder mit gemini-3.8-flash."));
+  assert.ok(events.some(([t, d]) => t === "status" && d.message === "Ortfinder versucht es wieder mit gemini-3.8-flash (der bisherige Stand geht mit)."));
+});
+
+test("a stuck model is left at once when another one is at hand; an account limit is waited out instead", async () => {
+  const stuck = setup([
+    () => new Promise(() => {}),
+    reply({ tool_calls: [toolCall("c1", "submit_result", VALID_SUBMISSION)] }),
+  ], { model: "gemini-3.8-flash", fallbackModels: ["gemini-3.1-flash-lite"], stallMs: 40 });
+  await stuck.run();
+  assert.deepEqual(stuck.calls.map((c) => c.opts.model), ["gemini-3.8-flash", "gemini-3.1-flash-lite"]);
+  assert.ok(stuck.events.some(([t, d]) => t === "status" && /^gemini-3\.8-flash antwortet nicht – Ortfinder macht mit gemini-3\.1-flash-lite weiter/.test(d.message)));
+  // A per-minute limit of the account (explicit wait): switching models would not help.
+  const limit = new PuterError("Kurz zu viele Anfragen.", { code: "BUSY", retryable: true, retryAfterMs: 20, maxRetries: 3 });
+  const limited = setup([
+    () => { throw limit; },
+    reply({ tool_calls: [toolCall("c1", "submit_result", VALID_SUBMISSION)] }),
+  ], { model: "m1", fallbackModels: ["m2"] });
+  await limited.run();
+  assert.deepEqual(limited.calls.map((c) => c.opts.model), ["m1", "m1"]);
+});
+
+test("hand-over transcript in chat format: tiles and old pictures stay behind, the current ones come along", () => {
+  const img = (id) => ({ type: "image_url", image_url: { url: `data:${id}` } });
+  const messages = [
+    { role: "system", content: "SYS" },
+    { role: "user", content: [{ type: "text", text: "Wo?" }, img("photo"), { type: "text", text: TILES_MARK }, img("tile")] },
+    { role: "assistant", content: "Ich zoome.", reasoning_details: [{ signature: "geheim" }], tool_calls: [toolCall("a", "zoom_image", { x_min: 0.1 })] },
+    { role: "tool", tool_call_id: "a", content: "Ausschnitt 1\n(Bild folgt in der nächsten Nachricht.)" },
+    { role: "user", content: [{ type: "text", text: "Ausschnitt 1" }, img("z1")] },
+    { role: "assistant", content: "", tool_calls: [toolCall("b", "zoom_image", { x_min: 0.2 })] },
+    { role: "tool", tool_call_id: "b", content: "Ausschnitt 2" },
+    { role: "user", content: [{ type: "text", text: "Ausschnitt 2" }, img("z2")] },
+  ];
+  const once = handoffMessages(messages, "m1", "m2");
+  assert.deepEqual(once.map((m) => m.role), ["system", "user"]);
+  const content = once[1].content;
+  assert.deepEqual(content.slice(0, 2), [{ type: "text", text: "Wo?" }, img("photo")], "photo kept, tiles left out");
+  const note = content[2].text;
+  assert.ok(!note.includes("geheim"));
+  assert.match(note, /KI: Ich zoome\.\n→ zoom_image \{"x_min":0\.1\}\n  ← Ausschnitt 1[\s\S]*  \[Bild: Ausschnitt 1\][\s\S]*→ zoom_image \{"x_min":0\.2\}\n  ← Ausschnitt 2$/);
+  assert.deepEqual(content.slice(3), [{ type: "text", text: "Ausschnitt 2" }, img("z2")], "the current round's picture comes along");
+  const twice = handoffMessages([...once, { role: "assistant", content: "", tool_calls: [toolCall("c", "geocode", { query: "X" })] }, { role: "tool", tool_call_id: "c", content: "1 Treffer" }], "m2", "m1");
+  assert.equal(twice[1].content.filter((p) => p.type === "image_url").length, 1, "only the photo now");
+  assert.match(twice[1].content[2].text, /Ausschnitt 2[\s\S]*→ geocode \{"query":"X"\}\n  ← 1 Treffer$/);
+  assert.equal(handoffMessages(messages.slice(0, 2), "a", "b").length, 2, "nothing to hand over in the first round");
+});
+
+test("a page reloaded after a switch continues with the model it was using", async () => {
+  const saved = [];
+  const first = setup([
+    () => new Promise(() => {}),
+    reply({ tool_calls: [toolCall("c1", "geocode", { query: "Bahnhofstraße" })] }),
+    () => { throw new PuterError("Seite geschlossen"); }, // the page goes away during this round
+  ], { model: "m1", fallbackModels: ["m2"], stallMs: 30, backAfterMs: 60000, checkpoint: async (st) => { saved.push(structuredClone(st)); } });
+  await assert.rejects(first.run(), /Seite geschlossen/);
+  const state = saved.at(-1);
+  assert.equal(state.model, "m2");
+  const again = setup([reply({ tool_calls: [toolCall("c2", "submit_result", VALID_SUBMISSION)] })], { model: "m1", fallbackModels: ["m2"] });
+  await again.agent.run({ intro: "x", images: [], executor: again.executor, resume: state });
+  assert.deepEqual(again.calls.map((c) => c.opts.model), ["m2"]);
 });

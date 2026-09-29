@@ -1,10 +1,10 @@
 // Geolocation agent on Puter.js: no API key; each visitor signs in once with a free Puter account
 // and uses their own free monthly allowance ("user pays"). OpenAI-style chat with tool calls.
 
-import { preview } from "./agent.js";
+import { HANDOFF_MARK, cut, preview } from "./agent.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
-import { compactOpenAI } from "./compact.js";
+import { compactOpenAI, splitTiles } from "./compact.js";
 import { MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const PUTER_SCRIPT = "https://js.puter.com/v2/";
@@ -16,6 +16,9 @@ export const PUTER_MODELS = [
 ];
 const MAX_NUDGES = 2;
 const MAX_RETRIES = 3;
+// Switches between models in one analysis (away when busy or stuck, back after a pause).
+const MAX_SWITCHES = 6;
+const BACK_AFTER_MS = 90000;
 
 let loader = null;
 /** Load Puter.js once, on first use (it is only needed when an analysis starts). */
@@ -94,6 +97,48 @@ function parseArguments(raw) {
   }
 }
 
+/**
+ * The analysis so far for another model (OpenAI-style messages): one model's thinking and signatures do not
+ * carry over to another, but what was looked up and found does – as a transcript next to the photo, with
+ * the latest round's pictures. The detail tiles are left out (zoom_image gives details).
+ */
+export function handoffMessages(messages, from, to) {
+  const firstUser = messages.findIndex((m) => m.role === "user");
+  if (firstUser < 0 || firstUser === messages.length - 1) return messages;
+  const first = messages[firstUser];
+  const [blocks] = splitTiles(typeof first.content === "string" ? [{ type: "text", text: first.content }] : first.content);
+  // An earlier hand-over: its transcript continues, its pictures are old by now.
+  const h = blocks.findIndex((b) => b.type === "text" && b.text.startsWith(HANDOFF_MARK));
+  const lines = h < 0 ? [] : blocks[h].text.split("\n").slice(1);
+  const lastAssistant = messages.map((m) => m.role).lastIndexOf("assistant");
+  const images = [];
+  messages.forEach((m, i) => {
+    if (i <= firstUser) return;
+    if (m.role === "assistant") {
+      const text = typeof m.content === "string" ? m.content.trim() : "";
+      if (text) lines.push(`KI: ${cut(text, 600)}`);
+      for (const c of m.tool_calls || []) {
+        const args = c.function?.arguments;
+        lines.push(`→ ${c.function?.name} ${cut(typeof args === "string" ? args : JSON.stringify(args ?? {}), 400)}`);
+      }
+    } else if (m.role === "tool") {
+      lines.push(`  ← ${cut(String(m.content ?? ""), 800)}`);
+    } else if (m.role === "user" && typeof m.content === "string") {
+      lines.push(`Hinweis: ${cut(m.content, 400)}`);
+    } else if (m.role === "user") {
+      let label = "";
+      for (const part of m.content) {
+        if (part.type === "text") label = part.text;
+        else if (part.type === "image_url" && i > lastAssistant) images.push({ type: "text", text: label || "Bild:" }, part);
+        else if (part.type === "image_url") lines.push(`  [Bild: ${cut(label, 120)}]`);
+      }
+    }
+  });
+  const note = `${HANDOFF_MARK} (bis hier mit ${from}; du setzt als ${to} fort – Nachgeschlagenes gilt weiter, nicht nochmals abfragen, ` +
+    `sondern darauf aufbauen):\n${lines.join("\n")}`;
+  return [...messages.slice(0, firstUser), { role: "user", content: [...(h < 0 ? blocks : blocks.slice(0, h)), { type: "text", text: note }, ...images.slice(-4)] }];
+}
+
 export class PuterAgent {
   /**
    * `checkpoint(state)` is awaited after every round (state can be passed back as `resume` to run());
@@ -102,9 +147,13 @@ export class PuterAgent {
   /** Also drives other OpenAI-style services (OpenRouter): pass their `chat` function and an error translator. */
   constructor({
     model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
-    describeError = describePuterError, stallMs = STALL_MS,
+    describeError = describePuterError, stallMs = STALL_MS, fallbackModels = [], backAfterMs = BACK_AFTER_MS,
   } = {}) {
     this.model = model;
+    // Other models to continue with when this one is busy or stuck (the analysis so far goes along).
+    this.fallbackModels = [...fallbackModels];
+    this.backAfterMs = backAfterMs;
+    this.canSwitch = true;
     this.maxSteps = maxSteps;
     this.describeError = describeError;
     this.chat = chat ?? ((messages, options) => globalThis.puter.ai.chat(messages, options));
@@ -143,8 +192,12 @@ export class PuterAgent {
       } catch (raw) {
         if (raw?.name === "AbortError") throw raw;
         if (raw instanceof StallError) {
-          // No answer at all: ask the same round again (a page in the background waits to be visible first).
+          // No answer at all: another model takes over, or the same round is asked again (a page in the
+          // background waits to be visible first).
           if (!(await this.waitIfBackground())) {
+            if (this.canSwitch && this.fallbackModels.length) {
+              throw Object.assign(new PuterError(`${this.model} antwortet nicht (${raw.message}).`, { code: "STALLED", retryable: true }), { switchable: true });
+            }
             stalls += 1;
             if (stalls > MAX_STALLS) throw new PuterError(stallGiveUp(stalls), { code: "STALLED" });
             this.emit("warning", { message: stallNote(raw, stalls) });
@@ -158,12 +211,16 @@ export class PuterAgent {
           attempt = -1;
           continue;
         }
-        if (err.retryable && attempt < err.maxRetries) {
+        // Busy with another model at hand: one short retry, then that model takes over. An explicit wait
+        // (a rate limit of the account) is waited out instead – another model would not help there.
+        const switchable = err.code === "BUSY" && err.retryable && !err.retryAfterMs && this.canSwitch && this.fallbackModels.length > 0;
+        if (err.retryable && attempt < (switchable ? Math.min(1, err.maxRetries) : err.maxRetries)) {
           const wait = err.retryAfterMs || Math.min(err.backoffMs * 2 ** attempt, 60000);
           this.emit("status", { message: `${err.message} Neuer Versuch in ${Math.round(wait / 1000)} s …` });
           await sleep(wait, this.signal);
           continue;
         }
+        if (switchable) err.switchable = true;
         throw err;
       }
     }
@@ -179,17 +236,63 @@ export class PuterAgent {
     const budget =
       `Budget: höchstens ${this.maxSteps} Runden (jede Antwort von dir ist eine Runde). ` +
       "Bündle deshalb alle Zooms und Kartenabfragen, die du gerade brauchst, parallel in EINER Antwort.";
-    const messages = resume ? [...resume.conversation] : [
+    let messages = resume ? [...resume.conversation] : [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...toParts(images)] },
     ];
     let nudges = resume?.nudges ?? 0;
-    if (resume) this.usage = { ...this.usage, ...resume.usage };
-    const save = (step) => this.checkpoint({ conversation: messages, step, nudges, usage: this.usage });
+    if (resume) {
+      this.usage = { ...this.usage, ...resume.usage };
+      if (resume.model && resume.model !== this.model) {
+        // Continue with the model the page was using when it was interrupted.
+        this.fallbackModels = [this.model, ...this.fallbackModels.filter((m) => m !== resume.model)];
+        this.model = resume.model;
+      }
+    }
+    const save = (step) => this.checkpoint({ conversation: messages, step, nudges, usage: this.usage, model: this.model });
+    // A model left because it was busy or stuck gets another chance after a pause.
+    let switches = 0;
+    let preferred = null;
+    let backAt = 0;
+    let pause = this.backAfterMs;
+    let justSwitched = false; // the other model first has to get a round done
 
     for (let step = (resume?.step ?? 0) + 1; step <= this.maxSteps; step++) {
+      if (preferred && !justSwitched && Date.now() >= backAt && switches < MAX_SWITCHES) {
+        const back = preferred;
+        preferred = null;
+        switches += 1;
+        this.emit("status", { message: `Ortfinder versucht es wieder mit ${back} (der bisherige Stand geht mit).` });
+        this.fallbackModels = [this.model, ...this.fallbackModels.filter((m) => m !== back && m !== this.model)];
+        messages = handoffMessages(messages, this.model, back);
+        this.model = back;
+      }
+      this.canSwitch = switches < MAX_SWITCHES;
       this.emit("step", { step, max_steps: this.maxSteps });
-      const response = await this.request(messages);
+      let response;
+      try {
+        response = await this.request(messages);
+      } catch (err) {
+        if (!err.switchable || !this.fallbackModels.length) throw err;
+        const used = this.model;
+        const next = this.fallbackModels.shift();
+        switches += 1;
+        this.fallbackModels.push(used); // only busy for now
+        preferred = used === next ? null : used;
+        backAt = Date.now() + pause;
+        this.emit("status", {
+          message: `${used} ${err.code === "STALLED" ? "antwortet nicht" : "ist gerade überlastet"} – Ortfinder macht mit ${next} weiter ` +
+            `(der bisherige Stand geht mit) und versucht es in ${Math.round(pause / 1000)} s wieder mit ${used}.`,
+        });
+        pause *= 2;
+        messages = handoffMessages(messages, used, next);
+        this.model = next;
+        justSwitched = true;
+        nudges = 0;
+        step -= 1;
+        continue;
+      }
+      justSwitched = false;
       this.addUsage(response?.usage);
       const message = response?.message;
       if (!message) throw new PuterError("Puter hat keine Antwort geliefert.");

@@ -864,7 +864,8 @@ function createAgent(cfg, common) {
   }
   switch (cfg.provider) {
     case "puter":
-      return new PuterAgent({ model: cfg.puterModel, ...common });
+      // When the chosen model is busy or stuck, the next ones continue (and it gets another chance later).
+      return new PuterAgent({ model: cfg.puterModel, fallbackModels: PUTER_MODELS.map((m) => m.id).filter((id) => id !== cfg.puterModel).slice(0, 2), ...common });
     case "openrouter": {
       // Same OpenAI-style loop as Puter.
       const announced = new Set([cfg.openrouterModel]);
@@ -876,7 +877,8 @@ function createAgent(cfg, common) {
       return new PuterAgent({
         model: cfg.openrouterModel,
         chat: openRouterChat({ key: settings.openrouterKey, signal: common.signal, fallbacks: common.fallbacks, onModel }),
-        describeError: describeOpenRouterError, ...common,
+        // OpenRouter itself switches for overloaded models; a request that hangs switches here.
+        fallbackModels: (common.fallbacks || []).slice(0, 2), describeError: describeOpenRouterError, ...common,
       });
     }
     case "ollama":

@@ -18,8 +18,8 @@ const MAX_RATE_LIMIT_RETRIES = 6;
 // Switches between the free models in one analysis (away when busy or stuck, back after a pause).
 const MAX_SWITCHES = 6;
 const BACK_AFTER_MS = 90000;
-const HANDOFF_MARK = "Bisheriger Stand dieser Analyse";
-const cut = (text, n) => (text.length > n ? `${text.slice(0, n)}…` : text);
+export const HANDOFF_MARK = "Bisheriger Stand dieser Analyse";
+export const cut = (text, n) => (text.length > n ? `${text.slice(0, n)}…` : text);
 
 /**
  * The analysis so far for another model: its thinking cannot be carried over (it is signed for the model
