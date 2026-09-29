@@ -125,8 +125,17 @@ export class Terrain {
     return v(x0, y0) * (1 - dx) * (1 - dy) + v(x1, y0) * dx * (1 - dy) + v(x0, y1) * (1 - dx) * dy + v(x1, y1) * dx * dy;
   }
 
-  /** Elevation at the finest loaded zoom ≤ z, or null when nothing is loaded there. */
+  /**
+   * Elevation at the finest loaded zoom ≤ z, or null when nothing is loaded there; near exact heights
+   * (this.correction, see swiss.js addExactHeights) corrected by the model's error there.
+   */
   elevation(lat, lon, z = 14) {
+    const v = this.modelElevation(lat, lon, z);
+    return v == null || !this.correction ? v : v + this.correction(lat, lon, z);
+  }
+
+  /** The model's own elevation, without corrections. */
+  modelElevation(lat, lon, z = 14) {
     for (let zz = z; zz >= 8; zz--) {
       const v = this.sample(lat, lon, zz);
       if (v != null) return v;

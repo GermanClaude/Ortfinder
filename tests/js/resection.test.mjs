@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { levenbergMarquardt, solveCamera, solveLinear } from "../../docs/js/resection.js";
+import { levenbergMarquardt, solveCamera, solveCameraWithTerrain, solveLinear } from "../../docs/js/resection.js";
 import { groundModel, localProjection, makeCamera } from "../../docs/js/scene3d.js";
+import { lv95ToWgs84 } from "../../docs/js/swiss.js";
+import { Terrain } from "../../docs/js/terrain.js";
 
 // A valley floor at 580 m rising to the west (the camera stands on the slope above it).
 const terrain = {
@@ -88,4 +90,33 @@ test("points in a narrow cluster: the standpoint is only moved when that clearly
   const exact = solveCamera({ points, width: 918, height: 2040, lat: truth.lat, lon: truth.lon, eyeHeight: 10, terrain });
   assert.equal(exact.position_by_fit, undefined);
   assert.ok(exact.rms_px < 1);
+});
+
+test("in Switzerland exact heights from swisstopo fix a terrain model that is metres off at the standpoint", async () => {
+  const truth = { lat: 46.62, lon: 7.9, eyeHeight: 10, bearing: 83, pitch: -9, roll: 0.3, fov: 38 };
+  const points = synthetic(truth, [[250, -12], [270, 6, 8], [200, 14], [520, 2], [430, -9]]);
+  // The worldwide model smooths the slope: 8 m too high at the camera, right at the valley floor.
+  const proj = localProjection(truth.lat, truth.lon);
+  const smoothed = (lat, lon) => {
+    const [x, y] = proj.toXY(lat, lon);
+    return terrain.elevation(lat, lon) + 8 * Math.max(0, 1 - Math.hypot(x, y) / 150);
+  };
+  const model = () => ({ tiles: new Map(), available: true, prefetchBox: async () => {}, modelElevation: smoothed, elevation: Terrain.prototype.elevation });
+  const requests = [];
+  const swisstopo = async (url) => {
+    requests.push(url);
+    const q = new URL(url).searchParams;
+    const [lat, lon] = lv95ToWgs84(+q.get("easting"), +q.get("northing"));
+    return { ok: true, json: async () => ({ height: terrain.elevation(lat, lon).toFixed(2) }) };
+  };
+  const base = { points, width: 918, height: 2040, lat: truth.lat, lon: truth.lon, eyeHeight: 6, solvePosition: false };
+  const plain = await solveCameraWithTerrain({ ...base, terrain: model(), fetchImpl: null });
+  const exact = await solveCameraWithTerrain({ ...base, terrain: model(), fetchImpl: swisstopo });
+  assert.equal(requests.length, points.length + 1, "standpoint and every point");
+  assert.equal(plain.exact_heights, undefined);
+  assert.ok(Math.abs(exact.exact_heights.ground_fix_m + 8) < 0.2, JSON.stringify(exact.exact_heights));
+  // Same eye in space, but only the exact ground gives the right height above it (which floor).
+  assert.ok(Math.abs(plain.camera.eye_height_m - 2) < 1.5, `model: ${plain.camera.eye_height_m}`);
+  assert.ok(Math.abs(exact.camera.eye_height_m - 10) < 0.5, `exact: ${exact.camera.eye_height_m}`);
+  assert.ok(exact.rms_px < 0.5, `rms ${exact.rms_px}`);
 });

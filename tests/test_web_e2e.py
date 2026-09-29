@@ -149,6 +149,12 @@ def _mock_scene(page, overpass_queries: list | None = None):
         "https://s3.amazonaws.com/elevation-tiles-prod/**",
         lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=terrain),
     )
+    _no_swisstopo(page)
+
+
+def _no_swisstopo(page):
+    """Scenes near Switzerland ask swisstopo for exact heights; the tests keep their synthetic terrain."""
+    page.route("https://api3.geo.admin.ch/**", lambda r: r.fulfill(status=404, headers={"Access-Control-Allow-Origin": "*"}, body=""))
 
 
 def _mock_network(page, gemini_bodies: list):
@@ -1035,6 +1041,7 @@ def test_mountain_skyline_names_the_peaks(browser, site_url, tmp_path):
 
     page.route("https://s3.amazonaws.com/elevation-tiles-prod/**", tile)
     page.route("**/api/interpreter", overpass)
+    _no_swisstopo(page)
     page.route("https://tile.openstreetmap.org/**", lambda r: r.fulfill(status=200, content_type="image/png", body=PNG_1X1))
     page.route("https://server.arcgisonline.com/**", lambda r: r.fulfill(status=200, content_type="image/png", headers={"Access-Control-Allow-Origin": "*"}, body=PNG_1X1))
     page.goto(site_url)

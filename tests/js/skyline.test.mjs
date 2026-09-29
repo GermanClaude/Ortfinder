@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  DEM_COARSE, DEM_FINE, LocalDem, columnSector, demTiles, dropAt, extractSkyline, fitStats, geoDirect, geoInverse, horizonAt,
-  matchConfidence, mergePeaks, overlayLines, overpassPeakQuery, parseOsmPeaks, parseWikidataPeaks, peakLabel, peaksInView,
-  pickLabels, refinePose, searchOrientation, searchPosition, sectorPolygon, shiftPad, skylineConstraint, skylineResiduals, skylineSummits,
+  DEM_COARSE, DEM_FINE, LocalDem, columnSector, demTiles, dropAt, envelopeHorizon, extractSkyline, fitStats, geoDirect, geoInverse, horizonAt,
+  matchConfidence, mergeHorizon, mergePeaks, overlayLines, overpassPeakQuery, parseOsmPeaks, parseWikidataPeaks, peakLabel, peaksInView,
+  pickLabels, refinePose, ridgePointsFromProfiles, searchOrientation, searchPosition, sectorPolygon, shiftPad, skylineConstraint, skylineResiduals, skylineSummits,
   traceHorizon, wikidataPeakQuery,
 } from "../../docs/js/skyline.js";
 import { makeCamera } from "../../docs/js/scene3d.js";
@@ -220,4 +220,38 @@ test("skyline + a few ground points: the resection finds standpoint and height (
   assert.ok(Math.abs(joint.view.bearing_deg - 82) < 0.2 && Math.abs(joint.view.fov_deg - 48) < 0.6, JSON.stringify(joint.view));
   assert.ok(joint.skyline_share > 0.9, `skyline share ${joint.skyline_share}`);
   assert.ok(off(joint) < off(alone), `joint ${off(joint).toFixed(1)} m vs points alone ${off(alone).toFixed(1)} m`);
+});
+
+test("exact ridge heights (e.g. swisstopo profiles) replace the model's along the skyline", async () => {
+  const eyeZ = fine.height(TRUTH.e, TRUTH.n) + TRUTH.eye;
+  const [az0, stepDeg, count] = [60, 0.1, 400];
+  const h = traceHorizon(fine, { e: TRUTH.e, n: TRUTH.n, eyeZ, az0, count, stepDeg, ridges: true });
+  // The "exact" terrain is 25 m higher; the service samples the polyline evenly.
+  const calls = [];
+  const profile = async (line, nb) => {
+    calls.push(nb);
+    const xy = line.map(([la, lo]) => fine.toLocal(la, lo));
+    const cum = [0];
+    for (let i = 1; i < xy.length; i++) cum.push(cum[i - 1] + Math.hypot(xy[i][0] - xy[i - 1][0], xy[i][1] - xy[i - 1][1]));
+    const out = [];
+    for (let k = 0, j = 1; k < nb; k++) {
+      const s = (cum.at(-1) * k) / (nb - 1);
+      while (j < xy.length - 1 && cum[j] < s) j++;
+      const t = cum[j] > cum[j - 1] ? (s - cum[j - 1]) / (cum[j] - cum[j - 1]) : 0;
+      const [la, lo] = fine.toLatLon(xy[j - 1][0] + t * (xy[j][0] - xy[j - 1][0]), xy[j - 1][1] + t * (xy[j][1] - xy[j - 1][1]));
+      out.push({ lat: la, lon: lo, h: elevation(la, lo) + 25 });
+    }
+    return out;
+  };
+  const rp = await ridgePointsFromProfiles({ dem: fine, horizon: h, camera: { e: TRUTH.e, n: TRUTH.n, eyeZ }, profile });
+  assert.equal(calls.length, 3, "crest and 40 m in front of and behind it");
+  assert.ok(rp.samples > 100 && rp.minDistM > 0);
+  const merged = mergeHorizon(h, envelopeHorizon(rp.points, TRUTH.e, TRUTH.n, eyeZ, az0, count, stepDeg, rp.minDistM));
+  const off = [];
+  for (let i = 0; i < count; i++) {
+    if (h.el[i] === h.el[i] && h.dist[i]) off.push(merged.el[i] - h.el[i] - Math.atan2(25, h.dist[i]) / DEG);
+  }
+  off.sort((a, b) => a - b);
+  assert.ok(off.length > 0.8 * count, `${off.length} bins`);
+  assert.ok(Math.abs(off[off.length >> 1]) < 0.05, `median ${off[off.length >> 1]}`);
 });

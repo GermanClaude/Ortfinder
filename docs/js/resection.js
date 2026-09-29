@@ -3,6 +3,7 @@
 // and position – by least squares (Levenberg–Marquardt) on the pinhole model plus the terrain model.
 
 import { groundModel, makeCamera } from "./scene3d.js";
+import { learnSwissHeights } from "./swiss.js";
 
 const DEG = Math.PI / 180;
 
@@ -222,13 +223,21 @@ export function solveCamera({
   return result;
 }
 
-/** Browser: load the terrain around the standpoint and the points, then solve. */
-export async function solveCameraWithTerrain({ terrain, ...opts }) {
+/**
+ * Browser: load the terrain around the standpoint and the points, then solve. In Switzerland with the
+ * exact heights of standpoint and points from swisstopo (2 m model): the worldwide model is often several
+ * metres off on slopes, which tilts the view to points a few hundred metres away by degrees.
+ */
+export async function solveCameraWithTerrain({ terrain, fetchImpl = globalThis.fetch, ...opts }) {
   const lats = [opts.lat, ...opts.points.map((p) => p.lat)];
   const lons = [opts.lon, ...opts.points.map((p) => p.lon)];
   const pad = 0.004;
   const box = [Math.min(...lats) - pad, Math.min(...lons) - pad, Math.max(...lats) + pad, Math.max(...lons) + pad];
   // Fine tiles where possible; coarse ones everywhere as a fallback.
   await Promise.all([terrain.prefetchBox(...box, 14), terrain.prefetchBox(...box, 12)]).catch(() => {});
-  return solveCamera({ ...opts, terrain });
+  const count = await learnSwissHeights(terrain, fetchImpl, [{ lat: opts.lat, lon: opts.lon }, ...opts.points]);
+  const sol = solveCamera({ ...opts, terrain });
+  // ground_fix_m: how far the model's ground was off at the solved standpoint.
+  if (count) sol.exact_heights = { count, ground_fix_m: terrain.correction(sol.camera.lat, sol.camera.lon) };
+  return sol;
 }

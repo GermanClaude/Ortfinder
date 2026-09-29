@@ -72,7 +72,22 @@ und zum erkannten Gerät).
    - **Merkmals-Kombinationen abfragen** (`overpass_query`): z.B. „Bushaltestelle X im Umkreis von 3 km
      um Straße Y“;
    - **mit Google suchen** (Google-Suche von Gemini, im bezahlten Tarif);
-   - **den Sonnenstand berechnen** (`sun_position`), um Schatten gegen Kandidatenorte zu prüfen.
+   - **den Sonnenstand berechnen** (`sun_position`), um Schatten gegen Kandidatenorte zu prüfen;
+   - **Fotos anderer Leute vom Kandidatenort holen** (`photos_nearby`): Wikimedia Commons und Panoramax
+     (freie Street-View-Alternative) liefern Aufnahmen im Umkreis, als Kontaktbogen mit Richtung und
+     Entfernung. So lassen sich Fassaden, Schilder und Blickachsen direkt vergleichen;
+   - **Wikipedia durchsuchen** (`wiki_search`): Wahrzeichen, Gebäude, Restaurants, Berge und Orte mit
+     Koordinaten, in mehreren Sprachen.
+
+   **Bildersuche wie Google Lens.** Google Lens hat keine Schnittstelle, die eine Website frei nutzen darf.
+   Unter dem Foto öffnen deshalb die Knöpfe „🔎 Bild im Web suchen: Google Lens / Bing / Yandex“ die jeweilige
+   Suche. Das Foto liegt dabei schon in der Zwischenablage, auf dem Handy geht es über das Teilen-Menü.
+   Was man dort findet (z.B. „Restaurant Sonne, Bern“), kommt in „✍️ Zusatzinfo für die KI“ und fließt in
+   die nächste Analyse ein. Die KI nimmt es ernst, prüft es aber selbst. Automatisch geht es mit einem eigenen
+   Key für die **Google Cloud Vision API** (⚙, die ersten 1000 Bilder im Monat kostenlos, Google verlangt aber
+   ein Abrechnungskonto). Dann sucht Ortfinder das Foto zu Beginn jeder Analyse im Web und gibt der KI
+   Seiten mit demselben Bild, Stichworte und erkannte Wahrzeichen mit Koordinaten mit. Das Foto geht dabei
+   an Google bzw. an die gewählte Suchmaschine, sonst nirgends hin.
 
    **Feinortung auf ~20–50 m.** Steht die Straße oder der Platz fest, geht es weiter bis zum Standpunkt:
    - **Luftbild ansehen** (`map_view`): Ein Satellitenbild (Esri World Imagery) oder Kartenausschnitt um
@@ -117,6 +132,21 @@ und zum erkannten Gerät).
      automatisch mit. Ferne Kämme halten dann Richtung, Neigung und Bildwinkel fest, sodass 3–5
      Bodenpunkte reichen, um Standpunkt und Höhe aufs Haus genau zu bestimmen.
 
+   **Exakte Höhen in der Schweiz.** Liegt der Standpunkt in der Schweiz oder in Liechtenstein, fragt
+   Ortfinder bei swisstopo (frei, ohne Key) die amtlichen Höhen von Standpunkt und Bodenpunkten ab
+   (swissALTI3D, 2-m-Raster). Damit korrigiert es das weltweite Geländemodell in deren Umgebung, für
+   Rückwärtsschnitt, Bergkamm, Draufsicht und 3D-Modell. Das weltweite Modell glättet Hänge und liegt dort
+   oft mehrere Meter daneben. Auf 200 m Entfernung kippen 9 m Höhenfehler den Blick schon um 2,6°.
+
+   **Das Foto als 3D-Modell.** Im Ergebnis baut „🧊 Foto als 3D-Modell ansehen (Seitenansicht → Draufsicht)“
+   aus Geländemodell, Luftbild und OSM-Gebäuden ein begehbares Modell. Das Foto wird vom berechneten Standpunkt
+   aus wie mit einem Diaprojektor daraufgeworfen, überall dort, wo die Kamera hinsah; der Rest zeigt das
+   Luftbild. Mit der Maus oder zwei Fingern lässt es sich drehen und zoomen. Dazu gibt es Knöpfe für die
+   Ansicht „📷 Wie das Foto“, schräg und „⬇ Draufsicht“, einen Flug „▶ Seitenansicht → Draufsicht“, einen
+   Regler für den Foto-Überzug und Schalter für Gebäude und Luftbild. Liegen Wege, Felder und Dächer des
+   Fotos auf denen des Luftbilds, stimmen Standpunkt und Blick; rutschen sie weg, ist die Pose daneben. Es
+   bleibt ein Modell: Gebäude sind einfache Klötze, und Bäume oder Masten werden auf den Boden gestreckt.
+
    Einen Radius von 50 m oder weniger gibt die KI nur an, wenn mindestens zwei unabhängige Merkmale am
    Punkt bestätigt sind, 20 m oder weniger nur, wenn der 3D-Nachbau zum Foto passt. Auf der Ergebniskarte
    lässt sich oben rechts auf **Luftbild** umschalten; bei genauen Ergebnissen geschieht das automatisch.
@@ -133,17 +163,22 @@ und zum erkannten Gerät).
    **Getestet an einem echten Foto** (Blick aus einem Obergeschoss am Hang über eine Talebene im Berner
    Oberland, ohne EXIF-Daten): Aus 8 von Hand zugeordneten Punkten (Hof, Straße, Maisfeld-Ecken) fand der
    Rückwärtsschnitt Blickrichtung, Neigung und Bildwinkel. Jeder Punkt lag im Mittel nur 1,1 % der
-   Bildbreite daneben. Den Standpunkt legte er rund 25 m neben das Gebäude. Grenze: Am Hang liegt das
-   weltweite Höhenmodell dort etwa 8 m über der amtlichen Höhe, deshalb ist der Standpunkt nur auf etwa
-   ±30 m genau. In der Draufsicht lagen Maisfeld, Hof und Häuser deckungsgleich auf dem Luftbild, und die
-   Bergkämme im 3D-Nachbau passten auf die Berge im Foto.
+   Bildbreite daneben. Den Standpunkt legte er rund 25 m neben das Gebäude; genauer lassen es die von Hand
+   gesetzten Punkte nicht zu. Am Hang lag das weltweite Höhenmodell am Standpunkt 8,1 m über der amtlichen
+   Höhe und an den Bodenpunkten 1–2,4 m darunter. Mit den amtlichen Höhen ergab sich die Kamerahöhe über dem
+   Boden zu 15 m statt 5 m, also ein anderes Stockwerk. In der Draufsicht lagen Maisfeld, Hof und Häuser
+   deckungsgleich auf dem Luftbild, und die Bergkämme im 3D-Nachbau passten auf die Berge im Foto.
    Der Bergkamm-Abgleich fand am selben Foto **ohne Richtungsvorgabe** rundum die Blickrichtung 82° (die
    Bodenpunkte hatten 81,5° ergeben) und benannte die Gipfel am Kamm in 5–9 km Entfernung. Er war sich zu
    99 % sicher; die nächstbeste Richtung passte klar schlechter. Den Standpunkt bestätigte er, konnte ihn aber allein nur auf
    ±375 m eingrenzen. Die Kämme sind nah, und das freie Geländemodell weicht an diesen Felsgraten um
-   50–80 m ab. Gemeinsam mit den 8 Bodenpunkten lagen 99 % der Himmelslinie auf dem Geländehorizont, die
-   Punkte passten noch etwas besser (1,08 % statt 1,17 %), und der Bildwinkel ergab sich zu 32°. Das ist
-   typisch für die Hauptkamera im 20:9-Vollbildmodus.
+   50–80 m ab. Amtliche Kammhöhen aus swisstopo-Höhenprofilen änderten daran kaum etwas (Blickrichtung
+   +0,04°), deshalb sind sie nicht eingeschaltet. Gemeinsam mit den 8 Bodenpunkten lag die ganze Himmelslinie
+   auf dem Geländehorizont, die Punkte passten noch etwas besser (1,05 % statt 1,15 %), und der Bildwinkel
+   ergab sich zu 32°. Das ist typisch für die Hauptkamera im 20:9-Vollbildmodus.
+   Der Test deckte auch eine Schwäche auf: Ein unplausibel weiter Bildwinkel (78°, steil nach unten) konnte
+   knapp besser passen als der richtige. Seitdem zählt der erwartete Bildwinkel bei der Wahl mit, so stark,
+   wie es der Zahl unabhängiger Kamm-Abschnitte entspricht.
 
    **Aus der Datei:** Die Brennweite (Kleinbild-äquivalent) ergibt den exakten Bildwinkel, eine
    gespeicherte Kompassrichtung die Blickrichtung. Beides fließt in die Analyse und den Sichtbereich ein.
@@ -167,6 +202,19 @@ und zum erkannten Gerät).
 3. **Blindtest.** Hat das Bild GPS-Daten, bekommt die KI diese *nicht* zu sehen. Am Ende zeigt
    Ortfinder, wie weit die reine Bildanalyse vom echten Ort entfernt lag. Das eignet sich gut zum
    Vorführen.
+4. **Rückmeldung und Lernen.** Unter dem Ergebnis lässt sich bei „✏️ Stimmt das? Richtigen Ort angeben &
+   Ortfinder verbessern“ der tatsächliche Ort angeben: als Koordinaten, Karten-Link (Google Maps, Apple Karten,
+   OpenStreetMap), Adresse, per „📍 Auf der Karte markieren“ oder per „🖼 Screenshot der Foto-Details“
+   (Galerie → Details/Info; die KI liest Koordinaten oder Adresse daraus ab). Dazu kann man schreiben, was
+   besser werden soll. Ortfinder zeigt die Abweichung, und die KI leitet daraus 1–3 kurze, **allgemeine**
+   Lehren ab, z.B. „Bei Blick aus einem Fenster die Kamerahöhe 10–25 m ansetzen“. Diese gehen ab dann bei
+   jeder Analyse auf diesem Gerät mit (unter ⚙ „🧠 Lernen aus Rückmeldungen“ einsehbar, löschbar,
+   abschaltbar). „🌍 Mit allen teilen“ öffnet ein vorausgefülltes GitHub-Issue, den genauen Ort nur, wenn
+   man es ankreuzt. Bewährte Lehren kommen in [`docs/lessons.json`](docs/lessons.json) und damit zu allen.
+   Damit es nicht schlechter wird: Lehren mit Ortsnamen oder Koordinaten werden verworfen (die KI soll
+   nicht auf einen Ort vorgeprägt werden), es gehen höchstens 12 eigene und 5 gemeinsame mit, und die KI
+   prüft jede wie jeden anderen Hinweis. Die KI-Modelle selbst lassen sich von einer Website aus nicht
+   umtrainieren. Die Lehren sind Hinweise, keine neue Intelligenz.
 
 ## Sparsam mit Tokens
 
@@ -203,6 +251,7 @@ Ortsinformation enthalten (weiße Wand, Nahaufnahme einer Blume).
 | Innenraum, Baum vor neutralem Hintergrund, Nahaufnahme | eher Land oder Region, manchmal gar nichts |
 | Berge/Hügel vor Himmel (Bergkamm-Abgleich) | Blickrichtung auf ~0,1–0,5°, Gipfel benannt; Standpunkt allein aus dem Kamm nur auf einige hundert Meter bis Kilometer |
 | Berge **und** erkennbarer Boden (Häuser, Wege, Felder) | Standpunkt meist auf 10–30 m, oft das Haus |
+| Bekanntes Wahrzeichen, Gebäude oder Lokal | meist exakt, wenn Bildersuche, Wikipedia oder Fotos anderer es finden |
 
 **Zu „mindestens 90 % Wahrscheinlichkeit“:** Der Bergkamm-Abgleich nennt, wie sicher die Berge richtig
 zugeordnet sind. Bei einer klaren Silhouette mit Gipfeln und Einschnitten liegt das meist über 90 %
@@ -280,7 +329,8 @@ Anfrage-Limit, wartet Ortfinder automatisch die angegebene Zeit ab und verteilt 
 Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit eines Modells erreicht, macht Ortfinder
 automatisch mit dem nächsten kostenlosen Modell weiter, das ein eigenes Tageskontingent hat (3.8 Flash →
 3.7 Flash). Es merkt sich das bis 9 Uhr, damit die nächsten Fotos gleich dort starten. Sind beide
-aufgebraucht, bricht Ortfinder mit einem klaren Hinweis ab.
+aufgebraucht, bricht Ortfinder mit einem klaren Hinweis ab. Ist Gemini gerade überlastet (HTTP 503),
+versucht Ortfinder es dreimal mit wachsender Pause und macht dann mit dem anderen kostenlosen Modell weiter.
 
 **Tempo:** Große Fotos gehen gleich mit vier hochaufgelösten Detail-Kacheln an die KI, die Werkzeuge einer
 Runde laufen parallel, und die KI soll nach 3–7 Runden abgeben (höchstens 10, einstellbar unter ⚙).
@@ -416,7 +466,12 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/resection.js     Rückwärtsschnitt: Kamerapose aus Punktpaaren Foto ↔ Karte (Levenberg–Marquardt), optional mit Bergkamm
   js/skyline.js       Bergkamm-Abgleich (wie PeakFinder): Himmelslinie im Foto, Geländehorizont bis 200 km, Pose, Gipfelnamen
   js/compact.js       kleine Anfragen: frühere Bilder/Ergebnisse als kurze Hinweise, Kacheln nur in Runde 1
-  js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data)
+  js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data), korrigierbar durch exakte Höhen
+  js/swiss.js         Schweiz: amtliche Höhen und Höhenprofile von swisstopo, LV95-Koordinaten
+  js/websearch.js     Fotos anderer (Commons, Panoramax), Wikipedia, Bildersuche (Lens-Knöpfe, Cloud Vision)
+  js/feedback.js      Rückmeldung: Ort aus Text/Link/Screenshot, Lehren ableiten, speichern und teilen
+  js/model3d.js       Foto als 3D-Modell: Projektion auf Gelände und Gebäude, Flug Seitenansicht → Draufsicht
+  lessons.json        gemeinsame Lehren aus Rückmeldungen (gehen bei jeder Analyse mit)
   js/resume.js        Zwischenstand speichern/fortsetzen (IndexedDB), Warten im Hintergrund
   js/ollama-agent.js  Agent für Ollama auf dem eigenen PC (native Chat-API, Streaming)
   js/openrouter.js    OpenRouter: kostenlose Modelle, Anmeldung per OAuth/PKCE
@@ -425,7 +480,7 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   anleitung.html      alle Anleitungen auf einer Seite (+ js/anleitung.js)
   ki/                 Startskripte für Ollama (+ Cloudflare-Tunnel fürs Handy)
   sw.js               Service Worker nur für die Fertig-Benachrichtigung (speichert nichts)
-  vendor/             Leaflet, exifr, heic2any, QR-Code, Anthropic-SDK (mit Lizenzen), kein CDN nötig
+  vendor/             Leaflet, exifr, heic2any, QR-Code, Anthropic-SDK, three.js (mit Lizenzen), kein CDN nötig
 tests/js/             Unit-Tests der Website (Node)
 tests/test_web_e2e.py Browser-Test der Website (Playwright, Gemini/OSM simuliert)
 ortfinder/            ältere lokale Python-Version (mit Claude statt Gemini), siehe unten
