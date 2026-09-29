@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { API_URL, GeminiAgent, GeminiError, assembleResult, preview } from "../../docs/js/agent.js";
+import { API_URL, GeminiAgent, GeminiError, assembleResult, handoffHistory, preview } from "../../docs/js/agent.js";
+import { TILES_MARK } from "../../docs/js/compact.js";
 import { ToolExecutor } from "../../docs/js/tools.js";
 import { VALID_SUBMISSION } from "./fixtures.mjs";
 
@@ -148,7 +149,7 @@ test("daily free-tier limit stops immediately with a clear message", async () =>
   assert.equal(requests.length, 1, "no retries, and search is not blamed");
 });
 
-test("daily limit with a fallback model: continues with its own quota, starting over with the photo", async () => {
+test("daily limit with a fallback model: continues with its own quota and the analysis so far", async () => {
   const daily = "Rate limit exceeded for model gemini-3.8-flash (limit: 20 requests per day on Free Tier). Please retry in 58s.";
   const exhausted = [];
   const { run, requests, events } = setup([
@@ -160,24 +161,74 @@ test("daily limit with a fallback model: continues with its own quota, starting 
   const { analysis } = await run();
   assert.equal(analysis.city, "Freiburg");
   assert.deepEqual(requests.map((r) => r.body.model), ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.7-flash"]);
-  assert.equal(requests[2].body.input.length, 1, "the new model starts with the photo only");
+  assert.equal(requests[2].body.input.length, 1, "the new model gets the photo and a transcript");
+  assert.match(requests[2].body.input[0].content.at(-1).text, /→ geocode/);
   assert.deepEqual(exhausted, ["gemini-3.8-flash"]);
-  assert.ok(events.some(([t, d]) => t === "status" && /Tageslimit von gemini-3.8-flash erreicht – Ortfinder macht mit gemini-3.7-flash weiter/.test(d.message)));
+  assert.ok(events.some(([t, d]) => t === "status" && /Tageslimit von gemini-3.8-flash erreicht – Ortfinder macht mit gemini-3.7-flash weiter \(eigenes Tageskontingent, der bisherige Stand geht mit\)/.test(d.message)));
 });
 
-test("Gemini overloaded (503) after the retries: the other free model takes over", async () => {
+test("Gemini overloaded (503): after one retry the other free model takes over with the analysis so far, and later hands back", async () => {
   const busy = () => json(503, { error: { code: 503, message: "The model is overloaded. Please try again later.", status: "UNAVAILABLE" } });
   const exhausted = [];
   const { run, requests, events } = setup([
-    busy, busy, busy, busy,
-    interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
-  ], { fallbackModels: ["gemini-3.7-flash"], onModelExhausted: (m) => exhausted.push(m), retryBaseMs: 1, webSearch: false });
+    interaction([call("c1", "geocode", { query: "Bahnhofstraße" })]),
+    busy, busy,
+    interaction([call("c2", "geocode", { query: "Martinstor" })]),
+    interaction([call("c3", "submit_result", VALID_SUBMISSION)]),
+  ], { fallbackModels: ["gemini-3.7-flash"], onModelExhausted: (m) => exhausted.push(m), retryBaseMs: 1, webSearch: false, backAfterMs: 0 });
   const { analysis } = await run();
   assert.equal(analysis.city, "Freiburg");
-  assert.deepEqual(requests.map((r) => r.body.model), ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.7-flash"]);
-  assert.deepEqual(exhausted, [], "busy is not used up: it stays available for later analyses");
+  assert.deepEqual(requests.map((r) => r.body.model), ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.8-flash"]);
+  assert.deepEqual(exhausted, [], "busy is not used up: it stays available");
+  // The new model gets the photo and a transcript of what was looked up, not a fresh start.
+  const handed = requests[3].body.input;
+  assert.equal(handed.length, 1);
+  const note = handed[0].content.find((c) => c.type === "text" && c.text.startsWith("Bisheriger Stand dieser Analyse")).text;
+  assert.match(note, /bis hier mit gemini-3\.8-flash; du setzt als gemini-3\.7-flash fort/);
+  assert.match(note, /→ geocode \{"query":"Bahnhofstraße"\}/);
+  assert.match(note, /← .*Bahnhofstraße, Freiburg/);
+  assert.equal(handed[0].content.filter((c) => c.type === "image").length, 1, "the photo");
+  // Back on the first model with both earlier rounds in the transcript.
+  const back = requests[4].body.input[0].content.find((c) => c.type === "text" && c.text.startsWith("Bisheriger Stand")).text;
+  assert.match(back, /Bahnhofstraße[\s\S]*Martinstor/);
   assert.ok(events.some(([t, d]) => t === "status" && /^Gemini ist gerade überlastet \(HTTP 503\) – neuer Versuch/.test(d.message)));
-  assert.ok(events.some(([t, d]) => t === "status" && d.message === "gemini-3.8-flash ist gerade überlastet – Ortfinder macht mit gemini-3.7-flash weiter."));
+  assert.ok(events.some(([t, d]) => t === "status" && d.message === "gemini-3.8-flash ist gerade überlastet – Ortfinder macht mit gemini-3.7-flash weiter (der bisherige Stand geht mit) und versucht es in 0 s wieder mit gemini-3.8-flash."));
+  assert.ok(events.some(([t, d]) => t === "status" && d.message === "Ortfinder versucht es wieder mit gemini-3.8-flash (der bisherige Stand geht mit)."));
+});
+
+test("a stuck request with another free model at hand switches at once", async () => {
+  const { run, requests, events } = setup([
+    (init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
+    interaction([call("c1", "submit_result", VALID_SUBMISSION)]),
+  ], { fallbackModels: ["gemini-3.7-flash"], webSearch: false, stallMs: 40 });
+  const { analysis } = await run();
+  assert.equal(analysis.city, "Freiburg");
+  assert.deepEqual(requests.map((r) => r.body.model), ["gemini-3.8-flash", "gemini-3.7-flash"]);
+  assert.equal(requests[1].body.input.length, 1, "first round: nothing to hand over yet, the photo as before");
+  assert.ok(events.some(([t, d]) => t === "status" && /^gemini-3\.8-flash antwortet nicht – Ortfinder macht mit gemini-3\.7-flash weiter/.test(d.message)));
+});
+
+test("hand-over transcript: tiles and old pictures stay behind, a second hand-over continues the transcript", () => {
+  const photo = { type: "image", mime_type: "image/jpeg", data: "UEhPVE8=" };
+  const history = [
+    { type: "user_input", content: [{ type: "text", text: "Wo ist das?" }, photo, { type: "text", text: TILES_MARK }, { type: "image", mime_type: "image/jpeg", data: "VElMRQ==" }] },
+    { type: "thought", signature: "geheim" },
+    { type: "model_output", content: [{ type: "text", text: "Ich zoome auf das Schild." }] },
+    call("c1", "zoom_image", { x_min: 0.1, y_min: 0.1, x_max: 0.3, y_max: 0.3 }),
+    { type: "function_result", name: "zoom_image", call_id: "c1", result: [{ type: "text", text: "Ausschnitt 1" }, { type: "image", mime_type: "image/jpeg", data: "Wk9PTTE=" }] },
+  ];
+  const once = handoffHistory(history, "gemini-3.8-flash", "gemini-3.7-flash");
+  const content = once[0].content;
+  assert.deepEqual(content.slice(0, 2), [{ type: "text", text: "Wo ist das?" }, photo], "photo kept, tiles left out");
+  const note = content[2].text;
+  assert.ok(!note.includes("geheim"), "no thinking carried over");
+  assert.match(note, /KI: Ich zoome auf das Schild\.\n→ zoom_image .*\n  ← Ausschnitt 1 \[1 Bild\(er\), unten angehängt\]/);
+  assert.deepEqual(content.slice(3), [{ type: "text", text: "Bild aus zoom_image:" }, { type: "image", mime_type: "image/jpeg", data: "Wk9PTTE=" }]);
+  const twice = handoffHistory([...once, call("c2", "geocode", { query: "Martinstor" }), { type: "function_result", name: "geocode", call_id: "c2", result: "1 Treffer" }], "gemini-3.7-flash", "gemini-3.8-flash");
+  const second = twice[0].content;
+  assert.equal(second.filter((c) => c.type === "image").length, 1, "only the photo: the old zoom picture stays behind");
+  assert.match(second[2].text, /Ausschnitt 1[\s\S]*→ geocode \{"query":"Martinstor"\}\n  ← 1 Treffer$/);
+  assert.deepEqual(handoffHistory(history.slice(0, 1), "a", "b"), history.slice(0, 1), "nothing to hand over in the first round");
 });
 
 test("the model is told its round budget", async () => {

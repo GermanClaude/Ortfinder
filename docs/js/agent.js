@@ -3,7 +3,7 @@
 import { haversineKm } from "./geo.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { SUBMIT_TOOL, ToolInputError, buildTools, validateSubmission } from "./tools.js";
-import { compactGemini } from "./compact.js";
+import { compactGemini, splitTiles } from "./compact.js";
 import { MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
@@ -15,6 +15,49 @@ export const MODELS = [
 const MAX_NUDGES = 2;
 const MAX_RETRIES = 3;
 const MAX_RATE_LIMIT_RETRIES = 6;
+// Switches between the free models in one analysis (away when busy or stuck, back after a pause).
+const MAX_SWITCHES = 6;
+const BACK_AFTER_MS = 90000;
+const HANDOFF_MARK = "Bisheriger Stand dieser Analyse";
+const cut = (text, n) => (text.length > n ? `${text.slice(0, n)}…` : text);
+
+/**
+ * The analysis so far for another model: its thinking cannot be carried over (it is signed for the model
+ * that wrote it), but what was looked up and found can – as a transcript next to the photo, with the
+ * latest round's pictures. The detail tiles are left out (zoom_image gives details).
+ */
+export function handoffHistory(history, from, to) {
+  const [first, ...rest] = history;
+  if (!rest.length) return history;
+  const [blocks] = splitTiles(first.content);
+  // An earlier hand-over: its transcript continues, its pictures are old by now.
+  const h = blocks.findIndex((b) => b.type === "text" && b.text.startsWith(HANDOFF_MARK));
+  const lines = h < 0 ? [] : blocks[h].text.split("\n").slice(1);
+  let latest = history.length;
+  while (latest > 1 && history[latest - 1].type === "function_result") latest--;
+  const images = [];
+  const texts = (content) => (Array.isArray(content) ? content : []).filter((c) => c.type === "text").map((c) => c.text).join(" ").trim();
+  rest.forEach((step, j) => {
+    if (step.type === "model_output") {
+      const text = texts(step.content);
+      if (text) lines.push(`KI: ${cut(text, 600)}`);
+    } else if (step.type === "function_call") {
+      lines.push(`→ ${step.name} ${cut(JSON.stringify(step.arguments ?? {}), 400)}`);
+    } else if (step.type === "function_result") {
+      const result = typeof step.result === "string" ? [{ type: "text", text: step.result }] : step.result || [];
+      const pictures = result.filter((b) => b.type === "image");
+      const current = j + 1 >= latest;
+      lines.push(`  ← ${cut(texts(result), 800)}${pictures.length ? ` [${pictures.length} Bild(er)${current ? ", unten angehängt" : ""}]` : ""}`);
+      if (current) for (const b of pictures) images.push({ type: "text", text: `Bild aus ${step.name}:` }, b);
+    } else if (step.type === "user_input") {
+      const text = texts(step.content);
+      if (text) lines.push(`Hinweis: ${cut(text, 400)}`);
+    }
+  });
+  const note = `${HANDOFF_MARK} (bis hier mit ${from}; du setzt als ${to} fort – Nachgeschlagenes gilt weiter, nicht nochmals abfragen, ` +
+    `sondern darauf aufbauen):\n${lines.join("\n")}`;
+  return [{ ...first, content: [...(h < 0 ? blocks : blocks.slice(0, h)), { type: "text", text: note }, ...images.slice(-4)] }];
+}
 
 export class GeminiError extends Error {
   constructor(message, { status = 0, code = "", retryable = false, retryAfterMs = 0, requestsPerMinute = 0 } = {}) {
@@ -109,11 +152,13 @@ export class GeminiAgent {
   constructor({
     apiKey, model = MODELS[0].id, thinkingLevel = "medium", webSearch = true, maxSteps = 10, fetchImpl = globalThis.fetch.bind(globalThis),
     emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false, fallbackModels = [], onModelExhausted = () => {},
-    retryBaseMs = 2000, stallMs = STALL_MS,
+    retryBaseMs = 2000, stallMs = STALL_MS, backAfterMs = BACK_AFTER_MS,
   } = {}) {
+    this.backAfterMs = backAfterMs;
     this.retryBaseMs = retryBaseMs;
     this.stallMs = stallMs;
     this.slowestMs = 0;
+    this.canSwitch = true; // set by run(): whether a busy or stuck model may be left for a fallback
     this.apiKey = apiKey;
     this.model = model;
     this.fallbackModels = [...fallbackModels];
@@ -165,8 +210,12 @@ export class GeminiAgent {
       } catch (err) {
         if (err.name === "AbortError") throw err;
         if (err instanceof StallError) {
-          // No answer at all: ask the same round again (a page in the background waits to be visible first).
+          // No answer at all: another free model takes over, or the same round is asked again (a page in the
+          // background waits to be visible first).
           if (!(await this.waitIfBackground())) {
+            if (this.canSwitch && this.fallbackModels.length) {
+              throw Object.assign(new GeminiError(`${this.model} antwortet nicht (${err.message}).`, { code: "STALLED", status: 504, retryable: true }), { switchable: true });
+            }
             stalls += 1;
             if (stalls > MAX_STALLS) throw new GeminiError(stallGiveUp(stalls));
             this.emit("warning", { message: stallNote(err, stalls) });
@@ -205,7 +254,9 @@ export class GeminiAgent {
         attempt = -1;
         continue;
       }
-      const maxRetries = err.status === 429 ? MAX_RATE_LIMIT_RETRIES : MAX_RETRIES;
+      // Overloaded with another free model at hand: one short retry, then that model takes over.
+      const switchable = err.status >= 500 && this.canSwitch && this.fallbackModels.length > 0;
+      const maxRetries = err.status === 429 ? MAX_RATE_LIMIT_RETRIES : switchable ? 1 : MAX_RETRIES;
       if (err.retryable && attempt < maxRetries) {
         const wait = Math.min(err.retryAfterMs ? err.retryAfterMs + 1000 : this.retryBaseMs * 2 ** attempt, 90000);
         const why = err.requestsPerMinute ? `Tarif erlaubt ${err.requestsPerMinute} Anfragen pro Minute` : err.message.split(":")[0];
@@ -214,6 +265,7 @@ export class GeminiAgent {
         this.lastRequestAt = 0; // the wait above already covered the pacing interval
         continue;
       }
+      if (switchable) err.switchable = true;
       throw err;
     }
   }
@@ -262,9 +314,14 @@ export class GeminiAgent {
     const budget =
       `Budget: höchstens ${this.maxSteps} Runden (jede Antwort von dir ist eine Runde und kostet eine API-Anfrage). ` +
       "Bündle deshalb alle Zooms und Kartenabfragen, die du gerade brauchst, parallel in EINER Antwort.";
-    const history = resume ? [...resume.conversation] : [{ type: "user_input", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...images] }];
+    let history = resume ? [...resume.conversation] : [{ type: "user_input", content: [{ type: "text", text: `${intro}\n\n${budget}` }, ...images] }];
     let nudges = resume?.nudges ?? 0;
-    let serverSwitches = 0;
+    // A model left because it was busy or stuck (not used up) gets another chance after a pause.
+    let switches = 0;
+    let preferred = null;
+    let backAt = 0;
+    let pause = this.backAfterMs;
+    let justSwitched = false; // the fallback first has to get a round done
     if (resume) {
       this.usage = { ...this.usage, ...resume.usage };
       if (resume.webSearch === false) this.webSearch = false;
@@ -277,32 +334,50 @@ export class GeminiAgent {
 
     for (let step = (resume?.step ?? 0) + 1; step <= this.maxSteps; step++) {
       this.signal?.throwIfAborted();
+      if (preferred && !justSwitched && Date.now() >= backAt && switches < MAX_SWITCHES) {
+        // Back to the model that was busy, so the free quotas are used evenly; the analysis so far goes along.
+        const back = preferred;
+        preferred = null;
+        switches += 1;
+        this.emit("status", { message: `Ortfinder versucht es wieder mit ${back} (der bisherige Stand geht mit).` });
+        this.fallbackModels = [this.model, ...this.fallbackModels.filter((m) => m !== back && m !== this.model)];
+        history = handoffHistory(history, this.model, back);
+        this.model = back;
+      }
+      this.canSwitch = switches < MAX_SWITCHES;
       this.emit("step", { step, max_steps: this.maxSteps });
       let interaction;
       try {
         interaction = await this.request(history);
       } catch (err) {
-        // Still overloaded after the retries: the other free model runs on other servers (at most twice per analysis).
-        const overloaded = err.status >= 500 && err.retryable && serverSwitches < 2;
-        if ((err.code !== "DAILY_LIMIT" && !overloaded) || !this.fallbackModels.length) throw err;
-        // Today's free requests of this model are used up (or its servers are busy); the next free model has
-        // its own. Its thinking cannot continue this model's, so it starts over with the photo (tools run
-        // locally and fast).
+        if ((err.code !== "DAILY_LIMIT" && !err.switchable) || !this.fallbackModels.length) throw err;
+        // Today's free requests of this model are used up, or it is busy or stuck: the next free model has its
+        // own quota and servers. It continues from a transcript of the analysis so far (see handoffHistory).
         const used = this.model;
-        this.model = this.fallbackModels.shift();
+        const next = this.fallbackModels.shift();
         if (err.code === "DAILY_LIMIT") {
           this.onModelExhausted(used);
-          this.emit("status", { message: `Tageslimit von ${used} erreicht – Ortfinder macht mit ${this.model} weiter (eigenes Tageskontingent).` });
+          this.emit("status", { message: `Tageslimit von ${used} erreicht – Ortfinder macht mit ${next} weiter (eigenes Tageskontingent, der bisherige Stand geht mit).` });
         } else {
-          serverSwitches += 1;
-          this.fallbackModels.push(used); // only busy for now, may be used again
-          this.emit("status", { message: `${used} ist gerade überlastet – Ortfinder macht mit ${this.model} weiter.` });
+          switches += 1;
+          this.fallbackModels.push(used); // only busy for now
+          preferred = used;
+          backAt = Date.now() + pause;
+          this.emit("status", {
+            message: `${used} ${err.code === "STALLED" ? "antwortet nicht" : "ist gerade überlastet"} – Ortfinder macht mit ${next} weiter ` +
+              `(der bisherige Stand geht mit) und versucht es in ${Math.round(pause / 1000)} s wieder mit ${used}.`,
+          });
+          pause *= 2;
         }
-        history.splice(1);
+        if (preferred === next) preferred = null;
+        history = handoffHistory(history, used, next);
+        this.model = next;
+        justSwitched = true;
         nudges = 0;
-        step = 0;
+        step -= 1;
         continue;
       }
+      justSwitched = false;
       this.addUsage(interaction.usage);
       // Echo model steps exactly as received (thought signatures included); inputs are ours already.
       const steps = (interaction.steps || []).filter((s) => s.type !== "user_input" && s.type !== "function_result");

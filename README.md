@@ -335,8 +335,13 @@ Anfrage-Limit, wartet Ortfinder automatisch die angegebene Zeit ab und verteilt 
 Anfragen entsprechend (im Protokoll sichtbar). Ist das Tageslimit eines Modells erreicht, macht Ortfinder
 automatisch mit dem nächsten kostenlosen Modell weiter, das ein eigenes Tageskontingent hat (3.8 Flash →
 3.7 Flash). Es merkt sich das bis 9 Uhr, damit die nächsten Fotos gleich dort starten. Sind beide
-aufgebraucht, bricht Ortfinder mit einem klaren Hinweis ab. Ist Gemini gerade überlastet (HTTP 503),
-versucht Ortfinder es dreimal mit wachsender Pause und macht dann mit dem anderen kostenlosen Modell weiter.
+aufgebraucht, bricht Ortfinder mit einem klaren Hinweis ab. Ist ein Modell gerade überlastet (HTTP 503),
+versucht Ortfinder es einmal nach 2 s erneut und macht dann mit dem anderen kostenlosen Modell weiter; hängt
+eine Anfrage 50 s ohne Antwort, wechselt es sofort. Das neue Modell fängt dabei nicht von vorn an: Es bekommt
+das Foto und eine Mitschrift von allem, was bisher nachgeschlagen und gefunden wurde (nur die „Gedanken“
+des anderen Modells lassen sich nicht übertragen). Nach 90 s versucht Ortfinder es wieder mit dem ersten
+Modell, damit sich die beiden Kontingente gleichmäßig verbrauchen; ist es immer noch überlastet, geht es
+beim anderen weiter, und die Pause bis zum nächsten Versuch verdoppelt sich.
 
 **Tempo:** Große Fotos gehen gleich mit vier hochaufgelösten Detail-Kacheln an die KI, die Werkzeuge einer
 Runde laufen parallel, und die KI soll nach 3–7 Runden abgeben (höchstens 10, einstellbar unter ⚙).
