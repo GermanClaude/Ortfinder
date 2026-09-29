@@ -45,12 +45,15 @@ und zum erkannten Gerät).
   - Bricht eine Anfrage ab, während die Seite im Hintergrund ist, wartet Ortfinder und wiederholt sie,
     sobald die Seite wieder sichtbar ist, statt mit Fehler abzubrechen.
   - Während der Analyse bleibt der Bildschirm an (Wake Lock), damit das Handy nicht sperrt.
-- **Hängt die KI**, weil eine Anfrage ohne Fehler einfach nie beantwortet wird (kommt bei Puter vor), fragt
-  Ortfinder nach **50 s ohne Antwort** dieselbe Runde neu an. War das Modell vorher schon langsam, wartet es
-  entsprechend länger. Jeder weitere Versuch bekommt 50 s mehr; nach vier Versuchen kommt ein klarer Hinweis.
-  Bei Claude und Ollama zählt die Zeit ohne neue Daten (120 s bzw. 180 s, weil der eigene PC für ein großes
-  Foto eine Weile rechnet, bevor das erste Wort kommt). Ein Werkzeug, dessen Dienst hängt, gibt nach 120 s
-  auf, und die KI arbeitet ohne dieses Ergebnis weiter.
+- **Hängt die KI**, weil eine Anfrage ohne Fehler einfach nie beantwortet wird, fragt Ortfinder dieselbe
+  Runde neu an oder wechselt das Modell. Wann eine Anfrage als hängend gilt, hängt davon ab, ob der Dienst
+  seine Antwort Stück für Stück schickt: Bei DeepSeek, Mistral, Groq, Poe, OpenAI, xAI, Claude und Ollama
+  zählt nur echte Stille (50 s ohne neue Daten, bei Claude 120 s, beim eigenen PC 180 s) – langes Nachdenken
+  ist dort sichtbar und kein Abbruchgrund. Puter, OpenRouter und Gemini schicken die Antwort am Stück; dort
+  wartet Ortfinder 90 s oder doppelt so lange wie die bisher langsamste Runde, damit keine fast fertige
+  Antwort verworfen wird. Jeder weitere Versuch bekommt mehr Zeit; nach vier Versuchen kommt ein klarer
+  Hinweis. Gebäudedaten (Overpass) haben 30 s je Server und 60 s insgesamt, Adress- und Websuche 15–20 s;
+  ein Werkzeug gibt spätestens nach 120 s auf, und die KI arbeitet ohne dieses Ergebnis weiter.
 - **Benachrichtigung:** Mit „🔔 Bescheid geben“ meldet sich Ortfinder, sobald das Ergebnis da ist,
   solange der Browser die Seite im Hintergrund laufen lässt (Computer, oft auch Android). Auf dem iPhone
   gehen Benachrichtigungen nur, wenn Ortfinder zum Home-Bildschirm hinzugefügt wurde.
@@ -319,7 +322,7 @@ kann. Eine Analyse mit Gemini 3.8 Flash kostet grob 5–10 Cent aus diesem Konti
 Modelle (unter ⚙ wählbar) deutlich weniger. Ist das Kontingent aufgebraucht, bietet Puter an, es
 aufzustocken; Ortfinder zeigt dann einen Hinweis.
 
-Ist das gewählte Modell überlastet oder hängt eine Anfrage 50 s, macht Ortfinder mit dem nächsten Modell
+Ist das gewählte Modell überlastet oder hängt eine Anfrage 90 s, macht Ortfinder mit dem nächsten Modell
 weiter (bei Gemini 3.8 Flash: 3.1 Flash-Lite, dann GPT-5.4 mini), und zwar mit dem Foto und einer Mitschrift
 des bisherigen Stands statt von vorn. Nach 90 s versucht es wieder das gewählte Modell; ist es immer noch
 überlastet, verdoppelt sich die Pause. Dasselbe gilt für OpenRouter bei hängenden Anfragen (bei Überlastung
@@ -367,7 +370,7 @@ automatisch mit dem nächsten kostenlosen Modell weiter, das ein eigenes Tagesko
 3.7 Flash). Es merkt sich das bis 9 Uhr, damit die nächsten Fotos gleich dort starten. Sind beide
 aufgebraucht, bricht Ortfinder mit einem klaren Hinweis ab. Ist ein Modell gerade überlastet (HTTP 503),
 versucht Ortfinder es einmal nach 2 s erneut und macht dann mit dem anderen kostenlosen Modell weiter; hängt
-eine Anfrage 50 s ohne Antwort, wechselt es sofort. Das neue Modell fängt dabei nicht von vorn an: Es bekommt
+eine Anfrage 90 s ohne Antwort, wechselt es sofort. Das neue Modell fängt dabei nicht von vorn an: Es bekommt
 das Foto und eine Mitschrift von allem, was bisher nachgeschlagen und gefunden wurde (nur die „Gedanken“
 des anderen Modells lassen sich nicht übertragen). Nach 90 s versucht Ortfinder es wieder mit dem ersten
 Modell, damit sich die beiden Kontingente gleichmäßig verbrauchen; ist es immer noch überlastet, geht es

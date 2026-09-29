@@ -4,7 +4,7 @@
 // Google Lens (web pages showing the same picture, recognised landmarks with coordinates).
 // Parsers are pure (tested in Node); fetching and the contact sheet run in the browser.
 
-import { bearingDeg, haversineKm } from "./geo.js";
+import { bearingDeg, haversineKm, timeoutSignal } from "./geo.js";
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const plain = (html) => String(html || "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
@@ -175,7 +175,8 @@ export function describeVisionError(status, json) {
 // ---------- browser ----------
 
 async function getJson(fetchImpl, url, init) {
-  const resp = await fetchImpl(url, init);
+  // A service that does not answer must not hold the tool (20 s is plenty for these small lookups).
+  const resp = await fetchImpl(url, { ...init, signal: init?.signal ?? timeoutSignal(20000) });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
 }
@@ -202,7 +203,7 @@ export async function wikiSearch(fetchImpl, query, langs = ["de", "en"]) {
 /** Reverse image search with the user's own Cloud Vision key (the photo is sent to Google). */
 export async function reverseImageSearch(fetchImpl, apiKey, base64) {
   const resp = await fetchImpl(`${VISION_URL}?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(visionRequest(base64)),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(visionRequest(base64)), signal: timeoutSignal(30000),
   });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(describeVisionError(resp.status, json));

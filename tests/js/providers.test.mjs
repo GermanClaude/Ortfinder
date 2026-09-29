@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { PuterAgent } from "../../docs/js/puter-agent.js";
 import {
   COMPAT_PROVIDERS, PROVIDER_GROUPS, CompatHttpError, cleanMessages, compatChat, compatSettings, describeCompatError, isCompat, limitImages,
-  listCompatModels,
+  listCompatModels, readChatStream,
 } from "../../docs/js/providers.js";
 import { ToolExecutor } from "../../docs/js/tools.js";
 import { VALID_SUBMISSION } from "./fixtures.mjs";
@@ -116,4 +116,44 @@ test("a whole analysis over such a service (DeepSeek: its thinking goes back as 
   assert.equal(usage.requests, 2);
   assert.equal(bodies[1].messages[2].reasoning_content, "Schild prüfen");
   assert.equal(bodies[1].messages[1].content[1].type, "image_url");
+});
+
+test("streamed answers: text, thinking and tool calls in pieces are put together; every piece counts as a sign of life", async () => {
+  const events = [
+    ": keep-alive",
+    { choices: [{ delta: { role: "assistant", reasoning_content: "Schild " } }] },
+    { choices: [{ delta: { reasoning_content: "prüfen" } }] },
+    { choices: [{ delta: { content: "Ich zoome." } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "zoom_image", arguments: "{\"x_min\":" } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "0.1}" } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 1, id: "c2", type: "function", function: { name: "geocode", arguments: "{\"query\":\"X\"}" } }] } }] },
+    { choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 900, completion_tokens: 60 } },
+    "[DONE]",
+  ];
+  const text = events.map((e) => (typeof e === "string" ? (e.startsWith(":") ? e : `data: ${e}`) : `data: ${JSON.stringify(e)}`)).join("\n\n") + "\n\n";
+  // Delivered in awkward slices, as networks do.
+  const bytes = new TextEncoder().encode(text);
+  const body = new ReadableStream({ start(c) { for (let i = 0; i < bytes.length; i += 37) c.enqueue(bytes.slice(i, i + 37)); c.close(); } });
+  let pings = 0;
+  const chat = compatChat({ baseUrl: "https://x", key: "k", fetchImpl: async (url, init) => {
+    assert.equal(JSON.parse(init.body).stream, true);
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const r = await chat([], { model: "m" }, null, () => { pings += 1; });
+  assert.deepEqual(r.message, {
+    role: "assistant", content: "Ich zoome.", reasoning_content: "Schild prüfen",
+    tool_calls: [
+      { id: "c1", type: "function", function: { name: "zoom_image", arguments: '{"x_min":0.1}' } },
+      { id: "c2", type: "function", function: { name: "geocode", arguments: '{"query":"X"}' } },
+    ],
+  });
+  assert.equal(r.finish_reason, "tool_calls");
+  assert.deepEqual(r.usage, { prompt_tokens: 900, completion_tokens: 60 });
+  assert.ok(pings > 10, `${pings}`);
+  // A service without indexes sends each call whole; an error inside the stream is reported.
+  const plain = (lines) => new Response(lines.map((l) => `data: ${JSON.stringify(l)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  const whole = await readChatStream(plain([{ choices: [{ delta: { tool_calls: [{ id: "a", function: { name: "f", arguments: "{}" } }, { id: "b", function: { name: "g", arguments: "{}" } }] }, finish_reason: "tool_calls" }] }]));
+  assert.deepEqual(whole.message.tool_calls.map((c) => c.id), ["a", "b"]);
+  await assert.rejects(readChatStream(plain([{ error: { code: 503, message: "overloaded" } }])), (err) => err instanceof CompatHttpError && err.status === 503);
+  await assert.rejects(readChatStream(plain([{ choices: [{ delta: {}, finish_reason: "stop" }] }])), /leere Antwort/);
 });

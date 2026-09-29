@@ -175,3 +175,29 @@ test("bearings, destination points and view cones", () => {
   near(bearingDeg(48, 7.85, ...cone[1]), 60, 0.1);
   near(bearingDeg(48, 7.85, ...cone[7]), 120, 0.1);
 });
+
+test("a server that never answers is left after its time limit; the next one is asked; the total wait is capped", async (t) => {
+  const hanging = (init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+  // Node does not wait for AbortSignal.timeout's timer (browsers do): keep the test alive meanwhile.
+  const awake = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(awake));
+  const hosts = [];
+  const osm = new OSMClient({
+    overpassUrls: ["https://stuck.test/api", "https://ok.test/api"], overpassTimeoutMs: 60, overpassBudgetMs: 1000,
+    fetchImpl: async (url, init) => {
+      hosts.push(new URL(url).host);
+      return new URL(url).host === "stuck.test" ? hanging(init) : json(200, { elements: [] });
+    },
+  });
+  const started = Date.now();
+  assert.equal((await osm.overpass("node(1);out;")).total, 0);
+  assert.deepEqual(hosts, ["stuck.test", "ok.test"]);
+  assert.ok(Date.now() - started < 900);
+  // All servers stuck: a clear error within the overall budget instead of waiting for good.
+  const stuck = new OSMClient({ overpassUrls: ["https://a.test/api", "https://b.test/api", "https://c.test/api"], overpassTimeoutMs: 80, overpassBudgetMs: 150, fetchImpl: async (u, init) => hanging(init) });
+  const t0 = Date.now();
+  await assert.rejects(stuck.overpass("node(2);out;"), /keine Antwort nach 0 s.*keine Zeit mehr/);
+  assert.ok(Date.now() - t0 < 400, `${Date.now() - t0} ms`);
+  const slowNominatim = new OSMClient({ minIntervalMs: 0, nominatimTimeoutMs: 50, fetchImpl: async (u, init) => hanging(init) });
+  await assert.rejects(slowNominatim.geocode("x"), /Nominatim nicht erreichbar \(TimeoutError\)/);
+});

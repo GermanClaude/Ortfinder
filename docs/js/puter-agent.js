@@ -5,7 +5,7 @@ import { HANDOFF_MARK, cut, preview } from "./agent.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import { FUNCTION_TOOLS, SUBMIT_TOOL, ToolInputError, validateSubmission } from "./tools.js";
 import { compactOpenAI, splitTiles } from "./compact.js";
-import { MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
+import { IDLE_MS, MAX_STALLS, STALL_MS, StallError, stallGiveUp, stallLimit, stallNote, watch } from "./watchdog.js";
 
 export const PUTER_SCRIPT = "https://js.puter.com/v2/";
 export const PUTER_MODELS = [
@@ -147,8 +147,10 @@ export class PuterAgent {
   /** Also drives other OpenAI-style services (OpenRouter): pass their `chat` function and an error translator. */
   constructor({
     model = PUTER_MODELS[0].id, maxSteps = 10, chat, emit = () => {}, signal, checkpoint = async () => {}, whenActive = async () => false,
-    describeError = describePuterError, stallMs = STALL_MS, fallbackModels = [], backAfterMs = BACK_AFTER_MS,
+    describeError = describePuterError, stallMs = null, fallbackModels = [], backAfterMs = BACK_AFTER_MS, streaming = false,
   } = {}) {
+    // A streaming chat function shows every piece as it comes (alive), so only real silence counts as stuck.
+    this.streaming = streaming;
     this.model = model;
     // Other models to continue with when this one is busy or stuck (the analysis so far goes along).
     this.fallbackModels = [...fallbackModels];
@@ -161,7 +163,7 @@ export class PuterAgent {
     this.signal = signal;
     this.checkpoint = checkpoint;
     this.whenActive = whenActive;
-    this.stallMs = stallMs;
+    this.stallMs = stallMs ?? (streaming ? IDLE_MS : STALL_MS);
     this.slowestMs = 0;
     this.usage = { requests: 0, input_tokens: 0, output_tokens: 0, thought_tokens: 0, cached_tokens: 0 };
   }
@@ -184,8 +186,8 @@ export class PuterAgent {
         // puter.ai.chat has no abort option: after a cancel or a stall its late answer is ignored.
         // Earlier rounds' images and long results go as short notes (see compact.js).
         const response = await watch(
-          (signal) => this.chat(compactOpenAI(messages), { model: this.model, tools: OPENAI_TOOLS, normalize: true }, signal),
-          stallLimit(this.slowestMs, stalls, this.stallMs), this.signal);
+          (signal, alive) => this.chat(compactOpenAI(messages), { model: this.model, tools: OPENAI_TOOLS, normalize: true }, signal, alive),
+          stallLimit(this.streaming ? 0 : this.slowestMs, stalls, this.stallMs), this.signal);
         this.slowestMs = Math.max(this.slowestMs, Date.now() - started);
         this.usage.requests += 1;
         return response;
@@ -298,7 +300,8 @@ export class PuterAgent {
       if (!message) throw new PuterError("Puter hat keine Antwort geliefert.");
       if (response.finish_reason === "content_filter") throw new PuterError("Das Modell hat die Analyse dieses Bildes abgelehnt.");
 
-      if (message.reasoning) this.emit("thinking", { text: String(message.reasoning).trim() });
+      const reasoning = message.reasoning || message.reasoning_content; // DeepSeek: reasoning_content
+      if (reasoning) this.emit("thinking", { text: String(reasoning).trim() });
       const text = typeof message.content === "string" ? message.content.trim() : "";
       if (text) this.emit("note", { text });
       // Resend the assistant turn as received (reasoning_details are needed to continue thinking turns).

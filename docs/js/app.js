@@ -859,7 +859,7 @@ function createAgent(cfg, common) {
     return new PuterAgent({
       model: cfg.compatModel,
       chat: compatChat({ baseUrl: cfg.compatUrl, key, signal: common.signal, maxImages: p.maxImages || 0, keep: p.keep || [] }),
-      describeError: describeCompatError(cfg.provider, cfg.compatModel), ...common,
+      streaming: true, describeError: describeCompatError(cfg.provider, cfg.compatModel), ...common,
     });
   }
   switch (cfg.provider) {
