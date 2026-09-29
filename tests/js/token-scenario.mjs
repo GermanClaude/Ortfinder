@@ -262,15 +262,16 @@ export async function measureAll({ intro, images, rounds = ROUNDS }) {
   SCRIPT = rounds;
   const sum = (reqs, key = "total") => reqs.reduce((s, r) => s + (r[key] ?? 0), 0);
   const out = {};
+  // perRequest: the estimate of every request (text and images apart), e.g. for the estimate's profile.
   const gem = await runGemini(images, intro);
-  out.gemini = { requests: gem.length, tokens: sum(gem), images: sum(gem, "images") };
+  out.gemini = { requests: gem.length, tokens: sum(gem), images: sum(gem, "images"), perRequest: gem };
   const puter = await runOpenAIStyle(images, intro, { imageTokens: () => 1120 });
-  out.puter = { requests: puter.length, tokens: sum(puter), images: sum(puter, "images") };
+  out.puter = { requests: puter.length, tokens: sum(puter), images: sum(puter, "images"), perRequest: puter };
   const orouter = await runOpenAIStyle(images, intro, { imageTokens: pixelImageTokens });
-  out.openrouter = { requests: orouter.length, tokens: sum(orouter), images: sum(orouter, "images") };
+  out.openrouter = { requests: orouter.length, tokens: sum(orouter), images: sum(orouter, "images"), perRequest: orouter };
   const ollama = await runOllama(images, intro);
-  out.ollama = { requests: ollama.length, tokens: sum(ollama), images: sum(ollama, "images") };
+  out.ollama = { requests: ollama.length, tokens: sum(ollama), images: sum(ollama, "images"), perRequest: ollama };
   const claude = await runClaude(images, intro);
-  out.claude = { requests: claude.length, tokens: sum(claude), billed_equivalent: sum(claude, "cost") };
+  out.claude = { requests: claude.length, tokens: sum(claude), billed_equivalent: sum(claude, "cost"), perRequest: claude };
   return out;
 }

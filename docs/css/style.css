@@ -290,6 +290,26 @@ button.chip:hover { border-color: var(--accent); }
 #settings:not([data-provider="custom"]) .custom-only,
 #settings:not([data-provider="gemini"]):not([data-provider="claude"]):not([data-kind="compat"]) .key-only { display: none !important; }
 .compat-info { margin: 0 0 .4rem; padding-left: 1.2rem; }
+/* Before an analysis: estimate and confirmation */
+.confirm { margin-top: 1rem; }
+.confirm-head { display: flex; gap: .9rem; align-items: flex-start; }
+.confirm-head img { width: 112px; max-height: 112px; object-fit: cover; border-radius: 8px; flex: none; }
+.confirm-head h2 { margin: 0 0 .2rem; }
+.confirm-params { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; align-items: end; margin: .8rem 0; }
+.confirm-params label { display: flex; flex-direction: column; gap: .2rem; font-size: .9rem; }
+.confirm-params label.check { flex-direction: row; align-items: center; }
+.confirm-params input[type=number] { width: 5.5rem; }
+.confirm-summary p { margin: .35rem 0; }
+.confirm-summary .big { font-size: 1.05rem; }
+table.plan { width: 100%; border-collapse: collapse; font-size: .85rem; margin: .4rem 0; }
+table.plan th, table.plan td { text-align: left; padding: .3rem .4rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.plan td:first-child, table.plan td:last-child { white-space: nowrap; }
+table.plan tr.reserve { opacity: .6; }
+/* Explanations of error and trouble messages */
+.explain-btn { margin-left: .3rem; padding: 0 .35rem; font-size: .8rem; line-height: 1.4; border-radius: 999px; }
+.explain { margin: .35rem 0 .2rem; padding: .5rem .6rem; border-radius: 8px; background: rgba(128,128,128,.12); font-size: .88rem; }
+.explain p { margin: 0 0 .4rem; }
+.explain .row { gap: .4rem; flex-wrap: wrap; }
 .compat-info li { margin: .15rem 0; }
 .grid2 > .wide { grid-column: 1 / -1; }
 .grid2 > div > p { margin: 0; }

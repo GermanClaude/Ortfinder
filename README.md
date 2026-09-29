@@ -21,12 +21,27 @@ und zum erkannten Gerät).
 **Direkt im Browser:** <https://germanclaude.github.io/Ortfinder/>
 
 1. Ein Foto in das große Feld ziehen, mit Strg+V einfügen oder „Foto auswählen“ klicken.
-2. Beim allerersten Foto einmalig auf **„Bei Puter anmelden (kostenlos)“** klicken und mit Google, Microsoft,
+2. Vor dem Start zeigt Ortfinder, was die Analyse vorhat und verbraucht, und rechnet bei jeder Änderung neu
+   (Modell, Runden, Denktiefe, KI an/aus):
+   - **Geplante Schritte je Runde** mit den Tokens, die jede Runde sendet und empfängt – typisch und mit
+     Reserve-Runden bis zum eingestellten Limit. Die Zahlen stammen aus einer typischen Analyse, die mit dem
+     echten Anfrage-Code jedes Anbieters durchgerechnet wird; die Bilder zählt Ortfinder für das gewählte Foto.
+   - **Kosten** bei bezahlten Modellen (mit Preis je 1 Mio. Tokens), bei kostenlosen, **was vom Limit übrig
+     ist**: bei Gemini und OpenRouter die heute noch freien Anfragen (in diesem Browser gezählt), bei DeepSeek
+     das Guthaben und bei Poe der Punktestand (direkt beim Anbieter abgefragt), bei Mistral und Qwen, wie
+     viele Analysen das Gratis-Guthaben hergibt.
+   - Nach den ersten Analysen steht dabei auch der **tatsächliche** Verbrauch der letzten Läufe mit dem Modell.
+
+   Erst „▶ Analyse starten“ legt los; wer das nicht braucht, kreuzt „Künftig ohne diese Nachfrage“ an.
+3. Beim allerersten Foto einmalig auf **„Bei Puter anmelden (kostenlos)“** klicken und mit Google, Microsoft,
    Apple oder E-Mail anmelden. Danach läuft die Analyse automatisch weiter; beim nächsten Mal ist man
    schon angemeldet.
-3. Live verfolgen, wohin die KI zoomt und was sie sucht. Ihre Zwischenstände erscheinen sofort auf der
-   Karte, die von der Weltkarte aus immer weiter heranzoomt.
-4. Am Ende zeigt die Karte zwei Punkte:
+4. Live verfolgen, wohin die KI zoomt und was sie sucht. Ihre Zwischenstände erscheinen sofort auf der
+   Karte, die von der Weltkarte aus immer weiter heranzoomt. Jede Fehler- oder Störmeldung im Protokoll hat
+   ein **„?“**: Es erklärt in einfachen Worten, was los ist, und bietet, wo es eine gibt, die Lösung als Knopf
+   an (z.B. „Key prüfen“, „Mit Puter weitermachen“, „Mehr Runden erlauben“, „Noch einmal versuchen“). Bricht
+   die Analyse ab, steht die Erklärung gleich beim Ergebnis.
+5. Am Ende zeigt die Karte zwei Punkte:
    - **📷 Standpunkt**: von hier wurde fotografiert (mit Unsicherheits-Areal),
    - **🎯 Motiv**: das ist auf dem Foto zu sehen,
    dazwischen den berechneten **Sichtbereich**. Darunter zeigt „Woran Ortfinder den Ort
@@ -511,6 +526,8 @@ docs/                 die Website (wird von GitHub Pages ausgeliefert)
   js/skyline.js       Bergkamm-Abgleich (wie PeakFinder): Himmelslinie im Foto, Geländehorizont bis 200 km, Pose, Gipfelnamen
   js/compact.js       kleine Anfragen: frühere Bilder/Ergebnisse als kurze Hinweise, Kacheln nur in Runde 1
   js/watchdog.js      fragt neu an, wenn die KI oder ein Werkzeug hängt
+  js/estimate.js      Vorab-Schätzung: Schritte je Runde, Tokens, Kosten, freie Limits
+  js/explain.js       Erklärungen und Lösungen zu Fehler- und Störmeldungen
   js/providers.js     weitere Anbieter mit OpenAI-Schnittstelle (Mistral, Groq, DeepSeek, Qwen, Poe, OpenAI, xAI, eigener)
   js/terrain.js       Geländemodell (Mapzen-Terrarium-Kacheln, AWS Open Data), korrigierbar durch exakte Höhen
   js/swiss.js         Schweiz: amtliche Höhen und Höhenprofile von swisstopo, LV95-Koordinaten

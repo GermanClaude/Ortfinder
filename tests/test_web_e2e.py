@@ -101,8 +101,29 @@ def browser():
             if not path:
                 pytest.skip("Chromium für Playwright nicht installiert")
             b = p.chromium.launch(executable_path=path)
+        _start_directly(b)
         yield b
         b.close()
+
+
+# A chosen photo normally shows the estimate and waits for "Analyse starten"; the tests that are not about
+# that start right away ("Künftig ohne Nachfrage"). test_estimate_... turns the confirmation back on.
+DIRECT_START = "try { localStorage.setItem('ortfinder.direkt', '1'); } catch (e) {}"
+
+
+def _start_directly(b):
+    new_context = b.new_context
+
+    def context_starting_directly(*args, **kwargs):
+        ctx = new_context(*args, **kwargs)
+        ctx.add_init_script(DIRECT_START)
+        return ctx
+
+    def page_starting_directly(*args, **kwargs):
+        return context_starting_directly(*args, **kwargs).new_page()
+
+    b.new_context = context_starting_directly
+    b.new_page = page_starting_directly
 
 
 def _scene_json() -> dict:
@@ -1353,5 +1374,77 @@ def test_photo_as_3d_model_from_side_view_to_top_view(browser, site_url, tmp_pat
     page.dispatch_event("#model-slot input[type=range]", "input")
     page.click("#model-slot >> text=▶ Seitenansicht → Draufsicht")
     page.wait_for_timeout(3600)
+    assert errors == []
+    context.close()
+
+
+def test_estimate_before_the_analysis_and_explained_errors(browser, site_url, tmp_path):
+    """A chosen photo first shows the plan, tokens, costs and what is left of the free limit; errors are explained."""
+    street = tmp_path / "street.jpg"
+    _street_jpeg(street)
+    context = browser.new_context(viewport={"width": 1280, "height": 900})
+    context.add_init_script("localStorage.removeItem('ortfinder.direkt');")  # this test is about the confirmation
+    context.add_init_script(GEMINI_SETTINGS)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    bodies: list[dict] = []
+    _mock_network(page, bodies)
+    page.goto(site_url)
+
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector("#confirm", state="visible")
+    assert bodies == [], "nothing is sent before the confirmation"
+    assert "1600×1000 Pixel" in page.text_content("#confirm-file")
+    assert "gemini-3.8-flash über Google Gemini" in page.text_content("#confirm-ai")
+    summary = page.text_content("#confirm-summary")
+    assert "Typisch 7 Runden" in summary and "Höchstens 10 Runden" in summary
+    assert "Kostenloser Tarif: 0 $" in summary and "Im bezahlten Tarif: ca." in summary
+    assert "Heute noch ca. 40 von 40 kostenlosen Anfragen" in summary and "reicht für ca. 5 Analyse(n)" in summary
+    rows = page.eval_on_selector_all("#confirm-rows tr", "rs => rs.map(r => [r.className, r.cells[1].textContent])")
+    assert len(rows) == 10 and rows[6][1] == "Ergebnis abgeben" and all(c == "reserve" for c, _ in rows[7:])
+    assert rows[0][1].startswith("Überblick")
+
+    # Fewer rounds: the plan ends with the result earlier; more thinking: more tokens received.
+    page.fill("#confirm-steps", "5")
+    page.dispatch_event("#confirm-steps", "change")
+    rows = page.eval_on_selector_all("#confirm-rows tr", "rs => rs.map(r => r.cells[1].textContent)")
+    assert len(rows) == 5 and rows[-1] == "Ergebnis abgeben"
+    assert "Typisch 5 Runden" in page.text_content("#confirm-summary")
+    assert page.evaluate("JSON.parse(localStorage.getItem('ortfinder.settings.v1')).maxSteps") == 5
+    before = page.text_content("#confirm-summary")
+    page.select_option("#confirm-thinking", "high")
+    assert page.text_content("#confirm-summary") != before
+    page.uncheck("#confirm-ai-on")
+    assert "Nur GPS/EXIF" in page.text_content("#confirm-summary")
+    page.check("#confirm-ai-on")
+    page.fill("#confirm-steps", "10")
+    page.dispatch_event("#confirm-steps", "change")
+
+    page.click("#confirm-start")
+    page.wait_for_selector(".answer", timeout=30000)
+    assert page.is_hidden("#confirm") and len(bodies) >= 2
+    # The requests count against today's free limit (in this browser).
+    page.set_input_files("#file", str(street))
+    page.wait_for_selector("#confirm", state="visible")
+    assert f"Heute noch ca. {40 - len(bodies)} von 40" in page.text_content("#confirm-summary")
+    assert "Tatsächlich bei deinen letzten 1 Analyse(n)" in page.text_content("#confirm-summary")
+    page.click("#confirm-cancel")
+    assert page.is_hidden("#confirm")
+
+    # An error comes with an explanation and a fix.
+    page.unroute("https://generativelanguage.googleapis.com/**")
+    page.route("https://generativelanguage.googleapis.com/**", lambda r: r.fulfill(status=400, content_type="application/json", body=json.dumps(
+        {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT", "details": [{"reason": "API_KEY_INVALID"}]}})))
+    page.set_input_files("#file", str(street))
+    page.click("#confirm-start")
+    page.wait_for_selector("#result .explain", timeout=30000)
+    explained = page.text_content("#result .explain")
+    assert "Schlüssel wird abgelehnt" in explained and "Key prüfen" in explained
+    page.click("#result .explain >> text=Key prüfen")
+    assert page.is_visible("#settings")
+    # The same in the log: "?" opens the explanation.
+    page.click("#log li.error .explain-btn")
+    assert page.is_visible("#log li.error .explain")
     assert errors == []
     context.close()
